@@ -1,5 +1,3 @@
-package sample
-
 import sbt._
 import sbt.Keys._
 import com.typesafe.sbt.SbtAspectj.{ Aspectj, aspectjSettings, useInstrumentedClasses }
