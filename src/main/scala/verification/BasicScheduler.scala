@@ -154,11 +154,6 @@ class BasicScheduler extends Scheduler {
   }
   
   // Record that an event was produced 
-  def event_produced2(event: SpawnEvent) = {
-    currentlyProduced.enqueue(event)
-  }
-  
-  // Record that an event was produced 
   def event_produced(event: Event) = {
     event match {
       case event : SpawnEvent => actorNames += event.name
