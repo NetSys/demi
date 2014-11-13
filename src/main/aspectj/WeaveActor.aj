@@ -78,14 +78,14 @@ privileged public aspect WeaveActor {
 
   
   after(ActorContext me, Props props) returning(ActorRef actor):
-  execution(ActorRef akka.actor.ActorSystem.actorOf(Props)) &&
+  execution(ActorRef akka.actor.ActorContext.actorOf(Props)) &&
   args(props) && this(me) {
   	inst.new_actor(me.system(), props, actor);
   }
   
   
   after(ActorContext me, Props props, String name) returning(ActorRef actor):
-  execution(ActorRef akka.actor.ActorSystem.actorOf(Props, String)) &&
+  execution(ActorRef akka.actor.ActorContext.actorOf(Props, String)) &&
   args(props, name) && this(me) {
   	inst.new_actor(me.system(), props, name, actor);
   }
