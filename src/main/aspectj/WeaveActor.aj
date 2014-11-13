@@ -9,6 +9,7 @@ import akka.actor.Actor;
 import akka.actor.Props;
 import akka.actor.ActorCell;
 import akka.actor.ActorSystem;
+import akka.actor.ActorContext;
 
 import akka.pattern.AskSupport;
 
@@ -73,6 +74,20 @@ privileged public aspect WeaveActor {
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props, String)) &&
   args(props, name) && this(me) {
   	inst.new_actor(me, props, name, actor);
+  }
+
+  
+  after(ActorContext me, Props props) returning(ActorRef actor):
+  execution(ActorRef akka.actor.ActorContext.actorOf(Props)) &&
+  args(props) && this(me) {
+  	inst.new_actor(me.system(), props, actor);
+  }
+  
+  
+  after(ActorContext me, Props props, String name) returning(ActorRef actor):
+  execution(ActorRef akka.actor.ActorContext.actorOf(Props, String)) &&
+  args(props, name) && this(me) {
+  	inst.new_actor(me.system(), props, name, actor);
   }
 
 
