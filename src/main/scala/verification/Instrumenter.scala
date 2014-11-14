@@ -38,6 +38,7 @@ class Instrumenter {
   
   // Track the executing context (i.e., source of events)
   var currentActor = ""
+  var inActor = false
   var counter = 0   
   var started = false;
   
@@ -142,12 +143,15 @@ class Instrumenter {
    
     scheduler.before_receive(cell)
     currentActor = cell.self.path.name
+    inActor = true
   }
   
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell) {
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
     
+    inActor = false
+    currentActor = ""
     scheduler.after_receive(cell)          
     scheduler.schedule_new_message() match {
       case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
@@ -210,11 +214,11 @@ class Instrumenter {
       dispatch_new_message(cell, envelope)
       return false
     }
-    
+    println(Console.BLUE +  " enqueue: " + snd + " -> " + rcv + Console.RESET);
+    require(inActor) 
     // Record that this event was produced
     scheduler.event_produced(cell, envelope)
     
-    println(Console.BLUE + "enqueue: " + snd + " -> " + rcv + Console.RESET);
 
     return false
   }
