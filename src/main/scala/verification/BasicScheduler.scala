@@ -106,7 +106,7 @@ class BasicScheduler extends Scheduler {
            if (queue.isEmpty == true) {
              
              pendingEvents.remove(receiver) match {
-               case Some(key) => schedule_new_message()
+               case Some(key) => get_pending_event()
                case None => throw new Exception("internal error")
              }
              
