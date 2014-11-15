@@ -20,6 +20,8 @@ import scala.collection.mutable.HashSet
 import scala.util.control.Breaks
 import java.util.concurrent.atomic.AtomicInteger
 
+
+
 abstract class Event
 
 case class MsgEvent(sender: String, receiver: String, msg: Any, 
@@ -27,6 +29,8 @@ case class MsgEvent(sender: String, receiver: String, msg: Any,
 
 case class SpawnEvent(parent: String,
     props: Props, name: String, actor: ActorRef) extends Event
+
+
 
 class Instrumenter {
 
@@ -47,12 +51,14 @@ class Instrumenter {
   var enqueue_count = new AtomicInteger
   var tell_count = new AtomicInteger
   
+  
+  
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
-    //if (scheduler.isSystemMessage(sender.path.name, receiver.path.name)) return
-    tell_count.incrementAndGet()
-    println ("Tell: " + tell_count + " | " + enqueue_count)
-
+    if (!scheduler.isSystemCommunication(sender, receiver))
+      tell_count.incrementAndGet()
   }
+  
+  
   
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
@@ -127,6 +133,8 @@ class Instrumenter {
     }
   }
   
+  
+  
   // Signal to the instrumenter that the scheduler wants to restart the system
   def restart_system() = {
     
@@ -151,6 +159,7 @@ class Instrumenter {
     }
   }
   
+  
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
     
@@ -161,19 +170,15 @@ class Instrumenter {
     currentActor = cell.self.path.name
   }
   
+  
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell) {
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
     
     var loop_cnt = 0
-    while (tell_count.get != enqueue_count.get) {
-      loop_cnt += 1
-      if (loop_cnt == 100000) { 
-        println("::: " + tell_count.get + " | " + enqueue_count.get())
-      }
-    }
-    println ("afterMessageReceive: " + tell_count.get  + " | " + enqueue_count.get)
     
+    while (tell_count.get != enqueue_count.get) {}
+        
     inActor = false
     currentActor = ""
     scheduler.after_receive(cell)          
@@ -189,6 +194,7 @@ class Instrumenter {
 
   }
 
+  
   // Dispatch a message, i.e., deliver it to the intended recipient
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
@@ -244,17 +250,17 @@ class Instrumenter {
     scheduler.event_produced(cell, envelope)
     enqueue_count.incrementAndGet()
     
-    println(tell_count + " | " + enqueue_count + Console.BLUE +  " Enqueue: " + snd + " -> " + rcv + Console.RESET);
+    println(tell_count.get() + " | " + enqueue_count.get() + Console.BLUE +  " Enqueue: " + snd + " -> " + rcv + Console.RESET);
     
     //require(inActor) 
     // Record that this event was produced
-
     
-
     return false
   }
 
 }
+
+
 
 object Instrumenter {
   var obj:Instrumenter = null
