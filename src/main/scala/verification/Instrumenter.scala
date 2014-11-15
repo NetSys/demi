@@ -3,6 +3,7 @@ package akka.dispatch.verification
 import akka.actor.ActorCell
 import akka.actor.ActorSystem
 import akka.actor.ActorRef
+import akka.actor.ScalaActorRef
 import akka.actor.Actor
 import akka.actor.PoisonPill
 import akka.actor.Props;
@@ -17,6 +18,8 @@ import scala.collection.mutable.Stack
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 import scala.util.control.Breaks
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.Semaphore
 
 abstract class Event
 
@@ -25,6 +28,29 @@ case class MsgEvent(sender: String, receiver: String, msg: Any,
 
 case class SpawnEvent(parent: String,
     props: Props, name: String, actor: ActorRef) extends Event
+
+class TellEnqueueSemaphore extends Semaphore(1) {
+  var enqueue_count = new AtomicInteger
+  var tell_count = new AtomicInteger
+  def tell () {
+    tell_count.incrementAndGet()
+    reducePermits(1)
+    println ("Tell: " + tell_count.get + " | " + enqueue_count.get + " | " + availablePermits())
+  }
+
+  def enqueue () {
+    enqueue_count.incrementAndGet()
+    release() 
+    println ("Tell: " + tell_count.get + " | " + enqueue_count.get + " | " + availablePermits())
+  }
+
+  def await () {
+    println ("Await Tell: " + tell_count.get + " | " + enqueue_count.get + " | " + availablePermits())
+    acquire
+    println ("Tell: " + tell_count.get + " | " + enqueue_count.get + " | " + availablePermits())
+    release
+  }
+}
 
 class Instrumenter {
 
@@ -41,6 +67,13 @@ class Instrumenter {
   var inActor = false
   var counter = 0   
   var started = false;
+  
+  var tellEnqueueAwait = new TellEnqueueSemaphore
+  
+  def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
+    //if (scheduler.isSystemMessage(sender.path.name, receiver.path.name)) return
+    tellEnqueueAwait.tell
+  }
   
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
@@ -121,6 +154,8 @@ class Instrumenter {
     println("Restarting system")
     started = false
     
+    tellEnqueueAwait = new TellEnqueueSemaphore
+    
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
     for ((system, args) <- seenActors) {
       val argQueue = allSystems.getOrElse(system, new Queue[Any])
@@ -140,21 +175,25 @@ class Instrumenter {
   def beforeMessageReceive(cell: ActorCell) {
     
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
-   
+    inActor = true
+    
     scheduler.before_receive(cell)
     currentActor = cell.self.path.name
-    inActor = true
   }
   
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell) {
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
     
+    var loop_cnt = 0
+    tellEnqueueAwait.await()
+    
     inActor = false
     currentActor = ""
     scheduler.after_receive(cell)          
     scheduler.schedule_new_message() match {
-      case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
+      case Some((new_cell, envelope)) =>
+        dispatch_new_message(new_cell, envelope)
       case None =>
         counter += 1
         println("Nothing to run.")
@@ -211,13 +250,17 @@ class Instrumenter {
     // running?). If not then dispatch the current message and start the loop.
     if (!started) {
       started = true
+      tellEnqueueAwait = new TellEnqueueSemaphore
       dispatch_new_message(cell, envelope)
       return false
     }
-    println(Console.BLUE +  " enqueue: " + snd + " -> " + rcv + Console.RESET);
-    require(inActor) 
-    // Record that this event was produced
+    
     scheduler.event_produced(cell, envelope)
+    tellEnqueueAwait.enqueue()
+    
+    //require(inActor) 
+    // Record that this event was produced
+
     
 
     return false
