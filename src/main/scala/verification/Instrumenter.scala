@@ -18,6 +18,10 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 import scala.util.control.Breaks
 
+import java.util.concurrent.atomic.AtomicInteger
+
+
+
 abstract class Event
 
 case class MsgEvent(sender: String, receiver: String, msg: Any, 
@@ -25,6 +29,8 @@ case class MsgEvent(sender: String, receiver: String, msg: Any,
 
 case class SpawnEvent(parent: String,
     props: Props, name: String, actor: ActorRef) extends Event
+
+
 
 class Instrumenter {
 
@@ -41,6 +47,22 @@ class Instrumenter {
   var inActor = false
   var counter = 0   
   var started = false;
+    
+  var enqueue_count = new AtomicInteger
+  var tell_count = new AtomicInteger
+
+  
+  
+  def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
+    if (!scheduler.isSystemCommunication(sender, receiver))
+      tell_count.incrementAndGet()
+  }
+  
+  
+  def wait_for_enqueue() = {
+    while (tell_count.get != enqueue_count.get) {}
+  }
+  
   
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
@@ -58,6 +80,7 @@ class Instrumenter {
       
     println("System has created a new actor: " + actor.path.name)
   }
+  
   
   def new_actor(system: ActorSystem, 
       props: Props, actor: ActorRef) : Unit = {
@@ -115,11 +138,15 @@ class Instrumenter {
     }
   }
   
+  
   // Signal to the instrumenter that the scheduler wants to restart the system
   def restart_system() = {
     
     println("Restarting system")
+    
     started = false
+    enqueue_count.set(0)
+    tell_count.set(0)
     
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
     for ((system, args) <- seenActors) {
@@ -136,6 +163,7 @@ class Instrumenter {
     }
   }
   
+  
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
     
@@ -146,9 +174,12 @@ class Instrumenter {
     inActor = true
   }
   
+  
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell) {
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
+
+    wait_for_enqueue()
     
     inActor = false
     currentActor = ""
@@ -211,14 +242,17 @@ class Instrumenter {
     // running?). If not then dispatch the current message and start the loop.
     if (!started) {
       started = true
+      tell_count.set(0)
       dispatch_new_message(cell, envelope)
       return false
     }
-    println(Console.BLUE +  " enqueue: " + snd + " -> " + rcv + Console.RESET);
-    require(inActor) 
     // Record that this event was produced
     scheduler.event_produced(cell, envelope)
+    enqueue_count.incrementAndGet()
+
     
+    println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
+    require(inActor)
 
     return false
   }

@@ -9,6 +9,9 @@ import akka.dispatch.Envelope
 // The interface for schedulers
 trait Scheduler {
   
+  
+  def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean
+  
   // Is this message a system message
   def isSystemMessage(src: String, dst: String): Boolean
   // Notification that the system has been reset

@@ -5,6 +5,7 @@ import static java.lang.Thread.sleep;
 import akka.dispatch.verification.Instrumenter;
 
 import akka.actor.ActorRef;
+import akka.actor.ScalaActorRef;
 import akka.actor.Actor;
 import akka.actor.Props;
 import akka.actor.ActorCell;
@@ -69,12 +70,12 @@ privileged public aspect WeaveActor {
   	inst.new_actor(me, props, actor);
   }
   
-  
   after(ActorSystem me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props, String)) &&
   args(props, name) && this(me) {
   	inst.new_actor(me, props, name, actor);
   }
+
 
   
   after(ActorContext me, Props props) returning(ActorRef actor):
@@ -83,7 +84,6 @@ privileged public aspect WeaveActor {
   	inst.new_actor(me.system(), props, actor);
   }
   
-  
   after(ActorContext me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props, String)) &&
   args(props, name) && this(me) {
@@ -91,4 +91,14 @@ privileged public aspect WeaveActor {
   }
 
 
+  before(ActorRef me, Object msg, ActorRef sender):
+  execution(* akka.actor.ScalaActorRef.$bang(Object, ActorRef)) &&
+  args(msg, sender) && this(me) {
+  	inst.tell(me, msg, sender);
+  }
+  
+  before(ActorRef me, Object msg, ActorRef sender):
+  execution(* akka.actor.ActorRef.tell(Object, ActorRef)) &&
+  args(msg, sender, ..) && this(me) {
+  }
 }
