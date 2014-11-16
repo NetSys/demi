@@ -22,6 +22,10 @@ import scala.collection.generic.GenericTraversableTemplate
 // A basic scheduler
 class NullScheduler extends Scheduler {
   
+  def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
+    return true
+  }
+  
   def isSystemMessage(src: String, dst: String): Boolean = {
     return true
   }
