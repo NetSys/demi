@@ -6,6 +6,7 @@ import akka.actor.ActorRef
 import akka.actor.Actor
 import akka.actor.PoisonPill
 import akka.actor.Props;
+import java.util.concurrent.atomic.AtomicBoolean
 
 import akka.dispatch.Envelope
 import akka.dispatch.MessageQueue
@@ -38,8 +39,11 @@ class Instrumenter {
   var currentActor = ""
   var inActor = false
   var counter = 0   
-  var started = false;
-  
+  var started = new AtomicBoolean(false);
+ 
+  def await_enqueue() {
+    tellEnqueue.await()
+  }
   
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
     if (!scheduler.isSystemCommunication(sender, receiver))
@@ -55,7 +59,7 @@ class Instrumenter {
     scheduler.event_produced(event : SpawnEvent)
     scheduler.event_consumed(event)
 
-    if (!started) {
+    if (!started.get) {
       seenActors += ((system, (actor, props, name)))
     }
     
@@ -127,7 +131,7 @@ class Instrumenter {
     
     println("Restarting system")
     
-    started = false
+    started.set(false)
     tellEnqueue.reset()
     
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
@@ -171,7 +175,7 @@ class Instrumenter {
       case None =>
         counter += 1
         println("Nothing to run.")
-        started = false
+        started.set(false)
         scheduler.notify_quiescence()
     }
 
@@ -222,8 +226,8 @@ class Instrumenter {
 
     // Have we started dispatching messages (i.e., is the loop in after_message_receive
     // running?). If not then dispatch the current message and start the loop.
-    if (!started) {
-      started = true
+    if (!started.get) {
+      started.set(true)
       dispatch_new_message(cell, envelope)
       return false
     }
@@ -233,7 +237,8 @@ class Instrumenter {
 
     
     println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
-    require(inActor)
+    // Allowing enqueues from actor now
+    //require(inActor)
 
     return false
   }
