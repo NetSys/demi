@@ -100,39 +100,8 @@ class Instrumenter {
 
     // Tell scheduler that we are done restarting and it should prepare
     // to start the system
-    // TODO: This should probably take sys as an argument or something
     scheduler.start_trace()
-    
-    // We expect the first event to be an actor spawn (no actors exist, nothing
-    // to run).
-    val first_spawn = scheduler.next_event() match {
-      case e: SpawnEvent => e
-      case _ => throw new Exception("not a spawn")
-    }
-    
-    // Start the actor using a new actor system. (All subsequent actors
-    // are expected to spawn from here, so they will automatically inherit
-    // the new actor system)
-    for (args <- argQueue) {
-      args match {
-        case (actor: ActorRef, props: Props, first_spawn.name) =>
-          println("starting " + first_spawn.name)
-          actorSystem.actorOf(props, first_spawn.name)
-      }
-    }
-
-    // TODO: Maybe we should do this differently (the same way we inject external
-    // events, etc.)
-    // Kick off the system by replaying a message
-    val first_msg = scheduler.next_event() match {
-      case e: MsgEvent => e
-      case _ => throw new Exception("not a message")
-    }
-    
-    actorMappings.get(first_msg.receiver) match {
-      case Some(ref) => ref ! first_msg.msg
-      case None => throw new Exception("no such actor " + first_msg.receiver)
-    }
+    // Rely on scheduler to do the right thing from here on out
   }
   
   
