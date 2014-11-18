@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 // Just a very simple, non-null scheduler that supports 
 // partitions and injecting external events.
-class TraceFairScheduler()
+class PeekScheduler()
     extends FairScheduler {
 
   // Pairs of actors that cannot communicate
@@ -31,14 +31,22 @@ class TraceFairScheduler()
   private[this] var trace: Array[ExternalEvent] = Array()
   private[this] var traceIdx: Int = 0
   var events: Queue[Event] = new Queue[Event]() 
+  
+  // Semaphore to wait for trace replay to be done 
   private[this] val traceSem = new Semaphore(0)
+
+  // Are we in peek or is someone using this scheduler in some strange way.
   private[this] val peek = new AtomicBoolean(false)
+
+  // Semaphore to use when shutting down the scheduler
+  private[this] val shutdownSem = new Semaphore(0)
 
   // A set of messages to send
   val messagesToSend = new HashSet[(ActorRef, Any)]
   
   // Ensure exactly one thread in the scheduler at a time
   private[this] val schedSemaphore = new Semaphore(1)
+
 
   // Mark a couple of nodes as partitioned (so they cannot communicate)
   private[this] def add_to_partition (newly_partitioned: (String, String)) {
@@ -205,5 +213,17 @@ class TraceFairScheduler()
         traceSem.release
       }
     }
+  }
+
+  // Shutdown the scheduler, this ensures that the instrumenter is returned to its
+  // original pristine form, so one can change schedulers
+  def shutdown () = {
+    instrumenter.restart_system
+    shutdownSem.acquire
+  }
+  
+  // Notification that the system has been reset
+  override def start_trace() : Unit = {
+    shutdownSem.release
   }
 }
