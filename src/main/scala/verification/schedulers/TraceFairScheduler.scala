@@ -13,16 +13,8 @@ import scala.collection.mutable.HashSet
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
-abstract class TraceEvent
-final case class Start (prop: Props, name: String) extends TraceEvent
-final case class Kill (name: String) extends TraceEvent {}
-final case class Send (name: String, message: Any) extends TraceEvent
-final case object WaitQuiescence extends TraceEvent
-final case class Partition (a: String, b: String) extends TraceEvent
-final case class UnPartition (a: String, b: String) extends TraceEvent
-
 // Just a very simple, non-null scheduler that supports 
-// partitions.
+// partitions and injecting external events.
 class TraceFairScheduler()
     extends FairScheduler {
 
@@ -34,34 +26,29 @@ class TraceFairScheduler()
 
   // Actors to actor ref
   val actorToActorRef = new HashMap[String, ActorRef]
+  val actorToSpawnEvent = new HashMap[String, SpawnEvent]
 
-  var trace: Array[TraceEvent] = Array()
-  var traceIdx: Int = 0
+  private[this] var trace: Array[ExternalEvent] = Array()
+  private[this] var traceIdx: Int = 0
   var events: Queue[Event] = new Queue[Event]() 
-  val traceSem = new Semaphore(0)
-  val peek = new AtomicBoolean(false)
+  private[this] val traceSem = new Semaphore(0)
+  private[this] val peek = new AtomicBoolean(false)
 
   // A set of messages to send
   val messagesToSend = new HashSet[(ActorRef, Any)]
   
   // Ensure exactly one thread in the scheduler at a time
-  val schedSemaphore = new Semaphore(1)
+  private[this] val schedSemaphore = new Semaphore(1)
 
   // TODO: Find a way to make this safe/move this into instrumenter
   val initialActorSystem = ActorSystem("initialas", ConfigFactory.load())
 
   // Mark a couple of nodes as partitioned (so they cannot communicate)
-  private[this] def add_to_partition (newly_partitioned: Set[(String, String)]) {
-    partitioned ++= newly_partitioned
-  }
   private[this] def add_to_partition (newly_partitioned: (String, String)) {
     partitioned += newly_partitioned
   }
 
   // Mark a couple of node as unpartitioned, i.e. they can communicate
-  private[this] def remove_partition (newly_partitioned: Set[(String, String)]) {
-    partitioned --= newly_partitioned
-  }
   private[this] def remove_partition (newly_partitioned: (String, String)) {
     partitioned -= newly_partitioned
   }
@@ -72,8 +59,8 @@ class TraceFairScheduler()
   }
 
   // Mark a node as reachable, also used to start a node
-  private[this] def unisolate_node (node: String) {
-    inaccessible -= node
+  private[this] def unisolate_node (actor: String) {
+    inaccessible -= actor
   }
 
   // Enqueue a message for future delivery
@@ -97,7 +84,7 @@ class TraceFairScheduler()
   
 
   // Given an external event trace, see the events produced
-  def peek (_trace: Array[TraceEvent]) : Queue[Event]  = {
+  def peek (_trace: Array[ExternalEvent]) : Queue[Event]  = {
     trace = _trace
     events = new Queue[Event]()
     traceIdx = 0
@@ -133,15 +120,19 @@ class TraceFairScheduler()
     while (loop && traceIdx < trace.size) {
       trace(traceIdx) match {
         case Start (_, name) =>
+          events += actorToSpawnEvent(name)
           unisolate_node(name)
         case Kill (name) =>
+          events += KillEvent(name)
           isolate_node(name)
         case Send (name, message) =>
           val res = enqueue_message(name, message)
           require(res)
         case Partition (a, b) =>
+          events += PartitionEvent((a, b))
           add_to_partition((a, b))
         case UnPartition (a, b) =>
+          events += UnPartitionEvent((a, b))
           remove_partition((a, b))
         case WaitQuiescence =>
           loop = false // Start waiting for quiscence
@@ -175,7 +166,8 @@ class TraceFairScheduler()
 
   // Record that an event was consumed
   override def event_consumed(event: Event) = {
-    events += event
+    val spawn_event = event.asInstanceOf[SpawnEvent]
+    actorToSpawnEvent(spawn_event.name) = spawn_event
   }
   
   // Record a message send event
@@ -205,6 +197,7 @@ class TraceFairScheduler()
   }
 
   override def notify_quiescence () {
+    events += Quiescence
     if (traceIdx < trace.size) {
       // If waiting for quiescence.
       advanceTrace()
