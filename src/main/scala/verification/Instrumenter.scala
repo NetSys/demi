@@ -24,7 +24,6 @@ import scala.util.control.Breaks
 
 
 class Instrumenter {
-
   var scheduler : Scheduler = new NullScheduler
   var tellEnqueue : TellEnqueue = new TellEnqueueSemaphore
   
@@ -40,6 +39,17 @@ class Instrumenter {
   var inActor = false
   var counter = 0   
   var started = new AtomicBoolean(false);
+
+  // AspectJ runs into initialization problems if a new ActorSystem is created
+  // by the constructor. Instead use a getter to create on demand.
+  private[this] var _actorSystem : ActorSystem = null 
+  def actorSystem () : ActorSystem = {
+    if (_actorSystem == null) {
+      _actorSystem = ActorSystem("new-system-" + counter)
+      counter += 1
+    }
+    _actorSystem
+  }
  
   def await_enqueue() {
     tellEnqueue.await()
@@ -84,7 +94,7 @@ class Instrumenter {
   //  so this is a way to replay the first message that started it all.
   def reinitialize_system(sys: ActorSystem, argQueue: Queue[Any]) {
     require(scheduler != null)
-    val newSystem = ActorSystem("new-system-" + counter)
+    _actorSystem = ActorSystem("new-system-" + counter)
     counter += 1
     println("Started a new actor system.")
 
@@ -93,7 +103,7 @@ class Instrumenter {
     // TODO: This should probably take sys as an argument or something
     scheduler.start_trace()
     
-    // We expect the first event to be an actor spawn (not actors exist, nothing
+    // We expect the first event to be an actor spawn (no actors exist, nothing
     // to run).
     val first_spawn = scheduler.next_event() match {
       case e: SpawnEvent => e
@@ -107,7 +117,7 @@ class Instrumenter {
       args match {
         case (actor: ActorRef, props: Props, first_spawn.name) =>
           println("starting " + first_spawn.name)
-          newSystem.actorOf(props, first_spawn.name)
+          actorSystem.actorOf(props, first_spawn.name)
       }
     }
 

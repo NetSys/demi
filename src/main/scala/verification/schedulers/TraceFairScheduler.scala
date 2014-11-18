@@ -40,9 +40,6 @@ class TraceFairScheduler()
   // Ensure exactly one thread in the scheduler at a time
   private[this] val schedSemaphore = new Semaphore(1)
 
-  // TODO: Find a way to make this safe/move this into instrumenter
-  val initialActorSystem = ActorSystem("initialas", ConfigFactory.load())
-
   // Mark a couple of nodes as partitioned (so they cannot communicate)
   private[this] def add_to_partition (newly_partitioned: (String, String)) {
     partitioned += newly_partitioned
@@ -93,7 +90,7 @@ class TraceFairScheduler()
       t match {
         case Start (prop, name) => 
           // Just start and isolate all actors we might eventually care about
-          initialActorSystem.actorOf(prop, name)
+          instrumenter.actorSystem.actorOf(prop, name)
           isolate_node(name)
         case _ =>
           None
