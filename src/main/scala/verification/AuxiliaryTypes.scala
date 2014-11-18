@@ -16,8 +16,6 @@ case class MsgEvent(sender: String, receiver: String, msg: Any,
 case class SpawnEvent(parent: String,
     props: Props, name: String, actor: ActorRef) extends Event
 
-
-
 trait TellEnqueue {
   def tell()
   def enqueue()
