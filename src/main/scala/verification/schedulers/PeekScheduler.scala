@@ -111,7 +111,6 @@ class PeekScheduler()
     // the caller.
     traceSem.acquire
     peek.set(false)
-    println("play_trace done")
     return events
   }
 
@@ -207,7 +206,6 @@ class PeekScheduler()
       // If waiting for quiescence.
       advanceTrace()
     } else {
-      println("Done with events")
       if (peek.get) {
         // Tell the calling thread we are done
         traceSem.release

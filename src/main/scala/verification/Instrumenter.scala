@@ -97,6 +97,12 @@ class Instrumenter {
     _actorSystem = ActorSystem("new-system-" + counter)
     counter += 1
     println("Started a new actor system.")
+    // This is safe, we have just started a new actor system (after killing all
+    // the old ones we knew about), there should be no actors running and no 
+    // dispatch calls outstanding. That said, it is really important that we not
+    // have other sources of ActorSystems etc.
+    started.set(false)
+    tellEnqueue.reset()
 
     // Tell scheduler that we are done restarting and it should prepare
     // to start the system
@@ -109,10 +115,6 @@ class Instrumenter {
   def restart_system() = {
     
     println("Restarting system")
-    
-    started.set(false)
-    tellEnqueue.reset()
-    
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
     for ((system, args) <- seenActors) {
       val argQueue = allSystems.getOrElse(system, new Queue[Any])
@@ -125,6 +127,7 @@ class Instrumenter {
         println("Shutting down the actor system. " + argQueue.size)
         system.shutdown()
         system.registerOnTermination(reinitialize_system(system, argQueue))
+        println("Shut down the actor system. " + argQueue.size)
     }
   }
   
@@ -179,7 +182,6 @@ class Instrumenter {
   // Called when dispatch is called.
   def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
       envelope: Envelope): Boolean = {
-
     val value: (ActorCell, Envelope) = (cell, envelope)
     val receiver = cell.self
     val snd = envelope.sender.path.name
