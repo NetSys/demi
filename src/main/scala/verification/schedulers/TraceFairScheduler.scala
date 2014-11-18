@@ -81,7 +81,6 @@ class TraceFairScheduler()
       true
     }
   }
-  
 
   // Given an external event trace, see the events produced
   def peek (_trace: Array[ExternalEvent]) : Queue[Event]  = {
@@ -146,6 +145,7 @@ class TraceFairScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
+    events += MsgSend(snd, rcv, envelope.message, cell, envelope) 
     // Drop any messages that crosses a partition.
     if (!((partitioned contains (snd, rcv)) 
          || (partitioned contains (rcv, snd))
