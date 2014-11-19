@@ -24,7 +24,6 @@ import scala.util.control.Breaks
 
 
 class Instrumenter {
-
   var scheduler : Scheduler = new NullScheduler
   var tellEnqueue : TellEnqueue = new TellEnqueueSemaphore
   
@@ -40,6 +39,17 @@ class Instrumenter {
   var inActor = false
   var counter = 0   
   var started = new AtomicBoolean(false);
+
+  // AspectJ runs into initialization problems if a new ActorSystem is created
+  // by the constructor. Instead use a getter to create on demand.
+  private[this] var _actorSystem : ActorSystem = null 
+  def actorSystem () : ActorSystem = {
+    if (_actorSystem == null) {
+      _actorSystem = ActorSystem("new-system-" + counter)
+      counter += 1
+    }
+    _actorSystem
+  }
  
   def await_enqueue() {
     tellEnqueue.await()
@@ -84,45 +94,20 @@ class Instrumenter {
   //  so this is a way to replay the first message that started it all.
   def reinitialize_system(sys: ActorSystem, argQueue: Queue[Any]) {
     require(scheduler != null)
-    val newSystem = ActorSystem("new-system-" + counter)
+    _actorSystem = ActorSystem("new-system-" + counter)
     counter += 1
     println("Started a new actor system.")
+    // This is safe, we have just started a new actor system (after killing all
+    // the old ones we knew about), there should be no actors running and no 
+    // dispatch calls outstanding. That said, it is really important that we not
+    // have other sources of ActorSystems etc.
+    started.set(false)
+    tellEnqueue.reset()
 
     // Tell scheduler that we are done restarting and it should prepare
     // to start the system
-    // TODO: This should probably take sys as an argument or something
     scheduler.start_trace()
-    
-    // We expect the first event to be an actor spawn (not actors exist, nothing
-    // to run).
-    val first_spawn = scheduler.next_event() match {
-      case e: SpawnEvent => e
-      case _ => throw new Exception("not a spawn")
-    }
-    
-    // Start the actor using a new actor system. (All subsequent actors
-    // are expected to spawn from here, so they will automatically inherit
-    // the new actor system)
-    for (args <- argQueue) {
-      args match {
-        case (actor: ActorRef, props: Props, first_spawn.name) =>
-          println("starting " + first_spawn.name)
-          newSystem.actorOf(props, first_spawn.name)
-      }
-    }
-
-    // TODO: Maybe we should do this differently (the same way we inject external
-    // events, etc.)
-    // Kick off the system by replaying a message
-    val first_msg = scheduler.next_event() match {
-      case e: MsgEvent => e
-      case _ => throw new Exception("not a message")
-    }
-    
-    actorMappings.get(first_msg.receiver) match {
-      case Some(ref) => ref ! first_msg.msg
-      case None => throw new Exception("no such actor " + first_msg.receiver)
-    }
+    // Rely on scheduler to do the right thing from here on out
   }
   
   
@@ -130,10 +115,6 @@ class Instrumenter {
   def restart_system() = {
     
     println("Restarting system")
-    
-    started.set(false)
-    tellEnqueue.reset()
-    
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
     for ((system, args) <- seenActors) {
       val argQueue = allSystems.getOrElse(system, new Queue[Any])
@@ -146,6 +127,7 @@ class Instrumenter {
         println("Shutting down the actor system. " + argQueue.size)
         system.shutdown()
         system.registerOnTermination(reinitialize_system(system, argQueue))
+        println("Shut down the actor system. " + argQueue.size)
     }
   }
   
@@ -174,7 +156,6 @@ class Instrumenter {
       case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
       case None =>
         counter += 1
-        println("Nothing to run.")
         started.set(false)
         scheduler.notify_quiescence()
     }
@@ -201,7 +182,6 @@ class Instrumenter {
   // Called when dispatch is called.
   def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
       envelope: Envelope): Boolean = {
-
     val value: (ActorCell, Envelope) = (cell, envelope)
     val receiver = cell.self
     val snd = envelope.sender.path.name
@@ -236,10 +216,7 @@ class Instrumenter {
     tellEnqueue.enqueue()
 
     
-    println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
-    // Allowing enqueues from actor now
-    //require(inActor)
-
+    //println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
     return false
   }
 

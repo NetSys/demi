@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 // Just a very simple, non-null scheduler that supports 
 // partitions and injecting external events.
-class TraceFairScheduler()
+class PeekScheduler()
     extends FairScheduler {
 
   // Pairs of actors that cannot communicate
@@ -31,8 +31,15 @@ class TraceFairScheduler()
   private[this] var trace: Array[ExternalEvent] = Array()
   private[this] var traceIdx: Int = 0
   var events: Queue[Event] = new Queue[Event]() 
+  
+  // Semaphore to wait for trace replay to be done 
   private[this] val traceSem = new Semaphore(0)
+
+  // Are we in peek or is someone using this scheduler in some strange way.
   private[this] val peek = new AtomicBoolean(false)
+
+  // Semaphore to use when shutting down the scheduler
+  private[this] val shutdownSem = new Semaphore(0)
 
   // A set of messages to send
   val messagesToSend = new HashSet[(ActorRef, Any)]
@@ -40,8 +47,6 @@ class TraceFairScheduler()
   // Ensure exactly one thread in the scheduler at a time
   private[this] val schedSemaphore = new Semaphore(1)
 
-  // TODO: Find a way to make this safe/move this into instrumenter
-  val initialActorSystem = ActorSystem("initialas", ConfigFactory.load())
 
   // Mark a couple of nodes as partitioned (so they cannot communicate)
   private[this] def add_to_partition (newly_partitioned: (String, String)) {
@@ -81,7 +86,6 @@ class TraceFairScheduler()
       true
     }
   }
-  
 
   // Given an external event trace, see the events produced
   def peek (_trace: Array[ExternalEvent]) : Queue[Event]  = {
@@ -94,7 +98,7 @@ class TraceFairScheduler()
       t match {
         case Start (prop, name) => 
           // Just start and isolate all actors we might eventually care about
-          initialActorSystem.actorOf(prop, name)
+          instrumenter.actorSystem.actorOf(prop, name)
           isolate_node(name)
         case _ =>
           None
@@ -107,7 +111,6 @@ class TraceFairScheduler()
     // the caller.
     traceSem.acquire
     peek.set(false)
-    println("play_trace done")
     return events
   }
 
@@ -146,6 +149,7 @@ class TraceFairScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
+    events += MsgSend(snd, rcv, envelope.message, cell, envelope) 
     // Drop any messages that crosses a partition.
     if (!((partitioned contains (snd, rcv)) 
          || (partitioned contains (rcv, snd))
@@ -202,11 +206,22 @@ class TraceFairScheduler()
       // If waiting for quiescence.
       advanceTrace()
     } else {
-      println("Done with events")
       if (peek.get) {
         // Tell the calling thread we are done
         traceSem.release
       }
     }
+  }
+
+  // Shutdown the scheduler, this ensures that the instrumenter is returned to its
+  // original pristine form, so one can change schedulers
+  def shutdown () = {
+    instrumenter.restart_system
+    shutdownSem.acquire
+  }
+  
+  // Notification that the system has been reset
+  override def start_trace() : Unit = {
+    shutdownSem.release
   }
 }
