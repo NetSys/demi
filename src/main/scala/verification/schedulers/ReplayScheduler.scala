@@ -144,10 +144,7 @@ class ReplayScheduler() extends Scheduler {
             } // else make sure message was sent, as a way to ensure that
               // things are correct
           case MsgEvent(snd, rcv, msg, _, _) =>
-            if (!firstMessage) {
-              break
-            }
-            firstMessage = false
+            break
           case Quiescence => 
             // This is just a nop. Do nothing
             events += Quiescence
@@ -156,6 +153,11 @@ class ReplayScheduler() extends Scheduler {
       }
     }
     schedSemaphore.release
+    // OK this is the first time round, let us start dispatching
+    if (firstMessage) {
+      firstMessage = false
+      instrumenter.start_dispatch()
+    }
   }
 
   // Check no unexpected messages are enqueued
@@ -252,7 +254,7 @@ class ReplayScheduler() extends Scheduler {
       throw new Exception("Divergence")
     } else {
       if (replay.get) {
-        println("Done ")
+        println("Done " + pendingEvents)
         // Tell the calling thread we are done
         traceSem.release
       }

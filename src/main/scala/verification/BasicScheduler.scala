@@ -22,7 +22,7 @@ import scala.collection.generic.GenericTraversableTemplate
 // A basic scheduler
 class BasicScheduler extends Scheduler {
   
-  var intrumenter = Instrumenter
+  var instrumenter = Instrumenter()
   var currentTime = 0
   var index = 0
   
@@ -173,6 +173,9 @@ class BasicScheduler extends Scheduler {
     
     pendingEvents(rcv) = msgs += ((cell, envelope))
     currentlyProduced.enqueue(new MsgEvent(snd, rcv, envelope.message, cell, envelope))
+    if (!instrumenter.started.get) {
+      instrumenter.start_dispatch()
+    }
   }
   
   

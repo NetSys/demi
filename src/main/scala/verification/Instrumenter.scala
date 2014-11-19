@@ -205,24 +205,27 @@ class Instrumenter {
     // Record the dispatcher for the current receiver.
     dispatchers(receiver) = dispatcher
 
-    // Regardless of what we do with this message, it is an enqueue
-    tellEnqueue.enqueue()
-    // Have we started dispatching messages (i.e., is the loop in after_message_receive
-    // running?). If not then dispatch the current message and start the loop.
-    if (!started.get) {
-      started.set(true)
-      dispatch_new_message(cell, envelope)
-      return false
-    }
-    // Record that this event was produced
-    // This is somewhat problematic actually. The problem is messages sent after quiescence are
-    // never recorded. This is a bit worrying.
+    // Record that this event was produced. The scheduler is responsible for 
+    // kick starting processing.
     scheduler.event_produced(cell, envelope)
-
-    
+    tellEnqueue.enqueue()
     //println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
     return false
   }
+  
+  // Start scheduling and dispatching messages. This makes the scheduler responsible for
+  // actually kickstarting things. 
+  def start_dispatch() {
+    started.set(true)
+    scheduler.schedule_new_message() match {
+      case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
+      case None =>
+        counter += 1
+        started.set(false)
+        scheduler.notify_quiescence()
+    }
+  }
+
 
 }
 

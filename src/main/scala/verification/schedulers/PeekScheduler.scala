@@ -79,7 +79,6 @@ class PeekScheduler()
     if (instrumenter.started.get()) { 
       messagesToSend += ((actor, msg))
     } else {
-      events += MsgSend("deadLetters", actor.path.name,  msg)
       actor ! msg
     }
   }
@@ -139,6 +138,9 @@ class PeekScheduler()
       traceIdx += 1
     }
     schedSemaphore.release
+    // Since this is always called during quiescence, once we have processed all 
+    // events, let us start dispatching
+    instrumenter.start_dispatch()
   }
 
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
