@@ -69,21 +69,18 @@ class PeekScheduler()
   }
 
   // Enqueue a message for future delivery
-  private[this] def enqueue_message(receiver: String, msg: Any) : Boolean  = {
-    if (!(actorNames contains receiver)) {
-      false
-    } else {
+  private[this] def enqueue_message(receiver: String, msg: Any) {
+    if (actorNames contains receiver) {
       enqueue_message(actorToActorRef(receiver), msg)
     }
   }
 
-  private[this] def enqueue_message(actor: ActorRef, msg: Any) : Boolean  = {
+  private[this] def enqueue_message(actor: ActorRef, msg: Any) {
     if (instrumenter.started.get()) { 
       messagesToSend += ((actor, msg))
-      true
     } else {
+      events += MsgSend("deadLetters", actor.path.name,  msg)
       actor ! msg
-      true
     }
   }
 
@@ -129,8 +126,7 @@ class PeekScheduler()
           events += KillEvent(name)
           isolate_node(name)
         case Send (name, message) =>
-          val res = enqueue_message(name, message)
-          require(res)
+          enqueue_message(name, message)
         case Partition (a, b) =>
           events += PartitionEvent((a, b))
           add_to_partition((a, b))
@@ -149,7 +145,7 @@ class PeekScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
-    events += MsgSend(snd, rcv, envelope.message, cell, envelope) 
+    events += MsgSend(snd, rcv, envelope.message) 
     // Drop any messages that crosses a partition.
     if (!((partitioned contains (snd, rcv)) 
          || (partitioned contains (rcv, snd))

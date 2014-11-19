@@ -56,8 +56,9 @@ class Instrumenter {
   }
   
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
-    if (!scheduler.isSystemCommunication(sender, receiver))
+    if (!scheduler.isSystemCommunication(sender, receiver)) {
       tellEnqueue.tell()
+    }
   }
   
   
@@ -204,6 +205,8 @@ class Instrumenter {
     // Record the dispatcher for the current receiver.
     dispatchers(receiver) = dispatcher
 
+    // Regardless of what we do with this message, it is an enqueue
+    tellEnqueue.enqueue()
     // Have we started dispatching messages (i.e., is the loop in after_message_receive
     // running?). If not then dispatch the current message and start the loop.
     if (!started.get) {
@@ -212,8 +215,9 @@ class Instrumenter {
       return false
     }
     // Record that this event was produced
+    // This is somewhat problematic actually. The problem is messages sent after quiescence are
+    // never recorded. This is a bit worrying.
     scheduler.event_produced(cell, envelope)
-    tellEnqueue.enqueue()
 
     
     //println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
