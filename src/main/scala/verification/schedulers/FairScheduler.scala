@@ -47,11 +47,6 @@ class FairScheduler extends Scheduler {
   def start_trace() : Unit = {
   }
 
-  // Start exploration
-  def start {
-    instrumenter.start_dispatch()
-  }
-  
   
   // Figure out what is the next message to schedule.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
@@ -107,6 +102,10 @@ class FairScheduler extends Scheduler {
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     
     pendingEvents(rcv) = msgs += ((cell, envelope))
+    // Start dispatching events
+    if (!instrumenter.started.get) {
+      instrumenter.start_dispatch()
+    }
   }
   
   // Called before we start processing a newly received event
