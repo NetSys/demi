@@ -254,7 +254,7 @@ class ReplayScheduler() extends Scheduler {
       throw new Exception("Divergence")
     } else {
       if (replay.get) {
-        println("Done ")
+        println("Done " + pendingEvents)
         // Tell the calling thread we are done
         traceSem.release
       }

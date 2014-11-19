@@ -79,7 +79,6 @@ class PeekScheduler()
     if (instrumenter.started.get()) { 
       messagesToSend += ((actor, msg))
     } else {
-      events += MsgSend("deadLetters", actor.path.name,  msg)
       actor ! msg
     }
   }
