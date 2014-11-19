@@ -212,6 +212,8 @@ class Instrumenter {
       return false
     }
     // Record that this event was produced
+    // This is somewhat problematic actually. The problem is messages sent after quiescence are
+    // never recorded. This is a bit worrying.
     scheduler.event_produced(cell, envelope)
     tellEnqueue.enqueue()
 
