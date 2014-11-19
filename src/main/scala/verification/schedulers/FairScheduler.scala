@@ -46,6 +46,11 @@ class FairScheduler extends Scheduler {
   // Notification that the system has been reset
   def start_trace() : Unit = {
   }
+
+  // Start exploration
+  def start {
+    instrumenter.start_dispatch()
+  }
   
   
   // Figure out what is the next message to schedule.
