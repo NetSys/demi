@@ -56,16 +56,22 @@ class TellEnqueueSemaphore extends Semaphore(1) with TellEnqueue {
   def tell() {
     tell_count.incrementAndGet()
     reducePermits(1)
+    require(availablePermits() <= 0)
   }
 
   def enqueue() {
     enqueue_count.incrementAndGet()
+    require(availablePermits() <= 0)
     release()
   }
   
   def reset() {
     tell_count.set(0)
     enqueue_count.set(0)
+    // Set available permits to 0
+    drainPermits() 
+    // Add a permit
+    release()
   }
   
   def await() {

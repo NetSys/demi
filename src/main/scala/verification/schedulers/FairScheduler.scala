@@ -24,8 +24,10 @@ class FairScheduler extends Scheduler {
   
   // Is this message a system message
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
-    if (sender == null || receiver == null) return true
-    return isSystemMessage(sender.path.name, receiver.path.name)
+    if (sender == null && receiver == null) return true
+    val senderPath = if (sender != null) sender.path.name else "deadLetters"
+    val receiverPath = if (receiver != null) receiver.path.name else "deadLetters"
+    return isSystemMessage(senderPath, receiverPath)
   }
 
   def isSystemMessage(src: String, dst: String): Boolean = {

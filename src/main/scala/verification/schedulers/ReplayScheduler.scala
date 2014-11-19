@@ -13,6 +13,8 @@ import scala.collection.mutable.HashSet
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.util.control.Breaks._
+
 // Just a very simple, non-null scheduler that supports 
 // partitions and injecting external events.
 class ReplayScheduler() extends Scheduler {
@@ -49,6 +51,8 @@ class ReplayScheduler() extends Scheduler {
   // Semaphore to use when shutting down the scheduler
   private[this] val shutdownSem = new Semaphore(0)
 
+  private[this] var firstMessage = true
+
   // A set of messages to send
   val messagesToSend = new HashSet[(ActorRef, Any)]
   
@@ -84,12 +88,9 @@ class ReplayScheduler() extends Scheduler {
   }
 
   private[this] def enqueue_message(actor: ActorRef, msg: Any) {
-    if (instrumenter.started.get()) { 
-      messagesToSend += ((actor, msg))
-    } else {
-      events += MsgSend("deadLetters", actor.path.name,  msg)
-      actor ! msg
-    }
+    actor ! msg
+    // Wait to make sure all messages are enqueued
+    instrumenter.await_enqueue()
   }
 
   // Given an external event trace, see the events produced
@@ -122,36 +123,42 @@ class ReplayScheduler() extends Scheduler {
   private[this] def advanceTrace() {
     schedSemaphore.acquire
     var loop = true
-    while (loop && traceIdx < trace.size) {
-      trace(traceIdx) match {
-        case SpawnEvent (_, _, name, _) =>
-          events += actorToSpawnEvent(name)
-          unisolate_node(name)
-        case KillEvent (name) =>
-          events += KillEvent(name)
-          isolate_node(name)
-        case PartitionEvent(endpoints) =>
-          events += PartitionEvent(endpoints)
-          add_to_partition(endpoints)
-        case UnPartitionEvent(endpoints) =>
-          events += UnPartitionEvent(endpoints)
-          remove_partition(endpoints)
-        case MsgSend (sender, receiver, message) =>
-          if (sender == "deadLetters") {
-            enqueue_message(receiver, message)
-          } // else make sure message was sent, as a way to ensure that
-            // things are correct
-        case MsgEvent(snd, rcv, msg, _, _) =>
-          loop = false // Let someone else take care of this?
-        case Quiescence => // In some sense this is trivial, quiscence just means no enabled events
-          // not coming from us.
-          loop = false // Start waiting for quiscence
+    breakable {
+      while (loop && traceIdx < trace.size) {
+        trace(traceIdx) match {
+          case SpawnEvent (_, _, name, _) =>
+            events += actorToSpawnEvent(name)
+            unisolate_node(name)
+          case KillEvent (name) =>
+            events += KillEvent(name)
+            isolate_node(name)
+          case PartitionEvent(endpoints) =>
+            events += PartitionEvent(endpoints)
+            add_to_partition(endpoints)
+          case UnPartitionEvent(endpoints) =>
+            events += UnPartitionEvent(endpoints)
+            remove_partition(endpoints)
+          case MsgSend (sender, receiver, message) =>
+            if (sender == "deadLetters") {
+              enqueue_message(receiver, message)
+            } // else make sure message was sent, as a way to ensure that
+              // things are correct
+          case MsgEvent(snd, rcv, msg, _, _) =>
+            if (!firstMessage) {
+              break
+            }
+            firstMessage = false
+          case Quiescence => 
+            // This is just a nop. Do nothing
+            events += Quiescence
+        }
+        traceIdx += 1
       }
-      traceIdx += 1
     }
     schedSemaphore.release
   }
 
+  // Check no unexpected messages are enqueued
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
@@ -173,7 +180,6 @@ class ReplayScheduler() extends Scheduler {
     event match {
       case event : SpawnEvent => 
         if (!(actorNames contains event.name)) {
-          println("Sched knows about actor " + event.name)
           actorQueue += event.name
           actorNames += event.name
           actorToActorRef(event.name) = event.actor
@@ -195,33 +201,58 @@ class ReplayScheduler() extends Scheduler {
     events += MsgEvent(snd, rcv, msg, cell, envelope)
   }
 
+  // TODO: The first message send ever is not queued, and hence leads to a bug.
+  // Solve this someway nice.
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    // Ensure that only one thread is accessing shared scheduler structures
-    schedSemaphore.acquire
-    
-    // Drain message queue 
-    for ((receiver, msg) <- messagesToSend) {
-      receiver ! msg
+    // First get us to kind of a good place
+    advanceTrace
+    if (traceIdx >= trace.size) {
+      // We are done, let us wait for notify_quiescence to notice this
+      None
+    } else {
+      // Ensure that only one thread is accessing shared scheduler structures
+      schedSemaphore.acquire
+      
+      // Pick next message based on trace
+      // Since advanceTrace moves one beyond where it saw a message receive, we
+      // move 
+      val key = trace(traceIdx) match {  
+        case MsgEvent(snd, rcv, msg, _, _) =>
+          (snd, rcv, msg)
+        case _ =>
+         throw new Exception("Replay error") 
+      }
+      // Now that we have found the key advance to the next thing to replay
+      traceIdx += 1
+      val nextMessage = pendingEvents.get(key) match {
+        case Some(queue) =>
+          if (queue.isEmpty) {
+            // Message not enabled
+            pendingEvents.remove(key)
+            None
+          } else {
+            val willRet = queue.dequeue()
+            if (queue.isEmpty) {
+              pendingEvents.remove(key)
+            }
+            Some(willRet)
+          }
+        case None =>
+          // Message not enabled
+          None
+      }
+      schedSemaphore.release
+      nextMessage
     }
-    messagesToSend.clear()
-
-    // Wait to make sure all messages are enqueued
-    instrumenter.await_enqueue()
-
-    // Pick next message based on trace
-
-    // schedule_new_message is reenterant, hence release before calling.
-    schedSemaphore.release
-    None
   }
 
   override def notify_quiescence () {
-    events += Quiescence
     if (traceIdx < trace.size) {
       // If waiting for quiescence.
-      advanceTrace()
+      throw new Exception("Divergence")
     } else {
       if (replay.get) {
+        println("Done ")
         // Tell the calling thread we are done
         traceSem.release
       }
@@ -256,8 +287,10 @@ class ReplayScheduler() extends Scheduler {
   
   // Is this message a system message
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
-    if (sender == null || receiver == null) return true
-    return isSystemMessage(sender.path.name, receiver.path.name)
+    if (sender == null && receiver == null) return true
+    val senderPath = if (sender != null) sender.path.name else "deadLetters"
+    val receiverPath = if (receiver != null) receiver.path.name else "deadLetters"
+    return isSystemMessage(senderPath, receiverPath)
   }
 
   def isSystemMessage(src: String, dst: String): Boolean = {
