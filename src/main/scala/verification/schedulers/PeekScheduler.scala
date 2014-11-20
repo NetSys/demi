@@ -147,6 +147,7 @@ class PeekScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
+    //println("Peek Send " + (snd, rcv, envelope.message))
     events += MsgSend(snd, rcv, envelope.message) 
     // Drop any messages that crosses a partition.
     if (!((partitioned contains (snd, rcv)) 
@@ -177,7 +178,7 @@ class PeekScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    events += MsgEvent(snd, rcv, msg, cell, envelope)
+    events += MsgEvent(snd, rcv, msg)
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
@@ -221,5 +222,12 @@ class PeekScheduler()
   // Notification that the system has been reset
   override def start_trace() : Unit = {
     shutdownSem.release
+  }
+
+  override def before_receive(cell: ActorCell) : Unit = {
+    events += ChangeContext(cell.self.path.name)
+  }
+  override def after_receive(cell: ActorCell) : Unit = {
+    events += ChangeContext("scheduler")
   }
 }

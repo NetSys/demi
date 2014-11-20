@@ -153,8 +153,7 @@ class BasicScheduler extends Scheduler {
   
   def event_consumed(cell: ActorCell, envelope: Envelope) = {
     currentlyConsumed.enqueue(new MsgEvent(
-        envelope.sender.path.name, cell.self.path.name, 
-        envelope.message, cell, envelope))
+        envelope.sender.path.name, cell.self.path.name, envelope.message))
   }
   
   // Record that an event was produced 
@@ -172,7 +171,7 @@ class BasicScheduler extends Scheduler {
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     
     pendingEvents(rcv) = msgs += ((cell, envelope))
-    currentlyProduced.enqueue(new MsgEvent(snd, rcv, envelope.message, cell, envelope))
+    currentlyProduced.enqueue(new MsgEvent(snd, rcv, envelope.message))
     if (!instrumenter.started.get) {
       instrumenter.start_dispatch()
     }

@@ -10,8 +10,7 @@ import java.util.concurrent.Semaphore
 
 abstract class Event
 
-case class MsgEvent(sender: String, receiver: String, msg: Any, 
-               cell: ActorCell, envelope: Envelope) extends Event
+case class MsgEvent(sender: String, receiver: String, msg: Any) extends Event
 
 case class SpawnEvent(parent: String,
     props: Props, name: String, actor: ActorRef) extends Event

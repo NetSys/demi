@@ -19,3 +19,4 @@ final case class KillEvent (actor: String) extends Event
 final case class PartitionEvent (endpoints: (String, String)) extends Event
 final case class UnPartitionEvent (endpoints: (String, String)) extends Event
 final case object Quiescence extends Event 
+final case class ChangeContext (actor: String) extends Event
