@@ -289,10 +289,12 @@ class ReplayScheduler() extends Scheduler {
   // Called before we start processing a newly received event
   def before_receive(cell: ActorCell) {
     currentTime += 1
+    events += ChangeContext(cell.self.path.name)
   }
 
   // Called after receive is done being processed
   def after_receive(cell: ActorCell) {
+    events += ChangeContext("scheduler")
   }
 
   // Is this message a system message
