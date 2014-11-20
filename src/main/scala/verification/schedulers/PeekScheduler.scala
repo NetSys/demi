@@ -178,7 +178,7 @@ class PeekScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    events += MsgEvent(snd, rcv, msg, cell, envelope)
+    events += MsgEvent(snd, rcv, msg)
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {

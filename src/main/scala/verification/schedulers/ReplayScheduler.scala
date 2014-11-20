@@ -148,7 +148,7 @@ class ReplayScheduler() extends Scheduler {
             if (sender == "deadLetters") {
               enqueue_message(receiver, message)
             }
-          case MsgEvent(snd, rcv, msg, _, _) =>
+          case MsgEvent(snd, rcv, msg) =>
             break
           case Quiescence =>
             // This is just a nop. Do nothing
@@ -208,7 +208,7 @@ class ReplayScheduler() extends Scheduler {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    events += MsgEvent(snd, rcv, msg, cell, envelope)
+    events += MsgEvent(snd, rcv, msg)
   }
 
   // TODO: The first message send ever is not queued, and hence leads to a bug.
@@ -227,7 +227,7 @@ class ReplayScheduler() extends Scheduler {
       // Since advanceTrace moves one beyond where it saw a message receive, we
       // move
       val key = trace(traceIdx) match {
-        case MsgEvent(snd, rcv, msg, _, _) =>
+        case MsgEvent(snd, rcv, msg) =>
           (snd, rcv, msg)
         case _ =>
          throw new Exception("Replay error")
