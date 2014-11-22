@@ -98,10 +98,14 @@ class ReplayScheduler() extends Scheduler {
   }
 
   // Given an external event trace, see the events produced
-  def replay (_trace: Array[Event]) : Queue[Event]  = {
+  def replay (_trace: Array[Event],
+              _props: Map[String, Props]
+              ) : Queue[Event]  = {
     trace = _trace
     events = new Queue[Event]()
     traceIdx = 0
+    val actors = HashSet[String]()
+    actors += "deadLetters"
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- trace) {
@@ -110,8 +114,19 @@ class ReplayScheduler() extends Scheduler {
           // Just start and isolate all actors we might eventually care about
           instrumenter.actorSystem.actorOf(props, name)
           isolate_node(name)
+          actors += name
         case MsgSend (snd, rcv, msg) =>
           allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) + 1
+          if (!(actors contains snd)) {
+            instrumenter.actorSystem.actorOf(_props(snd), snd)
+            isolate_node(snd)
+            actors += snd
+          }
+          if (!(actors contains rcv)) {
+            instrumenter.actorSystem.actorOf(_props(rcv), rcv)
+            isolate_node(rcv)
+            actors += rcv
+          }
         case _ =>
           None
       }
