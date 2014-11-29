@@ -178,6 +178,7 @@ class PeekScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    events += ChangeContext(cell.self.path.name)
     events += MsgEvent(snd, rcv, msg)
   }
 
@@ -225,7 +226,6 @@ class PeekScheduler()
   }
 
   override def before_receive(cell: ActorCell) : Unit = {
-    events += ChangeContext(cell.self.path.name)
   }
   override def after_receive(cell: ActorCell) : Unit = {
     events += ChangeContext("scheduler")
