@@ -13,14 +13,14 @@ import scala.collection.mutable.HashSet
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
-// Just a very simple, non-null scheduler that supports 
+// Just a very simple, non-null scheduler that supports
 // partitions and injecting external events.
 class PeekScheduler()
     extends FairScheduler {
 
   // Pairs of actors that cannot communicate
   val partitioned = new HashSet[(String, String)]
-  
+
   // An actor that is unreachable
   val inaccessible = new HashSet[String]
 
@@ -30,9 +30,9 @@ class PeekScheduler()
 
   private[this] var trace: Array[ExternalEvent] = Array()
   private[this] var traceIdx: Int = 0
-  var events: Queue[Event] = new Queue[Event]() 
-  
-  // Semaphore to wait for trace replay to be done 
+  var events: Queue[Event] = new Queue[Event]()
+
+  // Semaphore to wait for trace replay to be done
   private[this] val traceSem = new Semaphore(0)
 
   // Are we in peek or is someone using this scheduler in some strange way.
@@ -43,7 +43,7 @@ class PeekScheduler()
 
   // A set of messages to send
   val messagesToSend = new HashSet[(ActorRef, Any)]
-  
+
   // Ensure exactly one thread in the scheduler at a time
   private[this] val schedSemaphore = new Semaphore(1)
 
@@ -76,7 +76,7 @@ class PeekScheduler()
   }
 
   private[this] def enqueue_message(actor: ActorRef, msg: Any) {
-    if (instrumenter.started.get()) { 
+    if (instrumenter.started.get()) {
       messagesToSend += ((actor, msg))
     } else {
       actor ! msg
@@ -88,11 +88,11 @@ class PeekScheduler()
     trace = _trace
     events = new Queue[Event]()
     traceIdx = 0
-    // We begin by starting all actors at the beginning of time, just mark them as 
+    // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- trace) {
       t match {
-        case Start (prop, name) => 
+        case Start (prop, name) =>
           // Just start and isolate all actors we might eventually care about
           instrumenter.actorSystem.actorOf(prop, name)
           isolate_node(name)
@@ -113,7 +113,7 @@ class PeekScheduler()
   // Advance the trace
   private[this] def advanceTrace() {
     // Make sure the actual scheduler makes no progress until we have injected all
-    // events. 
+    // events.
     schedSemaphore.acquire
     var loop = true
     while (loop && traceIdx < trace.size) {
@@ -138,7 +138,7 @@ class PeekScheduler()
       traceIdx += 1
     }
     schedSemaphore.release
-    // Since this is always called during quiescence, once we have processed all 
+    // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
     instrumenter.start_dispatch()
   }
@@ -148,11 +148,11 @@ class PeekScheduler()
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     //println("Peek Send " + (snd, rcv, envelope.message))
-    events += MsgSend(snd, rcv, envelope.message) 
+    events += MsgSend(snd, rcv, envelope.message)
     // Drop any messages that crosses a partition.
-    if (!((partitioned contains (snd, rcv)) 
+    if (!((partitioned contains (snd, rcv))
          || (partitioned contains (rcv, snd))
-         || (inaccessible contains rcv) 
+         || (inaccessible contains rcv)
          || (inaccessible contains snd))) {
       pendingEvents(rcv) = msgs += ((cell, envelope))
     }
@@ -161,8 +161,8 @@ class PeekScheduler()
   // Record a mapping from actor names to actor refs
   override def event_produced(event: Event) = {
     super.event_produced(event)
-    event match { 
-      case event : SpawnEvent => 
+    event match {
+      case event : SpawnEvent =>
         actorToActorRef(event.name) = event.actor
     }
   }
@@ -172,7 +172,7 @@ class PeekScheduler()
     val spawn_event = event.asInstanceOf[SpawnEvent]
     actorToSpawnEvent(spawn_event.name) = spawn_event
   }
-  
+
   // Record a message send event
   override def event_consumed(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
@@ -184,8 +184,8 @@ class PeekScheduler()
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     // Ensure that only one thread is accessing shared scheduler structures
     schedSemaphore.acquire
-    
-    // Drain message queue 
+
+    // Drain message queue
     for ((receiver, msg) <- messagesToSend) {
       receiver ! msg
     }
@@ -218,7 +218,7 @@ class PeekScheduler()
     instrumenter.restart_system
     shutdownSem.acquire
   }
-  
+
   // Notification that the system has been reset
   override def start_trace() : Unit = {
     shutdownSem.release

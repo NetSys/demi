@@ -23,18 +23,18 @@ trait TellEnqueue {
 }
 
 class TellEnqueueBusyWait extends TellEnqueue {
-  
+
   var enqueue_count = new AtomicInteger
   var tell_count = new AtomicInteger
-  
+
   def tell() {
     tell_count.incrementAndGet()
   }
-  
+
   def enqueue() {
     enqueue_count.incrementAndGet()
   }
-  
+
   def reset() {
     tell_count.set(0)
     enqueue_count.set(0)
@@ -43,15 +43,15 @@ class TellEnqueueBusyWait extends TellEnqueue {
   def await () {
     while (tell_count.get != enqueue_count.get) {}
   }
-  
+
 }
-    
+
 
 class TellEnqueueSemaphore extends Semaphore(1) with TellEnqueue {
-  
+
   var enqueue_count = new AtomicInteger
   var tell_count = new AtomicInteger
-  
+
   def tell() {
     tell_count.incrementAndGet()
     reducePermits(1)
@@ -63,16 +63,16 @@ class TellEnqueueSemaphore extends Semaphore(1) with TellEnqueue {
     require(availablePermits() <= 0)
     release()
   }
-  
+
   def reset() {
     tell_count.set(0)
     enqueue_count.set(0)
     // Set available permits to 0
-    drainPermits() 
+    drainPermits()
     // Add a permit
     release()
   }
-  
+
   def await() {
     acquire
     release
