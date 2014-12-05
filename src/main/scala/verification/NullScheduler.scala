@@ -21,25 +21,25 @@ import scala.collection.generic.GenericTraversableTemplate
 
 // A basic scheduler
 class NullScheduler extends Scheduler {
-  
+
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
     return true
   }
-  
+
   def isSystemMessage(src: String, dst: String): Boolean = {
     return true
   }
-  
+
   def start_trace() : Unit = {}
-  
+
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     return None
   }
-  
+
   def next_event() : Event = {
     throw new Exception("no previously consumed events")
   }
-  
+
   def event_consumed(event: Event) = {}
   def event_consumed(cell: ActorCell, envelope: Envelope) = {}
   def event_produced(event: Event) = {}

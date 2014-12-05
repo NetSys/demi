@@ -26,23 +26,23 @@ import scala.util.control.Breaks
 class Instrumenter {
   var scheduler : Scheduler = new NullScheduler
   var tellEnqueue : TellEnqueue = new TellEnqueueSemaphore
-  
+
   val dispatchers = new HashMap[ActorRef, MessageDispatcher]
-  
-  val allowedEvents = new HashSet[(ActorCell, Envelope)]  
-  
+
+  val allowedEvents = new HashSet[(ActorCell, Envelope)]
+
   val seenActors = new HashSet[(ActorSystem, Any)]
   val actorMappings = new HashMap[String, ActorRef]
-  
+
   // Track the executing context (i.e., source of events)
   var currentActor = ""
   var inActor = false
-  var counter = 0   
+  var counter = 0
   var started = new AtomicBoolean(false);
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
-  private[this] var _actorSystem : ActorSystem = null 
+  private[this] var _actorSystem : ActorSystem = null
   def actorSystem () : ActorSystem = {
     if (_actorSystem == null) {
       _actorSystem = ActorSystem("new-system-" + counter)
@@ -50,22 +50,22 @@ class Instrumenter {
     }
     _actorSystem
   }
- 
+
   def await_enqueue() {
     tellEnqueue.await()
   }
-  
+
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
     if (!scheduler.isSystemCommunication(sender, receiver)) {
       tellEnqueue.tell()
     }
   }
-  
-  
+
+
   // Callbacks for new actors being created
-  def new_actor(system: ActorSystem, 
+  def new_actor(system: ActorSystem,
       props: Props, name: String, actor: ActorRef) : Unit = {
-    
+
     val event = new SpawnEvent(currentActor, props, name, actor)
     scheduler.event_produced(event : SpawnEvent)
     scheduler.event_consumed(event)
@@ -73,19 +73,19 @@ class Instrumenter {
     if (!started.get) {
       seenActors += ((system, (actor, props, name)))
     }
-    
+
     actorMappings(name) = actor
-      
+
     println("System has created a new actor: " + actor.path.name)
   }
-  
-  
-  def new_actor(system: ActorSystem, 
+
+
+  def new_actor(system: ActorSystem,
       props: Props, actor: ActorRef) : Unit = {
     new_actor(system, props, actor.path.name, actor)
   }
-  
-  
+
+
   // Restart the system:
   //  - Create a new actor system
   //  - Inform the scheduler that things have been reset
@@ -99,7 +99,7 @@ class Instrumenter {
     counter += 1
     println("Started a new actor system.")
     // This is safe, we have just started a new actor system (after killing all
-    // the old ones we knew about), there should be no actors running and no 
+    // the old ones we knew about), there should be no actors running and no
     // dispatch calls outstanding. That said, it is really important that we not
     // have other sources of ActorSystems etc.
     started.set(false)
@@ -110,11 +110,11 @@ class Instrumenter {
     scheduler.start_trace()
     // Rely on scheduler to do the right thing from here on out
   }
-  
-  
+
+
   // Signal to the instrumenter that the scheduler wants to restart the system
   def restart_system() = {
-    
+
     println("Restarting system")
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
     for ((system, args) <- seenActors) {
@@ -131,28 +131,28 @@ class Instrumenter {
         println("Shut down the actor system. " + argQueue.size)
     }
   }
-  
-  
+
+
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
-    
+
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
-   
+
     scheduler.before_receive(cell)
     currentActor = cell.self.path.name
     inActor = true
   }
-  
-  
+
+
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell) {
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
 
     tellEnqueue.await()
-    
+
     inActor = false
     currentActor = ""
-    scheduler.after_receive(cell)          
+    scheduler.after_receive(cell)
     scheduler.schedule_new_message() match {
       case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
       case None =>
@@ -167,54 +167,54 @@ class Instrumenter {
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    
-    allowedEvents += ((cell, envelope) : (ActorCell, Envelope))        
+
+    allowedEvents += ((cell, envelope) : (ActorCell, Envelope))
 
     val dispatcher = dispatchers.get(cell.self) match {
       case Some(value) => value
       case None => throw new Exception("internal error")
     }
-    
+
     scheduler.event_consumed(cell, envelope)
     dispatcher.dispatch(cell, envelope)
   }
-  
-  
+
+
   // Called when dispatch is called.
-  def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
+  def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell,
       envelope: Envelope): Boolean = {
     val value: (ActorCell, Envelope) = (cell, envelope)
     val receiver = cell.self
     val snd = envelope.sender.path.name
     val rcv = receiver.path.name
-    
+
     // If this is a system message just let it through.
     if (scheduler.isSystemMessage(snd, rcv)) { return true }
-    
+
     // If this is not a system message then check if we have already recorded
-    // this event. Recorded => we are injecting this event (as opposed to some 
+    // this event. Recorded => we are injecting this event (as opposed to some
     // actor doing it in which case we need to report it)
     if (allowedEvents contains value) {
       allowedEvents.remove(value) match {
-        case true => 
+        case true =>
           return true
         case false => throw new Exception("internal error")
       }
     }
-    
+
     // Record the dispatcher for the current receiver.
     dispatchers(receiver) = dispatcher
 
-    // Record that this event was produced. The scheduler is responsible for 
+    // Record that this event was produced. The scheduler is responsible for
     // kick starting processing.
     scheduler.event_produced(cell, envelope)
     tellEnqueue.enqueue()
     //println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
     return false
   }
-  
+
   // Start scheduling and dispatching messages. This makes the scheduler responsible for
-  // actually kickstarting things. 
+  // actually kickstarting things.
   def start_dispatch() {
     started.set(true)
     scheduler.schedule_new_message() match {
