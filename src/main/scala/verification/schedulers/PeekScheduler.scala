@@ -13,8 +13,6 @@ import scala.collection.mutable.HashSet
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
-<<<<<<< HEAD
-
 // A fake actor, used as a placeholder to which failure detector requests can be sent.
 class FailureDetector () extends Actor {
   def receive = {
