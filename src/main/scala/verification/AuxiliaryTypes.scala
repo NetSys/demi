@@ -15,6 +15,25 @@ case class MsgEvent(sender: String, receiver: String, msg: Any) extends Event
 case class SpawnEvent(parent: String,
     props: Props, name: String, actor: ActorRef) extends Event
 
+
+// Base class for failure detector messages
+abstract class FDMessage
+
+// Failure detector node information
+case class FailureDetectorOnline(fdNode: String) extends FDMessage
+
+// A node is unreachable, either due to node failure or partition.
+case class NodeUnreachable(actor: String) extends FDMessage
+
+// A new node is now reachable, either because a partition healed or an actor spawned.
+case class NodeReachable(actor: String) extends FDMessage
+
+// Query the failure detector for currently reachable actors.
+case object QueryReachableGroup extends FDMessage
+
+// Response to failure detector queries.
+case class ReachableGroup(actors: Array[String]) extends FDMessage
+
 trait TellEnqueue {
   def tell()
   def enqueue()
@@ -78,3 +97,5 @@ class TellEnqueueSemaphore extends Semaphore(1) with TellEnqueue {
     release
   }
 }
+
+
