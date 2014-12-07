@@ -25,24 +25,24 @@ import scala.concurrent.impl.CallbackRunnable;
 privileged public aspect WeaveActor {
 
   Instrumenter inst = Instrumenter.apply();
-
-  pointcut enqueueOperation(MessageQueue me, ActorRef receiver, Envelope handle):
+    
+  pointcut enqueueOperation(MessageQueue me, ActorRef receiver, Envelope handle): 
   execution(public * akka.dispatch.MessageQueue.enqueue(ActorRef, Envelope)) &&
   args(receiver, handle) && this(me);
-
+  
   Object around(MessageQueue me, ActorRef receiver, Envelope handle):
   enqueueOperation(me, receiver, handle) {
 	return proceed(me, receiver, handle);
   }
-
-
-
+  
+  
+  
   before(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
 	inst.beforeMessageReceive(me);
   }
-
+  
   after(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
@@ -51,7 +51,7 @@ privileged public aspect WeaveActor {
 
 
 
-  pointcut dispatchOperation(MessageDispatcher me, ActorCell receiver, Envelope handle):
+  pointcut dispatchOperation(MessageDispatcher me, ActorCell receiver, Envelope handle): 
   execution(* akka.dispatch.MessageDispatcher.dispatch(..)) &&
   args(receiver, handle, ..) && this(me);
 
@@ -62,14 +62,14 @@ privileged public aspect WeaveActor {
    	else
    		return null;
   }
-
-
+  
+  
   after(ActorSystem me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props)) &&
   args(props) && this(me) {
   	inst.new_actor(me, props, actor);
   }
-
+  
   after(ActorSystem me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props, String)) &&
   args(props, name) && this(me) {
@@ -77,13 +77,13 @@ privileged public aspect WeaveActor {
   }
 
 
-
+  
   after(ActorContext me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props)) &&
   args(props) && this(me) {
   	inst.new_actor(me.system(), props, actor);
   }
-
+  
   after(ActorContext me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props, String)) &&
   args(props, name) && this(me) {
@@ -96,7 +96,7 @@ privileged public aspect WeaveActor {
   args(msg, sender) && this(me) {
   	inst.tell(me, msg, sender);
   }
-
+  
   before(ActorRef me, Object msg, ActorRef sender):
   execution(* akka.actor.ActorRef.tell(Object, ActorRef)) &&
   args(msg, sender, ..) && this(me) {
