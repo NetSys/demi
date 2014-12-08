@@ -47,9 +47,9 @@ class PeekScheduler()
 
   private[this] var trace: Array[ExternalEvent] = Array()
   private[this] var traceIdx: Int = 0
-  var events: Queue[Event] = new Queue[Event]()
-
-  // Semaphore to wait for trace replay to be done
+  var events: Queue[Event] = new Queue[Event]() 
+  
+  // Semaphore to wait for trace replay to be done 
   private[this] val traceSem = new Semaphore(0)
 
   // Are we in peek or is someone using this scheduler in some strange way.
@@ -165,7 +165,7 @@ class PeekScheduler()
   // Advance the trace
   private[this] def advanceTrace() {
     // Make sure the actual scheduler makes no progress until we have injected all
-    // events.
+    // events. 
     schedSemaphore.acquire
     started.set(true)
     var loop = true
@@ -204,7 +204,7 @@ class PeekScheduler()
       traceIdx += 1
     }
     schedSemaphore.release
-    // Since this is always called during quiescence, once we have processed all
+    // Since this is always called during quiescence, once we have processed all 
     // events, let us start dispatching
     instrumenter.start_dispatch()
   }
@@ -226,7 +226,7 @@ class PeekScheduler()
       }
     } else if (!((partitioned contains (snd, rcv)) // Drop any messages that crosses a partition.
          || (partitioned contains (rcv, snd))
-         || (inaccessible contains rcv)
+         || (inaccessible contains rcv) 
          || (inaccessible contains snd))) {
       pendingEvents(rcv) = msgs += ((cell, envelope))
     }
@@ -247,7 +247,7 @@ class PeekScheduler()
     val spawn_event = event.asInstanceOf[SpawnEvent]
     actorToSpawnEvent(spawn_event.name) = spawn_event
   }
-
+  
   // Record a message send event
   override def event_consumed(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
@@ -303,7 +303,7 @@ class PeekScheduler()
     instrumenter.restart_system
     shutdownSem.acquire
   }
-
+  
   // Notification that the system has been reset
   override def start_trace() : Unit = {
     shutdownSem.release
