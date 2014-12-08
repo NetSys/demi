@@ -24,8 +24,10 @@ class FairScheduler extends Scheduler {
   
   // Is this message a system message
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
-    if (sender == null || receiver == null) return true
-    return isSystemMessage(sender.path.name, receiver.path.name)
+    if (sender == null && receiver == null) return true
+    val senderPath = if (sender != null) sender.path.name else "deadLetters"
+    val receiverPath = if (receiver != null) receiver.path.name else "deadLetters"
+    return isSystemMessage(senderPath, receiverPath)
   }
 
   def isSystemMessage(src: String, dst: String): Boolean = {
@@ -44,7 +46,7 @@ class FairScheduler extends Scheduler {
   // Notification that the system has been reset
   def start_trace() : Unit = {
   }
-  
+
   
   // Figure out what is the next message to schedule.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
@@ -100,6 +102,10 @@ class FairScheduler extends Scheduler {
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     
     pendingEvents(rcv) = msgs += ((cell, envelope))
+    // Start dispatching events
+    if (!instrumenter.started.get) {
+      instrumenter.start_dispatch()
+    }
   }
   
   // Called before we start processing a newly received event

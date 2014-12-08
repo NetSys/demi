@@ -40,7 +40,6 @@ class Instrumenter {
   var counter = 0   
   var started = new AtomicBoolean(false);
 
-  
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
   private[this] var _actorSystem : ActorSystem = null 
@@ -51,12 +50,10 @@ class Instrumenter {
     }
     _actorSystem
   }
-  
  
   def await_enqueue() {
     tellEnqueue.await()
   }
-  
   
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
     if (!scheduler.isSystemCommunication(sender, receiver)) {
@@ -163,8 +160,8 @@ class Instrumenter {
         started.set(false)
         scheduler.notify_quiescence()
     }
+
   }
-  
 
   // Dispatch a message, i.e., deliver it to the intended recipient
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
@@ -199,7 +196,8 @@ class Instrumenter {
     // actor doing it in which case we need to report it)
     if (allowedEvents contains value) {
       allowedEvents.remove(value) match {
-        case true => return true
+        case true => 
+          return true
         case false => throw new Exception("internal error")
       }
     }
@@ -214,7 +212,6 @@ class Instrumenter {
     //println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
     return false
   }
-  
   
   // Start scheduling and dispatching messages. This makes the scheduler responsible for
   // actually kickstarting things. 

@@ -1,6 +1,7 @@
 package akka.dispatch.verification
 
 import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
+import akka.dispatch.{Envelope}
 
 // External events used to specify a trace
 abstract class ExternalEvent
@@ -12,7 +13,10 @@ final case class Partition (a: String, b: String) extends ExternalEvent
 final case class UnPartition (a: String, b: String) extends ExternalEvent
 
 // Internal events in addition to those defined in ../AuxilaryTypes
+final case class MsgSend (sender: String, 
+                receiver: String, msg: Any) extends Event
 final case class KillEvent (actor: String) extends Event 
 final case class PartitionEvent (endpoints: (String, String)) extends Event
 final case class UnPartitionEvent (endpoints: (String, String)) extends Event
 final case object Quiescence extends Event 
+final case class ChangeContext (actor: String) extends Event
