@@ -29,7 +29,7 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Logger
 
 
-// A basic scheduler
+// DPOR scheduler.
 class DPOR extends Scheduler with LazyLogging {
   
   var instrumenter = Instrumenter
@@ -582,6 +582,9 @@ class DPOR extends Scheduler with LazyLogging {
     
     // A variable used to figure out if the replay diverged.
     invariant = Queue(e1, e2)
+    
+    // Remove the backtrack branch, since we're about explore it now.
+    backTrack -= maxIndex
     
     // Return all events up to the backtrack index we're interested in
     // and slap on it a new set of events that need to be replayed in
