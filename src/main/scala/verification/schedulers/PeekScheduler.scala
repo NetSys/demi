@@ -60,7 +60,10 @@ class PeekScheduler()
 
   // A set of messages to send
   val messagesToSend = new HashSet[(ActorRef, Any)]
-  
+
+  // Are we expecting message receives
+  private[this] val started = new AtomicBoolean(false)
+
   // Ensure exactly one thread in the scheduler at a time
   private[this] val schedSemaphore = new Semaphore(1)
 
@@ -164,6 +167,7 @@ class PeekScheduler()
     // Make sure the actual scheduler makes no progress until we have injected all
     // events. 
     schedSemaphore.acquire
+    started.set(true)
     var loop = true
     while (loop && traceIdx < trace.size) {
       trace(traceIdx) match {
@@ -249,6 +253,7 @@ class PeekScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    assert(started.get)
     events += ChangeContext(cell.self.path.name)
     events += MsgEvent(snd, rcv, msg)
   }
@@ -256,6 +261,7 @@ class PeekScheduler()
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     // Ensure that only one thread is accessing shared scheduler structures
     schedSemaphore.acquire
+    assert(started.get)
     
     // Send all waiting fd responses
     for (receiver <- pendingFDRequests) {
@@ -277,6 +283,8 @@ class PeekScheduler()
   }
 
   override def notify_quiescence () {
+    assert(started.get)
+    started.set(false)
     events += Quiescence
     if (traceIdx < trace.size) {
       // If waiting for quiescence.
