@@ -12,6 +12,11 @@ object InterpositionBuild extends Build {
       version := "0.1",
       scalaVersion := "2.11.2",
       libraryDependencies += "com.typesafe.akka" %% "akka-actor" % "2.3.6",
+      libraryDependencies += "com.assembla.scala-incubator" %% "graph-core" % "1.9.0",
+      libraryDependencies += "com.assembla.scala-incubator" %% "graph-dot" % "1.9.0",
+      libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging" % "3.1.0",
+      libraryDependencies += "ch.qos.logback" % "logback-classic" % "1.1.2",
+
 
       // add akka-actor as an aspectj input (find it in the update report)
       inputs in Aspectj <++= update map { report =>
