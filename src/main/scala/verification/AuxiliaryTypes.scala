@@ -8,7 +8,6 @@ import java.util.concurrent.Semaphore
 
 
 object IDGenerator {
-  var obj:Instrumenter = null
   var uniqueId = new AtomicInteger
 
   def get() : Integer = {
