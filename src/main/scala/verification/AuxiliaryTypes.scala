@@ -7,13 +7,24 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Semaphore
 
 
+object IDGenerator {
+  var obj:Instrumenter = null
+  var uniqueId = new AtomicInteger
+
+  def get() : Integer = {
+    return uniqueId.incrementAndGet()
+  }
+}
 
 abstract class Event
 
-case class MsgEvent(sender: String, receiver: String, msg: Any) extends Event
+case class MsgEvent(sender: String, receiver: String, msg: Any, 
+    var id: Int = IDGenerator.get()) extends Event
 
 case class SpawnEvent(parent: String,
-    props: Props, name: String, actor: ActorRef) extends Event
+    props: Props, name: String, actor: ActorRef, 
+    id: Int = IDGenerator.get()) extends Event
+
 
 
 // Base class for failure detector messages
