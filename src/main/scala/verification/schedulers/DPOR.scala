@@ -38,7 +38,6 @@ class DPOR extends Scheduler with LazyLogging {
   var currentTime = 0
   var interleavingCounter = 0
   
-  
   val producedEvents = new Queue[Event]
   val consumedEvents = new Queue[Event]
   
@@ -103,7 +102,7 @@ class DPOR extends Scheduler with LazyLogging {
   
   
   // When executing a trace, find the next trace event.
-  def mutable_trace_iterator( trace: Queue[Unique]) : Option[Unique] =
+  def mutableTraceIterator( trace: Queue[Unique]) : Option[Unique] =
   trace.isEmpty match {
     case true => return None
     case _ => return Some(trace.dequeue)
@@ -113,7 +112,7 @@ class DPOR extends Scheduler with LazyLogging {
 
   // Get next message event from the trace.
   def get_next_trace_message() : Option[Unique] =
-  mutable_trace_iterator(nextTrace) match {
+  mutableTraceIterator(nextTrace) match {
     case some @ Some(Unique(m : MsgEvent, id)) => some 
     case some @ Some(Unique(s: SpawnEvent, id)) => get_next_trace_message()
     case _ => None
@@ -126,16 +125,15 @@ class DPOR extends Scheduler with LazyLogging {
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     
     // Filter messages belonging to a particular actor.
-    def is_the_same(u1: Unique, other: (Unique, ActorCell, Envelope)) : Boolean = {
-      (u1, other) match {
-        case (Unique(MsgEvent(snd1, rcv1, msg1), id1), 
-              (Unique(MsgEvent(snd2, rcv2, msg2), id2) , cell, env) ) =>
-          if (id1 == 0) rcv1 == cell.self.path.name
-          else rcv1 == cell.self.path.name && id1 == id2
-        case _ => throw new Exception("not a message event")
-      }
-      
+    def is_the_same(u1: Unique, other: (Unique, ActorCell, Envelope)) : 
+    Boolean = (u1, other) match {
+      case (Unique(MsgEvent(snd1, rcv1, msg1), id1), 
+            (Unique(MsgEvent(snd2, rcv2, msg2), id2) , cell, env) ) =>
+        if (id1 == 0) rcv1 == cell.self.path.name
+        else rcv1 == cell.self.path.name && id1 == id2
+      case _ => throw new Exception("not a message event")
     }
+
 
     // Get from the current set of pending events.
     def get_pending_event(): Option[(Unique, ActorCell, Envelope)] = {
@@ -152,8 +150,8 @@ class DPOR extends Scheduler with LazyLogging {
 
           } else {
             Some(queue.dequeue())
-            
           }
+          
         case None => None
       }
     }
@@ -179,14 +177,11 @@ class DPOR extends Scheduler with LazyLogging {
       
       // There is a pending event that matches a message in our trace.
       // We call this a convergent state.
-      case Some((fuck @ Unique(MsgEvent(snd, rcv, msg), id), c, e)) =>
-
+      case Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
         logger.trace( Console.GREEN + "Now playing: " +
             "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
-
-        Some((fuck, c, e))
-
-
+        Some((u, cell, env))
+        
       // We call this a divergent state.
       case None => get_pending_event()
       
@@ -201,9 +196,8 @@ class DPOR extends Scheduler with LazyLogging {
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
         
         invariant.headOption match {
-          case Some(Unique(MsgEvent(_, _, _), invId)) 
-          if (invId == id) => 
-            logger.trace("Replaying message event " + invId)
+          case Some(Unique(m : MsgEvent, id)) =>
+            logger.trace("Replaying message event " + id)
             invariant.dequeue()
           case _ =>
         }
@@ -221,29 +215,15 @@ class DPOR extends Scheduler with LazyLogging {
   
   
   // Get next event
-  def next_event() : Event = {
-    
-    mutable_trace_iterator(nextTrace) match {
-      case Some(Unique(e, id)) =>e
-      case None => throw new Exception("no previously consumed events")
-    }
+  def next_event() : Event = mutableTraceIterator(nextTrace) match {
+    case Some(Unique(e, id)) => e
+    case None => throw new Exception("no previously consumed events")
   }
-  
-  // Get next event
-  def next_event2() : Unique = {
-    mutable_trace_iterator(nextTrace) match {
-      case Some(u @ Unique(e, id)) =>
-        println("NEXT EVENT2 " + u)
-        u
-      case None => throw new Exception("no previously consumed events")
-    }
-  }
-  
 
+  
   // Record that an event was consumed
-  def event_consumed(event: Event) = { 
-    consumedEvents.enqueue( event )
-  }
+  def event_consumed(event: Event) = 
+    consumedEvents.enqueue(event)
   
   
   def event_consumed(cell: ActorCell, envelope: Envelope) = {
@@ -272,64 +252,42 @@ class DPOR extends Scheduler with LazyLogging {
     
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    
     val msg = new MsgEvent(snd, rcv, envelope.message)
-    val msgs = pendingEvents.getOrElse(rcv, new Queue[(Unique, ActorCell, Envelope)])
     
     val parent = parentEvent match {
       case u @ Unique(m: MsgEvent, id) => u
       case _ => throw new Exception("parent event not a message")
     }
 
-    
-    val parentMap = depMap.get(parent) match {
-      case Some(x) => x
-      case None => throw new Exception("no such parent")
-    }
-    
-    val ins = depGraph.get(parent).outNeighbors
-    //println(depGraph.get(parent).inNeighbors)
-    //println(depGraph.get(parent).outNeighbors)
-    //println( ins.find { x => x.value.event == msg } )
-    
-    //println("current -> " + msg)
-    //println("parent -> " + parent)
-    //for (x <- parentMap) {
-    //  println(x)
-    //}
-    
-    val realMsg = parentMap.get(msg) match {
+    val inNeighs = depGraph.get(parent).inNeighbors
+    inNeighs.find { x => x.value.event == msg } match {
       
-      case Some(x @ Unique(MsgEvent(snd, rcv, msg), id)) => x
+      case Some(x) => return x.value
       case None =>
         val newMsg = Unique( MsgEvent(msg.sender, msg.receiver, msg.msg) )
-        
         logger.trace(
             Console.YELLOW + "Not seen: " + newMsg.id + 
             " (" + msg.sender + " -> " + msg.receiver + ") " + Console.RESET)
-            
-        depMap(newMsg) = new HashMap[Event, Unique]
-        parentMap(msg) = newMsg
-        newMsg
+        return newMsg
       case _ => throw new Exception("wrong type")
     }
     
-    pendingEvents(rcv) = msgs += ((realMsg, cell, envelope))
-    return realMsg
   }
   
   
   
   def event_produced(cell: ActorCell, envelope: Envelope) = {
 
-    val unique @ Unique(event : MsgEvent , id) = getMessage(cell, envelope)
+    val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
+    val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
+    pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
     
     logger.trace(Console.BLUE + "New event: " +
-        "(" + event.sender + " -> " + event.receiver + ") " +
+        "(" + msg.sender + " -> " + msg.receiver + ") " +
         id + Console.RESET)
     
     depGraph.add(unique)
-    producedEvents.enqueue( event )
+    producedEvents.enqueue( msg )
 
     depGraph.addEdge(unique, parentEvent)(DiEdge)
     
