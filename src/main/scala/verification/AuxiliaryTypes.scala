@@ -15,14 +15,19 @@ object IDGenerator {
   }
 }
 
+       
+case class Unique(
+  val event : Event,
+  var id : Int = IDGenerator.get()
+)
+
 abstract class Event
 
-case class MsgEvent(sender: String, receiver: String, msg: Any, 
-    var id: Int = IDGenerator.get()) extends Event
+case class MsgEvent(
+    sender: String, receiver: String, msg: Any) extends Event
 
-case class SpawnEvent(parent: String,
-    props: Props, name: String, actor: ActorRef, 
-    id: Int = IDGenerator.get()) extends Event
+case class SpawnEvent(
+    parent: String, props: Props, name: String, actor: ActorRef) extends Event
 
 
 
