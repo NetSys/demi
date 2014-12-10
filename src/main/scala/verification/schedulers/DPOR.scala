@@ -45,9 +45,7 @@ class DPOR extends Scheduler with LazyLogging {
   val actorNames = new HashSet[String]
  
   val depGraph = Graph[Unique, DiEdge]()
-  var depMap = new HashMap[Unique, HashMap[Event, Unique]]
   
-  //val backTrack = new ArraySeq[ ((Event, Event), List[Event]) ](100)
   val backTrack = new HashMap[Int, ((Unique, Unique), List[Unique]) ] 
   val freezeSet = new HashSet[Integer]
   val alreadyExplored = new HashSet[(Unique, Unique)]
@@ -61,7 +59,6 @@ class DPOR extends Scheduler with LazyLogging {
   def getRootEvent : Unique = {
     var root = Unique(MsgEvent("null", "null", null), 0)
     depGraph.add(root)
-    depMap.getOrElseUpdate(root, new HashMap[Event, Unique])
     return root
   }
   
@@ -271,7 +268,7 @@ class DPOR extends Scheduler with LazyLogging {
         return newMsg
       case _ => throw new Exception("wrong type")
     }
-    
+      
   }
   
   
