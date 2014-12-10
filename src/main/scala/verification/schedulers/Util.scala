@@ -30,11 +30,11 @@ import scalax.collection.edge.LDiEdge,
 object Util {
     
   
-  def queueStr(queue: Queue[(Event, ActorCell, Envelope)]) : String = {
+  def queueStr(queue: Queue[(Unique, ActorCell, Envelope)]) : String = {
     var str = "Queue content: "
     
     for((item, _ , _) <- queue) item match {
-      case m : MsgEvent => str += m.id + " "
+      case Unique(m : MsgEvent, id) => str += id + " "
     }
     
     return str
@@ -42,11 +42,11 @@ object Util {
     
   
   
-  def traceStr(events : Queue[Event]) : String = {
+  def traceStr(events : Queue[Unique]) : String = {
     var str = ""
     for (item <- events) {
       item match {
-        case m : MsgEvent => str += m.id + " " 
+        case Unique(m : MsgEvent, id) => str += id + " " 
         case _ =>
       }
     }
@@ -56,32 +56,32 @@ object Util {
   
   
     
-  def get_dot(g: Graph[Event, DiEdge]) {
+  def get_dot(g: Graph[Unique, DiEdge]) {
     
     val root = DotRootGraph(
         directed = true,
         id = Some("DPOR"))
 
-    def nodeStr(event: Event) : String = {
+    def nodeStr(event: Unique) : String = {
       event.value match {
-        case msg : MsgEvent => msg.receiver + " (" + msg.id.toString() + ")" 
-        case spawn : SpawnEvent => spawn.name + " (" + spawn.id.toString() + ")" 
+        case Unique(msg : MsgEvent, id) => msg.receiver + " (" + id + ")" 
+        case Unique(spawn : SpawnEvent, id) => spawn.name + " (" + id + ")" 
       }
     }
     
     def nodeTransformer(
-        innerNode: scalax.collection.Graph[Event, DiEdge]#NodeT):
+        innerNode: scalax.collection.Graph[Unique, DiEdge]#NodeT):
         Option[(DotGraph, DotNodeStmt)] = {
       val descr = innerNode.value match {
-        case msg : MsgEvent => DotNodeStmt( nodeStr(msg), Seq.empty[DotAttr])
-        case spawn : SpawnEvent => DotNodeStmt( nodeStr(spawn), Seq(DotAttr("color", "red")))
+        case u @ Unique(msg : MsgEvent, id) => DotNodeStmt( nodeStr(u), Seq.empty[DotAttr])
+        case u @ Unique(spawn : SpawnEvent, id) => DotNodeStmt( nodeStr(u), Seq(DotAttr("color", "red")))
       }
 
       Some(root, descr)
     }
     
     def edgeTransformer(
-        innerEdge: scalax.collection.Graph[Event, DiEdge]#EdgeT): 
+        innerEdge: scalax.collection.Graph[Unique, DiEdge]#EdgeT): 
         Option[(DotGraph, DotEdgeStmt)] = {
       
       val edge = innerEdge.edge
@@ -103,10 +103,10 @@ object Util {
   
   
   
-  def printQueue(queue: Queue[Event]) =
+  def printQueue(queue: Queue[Unique]) =
     for (e <- queue) e match {
-      case m :MsgEvent => println("\t " + m.id + " " + m.sender + " -> " + m.receiver + " " + m.msg)
-      case s: SpawnEvent => println("\t " + s.id + " " + s.name)
+      case Unique(m :MsgEvent, id) => println("\t " + id + " " + m.sender + " -> " + m.receiver + " " + m.msg)
+      case Unique(s: SpawnEvent, id) => println("\t " + id + " " + s.name)
     }
   
   

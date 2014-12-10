@@ -110,7 +110,7 @@ class ReplayScheduler() extends Scheduler {
     // isolated (i.e., unreachable)
     for (t <- trace) {
       t match {
-        case SpawnEvent (_, props, name, _, _) =>
+        case SpawnEvent (_, props, name, _) =>
           // Just start and isolate all actors we might eventually care about
           instrumenter.actorSystem.actorOf(props, name)
           isolate_node(name)
@@ -147,7 +147,7 @@ class ReplayScheduler() extends Scheduler {
     breakable {
       while (loop && traceIdx < trace.size) {
         trace(traceIdx) match {
-          case SpawnEvent (_, _, name, _, _) =>
+          case SpawnEvent (_, _, name, _) =>
             events += actorToSpawnEvent(name)
             unisolate_node(name)
           case KillEvent (name) =>
@@ -163,7 +163,7 @@ class ReplayScheduler() extends Scheduler {
             if (sender == "deadLetters") {
               enqueue_message(receiver, message)
             }
-          case MsgEvent(snd, rcv, msg, _) =>
+          case MsgEvent(snd, rcv, msg) =>
             break
           case Quiescence =>
             // This is just a nop. Do nothing
@@ -242,7 +242,7 @@ class ReplayScheduler() extends Scheduler {
       // Since advanceTrace moves one beyond where it saw a message receive, we
       // move
       val key = trace(traceIdx) match {
-        case MsgEvent(snd, rcv, msg, _) =>
+        case MsgEvent(snd, rcv, msg) =>
           (snd, rcv, msg)
         case _ =>
          throw new Exception("Replay error")
