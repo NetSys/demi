@@ -233,14 +233,14 @@ class ReplayScheduler() extends Scheduler {
     advanceTrace
     if (traceIdx >= trace.size) {
       // We are done, let us wait for notify_quiescence to notice this
+      // FIXME: We could check here to see if there are any pending messages.
       None
     } else {
       // Ensure that only one thread is accessing shared scheduler structures
       schedSemaphore.acquire
 
-      // Pick next message based on trace
-      // Since advanceTrace moves one beyond where it saw a message receive, we
-      // move
+      // Pick next message based on trace. We are guaranteed to be at a MsgEvent
+      // unless something else went wrong.
       val key = trace(traceIdx) match {
         case MsgEvent(snd, rcv, msg) =>
           (snd, rcv, msg)
