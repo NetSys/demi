@@ -86,6 +86,7 @@ class Instrumenter {
   }
   
   
+  // XXX Remove the arguments 
   // Restart the system:
   //  - Create a new actor system
   //  - Inform the scheduler that things have been reset

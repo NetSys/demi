@@ -3,6 +3,8 @@ package akka.dispatch.verification
 import akka.actor.ActorCell,
        akka.actor.ActorSystem,
        akka.actor.ActorRef,
+       akka.actor.LocalActorRef,
+       akka.actor.ActorRefWithCell,
        akka.actor.Actor,
        akka.actor.PoisonPill,
        akka.actor.Props
@@ -84,7 +86,7 @@ class DPOR extends Scheduler with LazyLogging {
     
     started = false
     actorNames.clear
-    
+    /*
     val firstActor = nextTrace.dequeue() match {
       case Unique( firstSpawn : SpawnEvent, _ ) => 
         instrumenter().actorSystem().actorOf(firstSpawn.props, firstSpawn.name)
@@ -95,6 +97,8 @@ class DPOR extends Scheduler with LazyLogging {
       case Unique( firstMsg : MsgEvent, _ ) => firstActor ! firstMsg.msg
       case _ => throw new Exception("cannot find the first message")
     }
+    
+    */
   }
   
   
@@ -211,10 +215,9 @@ class DPOR extends Scheduler with LazyLogging {
   }
   
   
-  // Get next event
-  def next_event() : Event = mutableTraceIterator(nextTrace) match {
-    case Some(Unique(e, id)) => e
-    case None => throw new Exception("no previously consumed events")
+  // XXX: Not used
+  def next_event() : Event = {
+    throw new Exception("not implemented next_event()")
   }
 
   
@@ -243,6 +246,35 @@ class DPOR extends Scheduler with LazyLogging {
     producedEvents.enqueue( event )
   }
   
+  import akka.actor.DynamicAccess,
+         akka.actor.ReflectiveDynamicAccess,
+         akka.actor.InternalActorRef,
+         akka.actor.ActorSystemImpl,
+         akka.actor.dungeon.Children,
+         akka.actor.LocalActorRef
+
+        
+
+  def run(externalEvents: Seq[ExternalEvent]) = {
+    val x = instrumenter().actorSystem().asInstanceOf[ActorSystemImpl]
+    val z : Children = x.systemGuardian.underlying
+
+    println("reinitialize_system")
+    instrumenter().reinitialize_system(null, null)
+    for(event <- externalEvents) event match {
+      case Start(props, name) =>
+        println("new actor " + name)
+        
+        val ref : LocalActorRef = instrumenter().actorSystem().actorOf(props, name).asInstanceOf[LocalActorRef]
+        val env = Envelope("message", null, instrumenter().actorSystem())
+        val call : ActorCell = ref.underlying
+        
+      case Send(rcv, msg) =>
+      case _ => throw new Exception("unsuported external event")
+    }
+
+
+  }
   
   
   def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
