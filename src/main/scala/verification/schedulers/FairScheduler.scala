@@ -55,6 +55,7 @@ class FairScheduler extends Scheduler {
     if (pendingEvents.isEmpty) {
       None
     } else { 
+      // TODO(cs): This code is incomprehensible to me...
       pendingEvents.get(receiver) match {
         case Some(queue) =>
           if (queue.isEmpty == true) {

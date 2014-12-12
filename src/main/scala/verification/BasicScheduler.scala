@@ -20,6 +20,7 @@ import scala.collection.Iterator
 import scala.collection.generic.GenericTraversableTemplate
 
 // A basic scheduler
+// TODO(cs): what's the difference between BasicScheduler and FairScheduler?
 class BasicScheduler extends Scheduler {
   
   var instrumenter = Instrumenter()

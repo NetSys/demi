@@ -1,5 +1,6 @@
 package akka.dispatch.verification
 
+// TODO(cs): move the failure detector to this file.
 
 import akka.actor.ActorCell,
        akka.actor.ActorSystem,
@@ -27,9 +28,49 @@ import scalax.collection.edge.LDiEdge,
        scalax.collection.edge.Implicits._,
        scalax.collection.io.dot._
 
+import akka.cluster.VectorClock
+import scala.util.parsing.json.JSONObject
+
+// Used by applications to log messages to the console. Transparently attaches vector
+// clocks to log messages.
+class Logger () {
+  var actor2vc : Map[String, VectorClock] = Map()
+
+  // TODO(cs): is there a way to specify default values for Maps in scala?
+  def ensureKeyExists(key: String) : VectorClock = {
+    if (!actor2vc.contains(key)) {
+      actor2vc = actor2vc + (key -> new VectorClock())
+    }
+    return actor2vc(key)
+  }
+
+  def log(src: String, msg: String) {
+    val vc = ensureKeyExists(src)
+    // Increment the clock.
+    vc :+ src
+    // Then print it, along with the message.
+    println(JSONObject(vc.versions).toString() + " " + src + ": " + msg)
+    actor2vc = actor2vc + (src -> vc)
+  }
+
+  def mergeVectorClocks(src: String, dst: String) {
+    println("MergeVectorClocks! " + src + " " + dst)
+    val srcVC = ensureKeyExists(src)
+    var dstVC = ensureKeyExists(dst)
+    // Increment, then merge the clocks.
+    dstVC :+ dst
+    dstVC = dstVC.merge(srcVC)
+    actor2vc = actor2vc + (dst -> dstVC)
+    println("Made it!")
+  }
+}
+
+
 object Util {
     
   
+  val logger = new Logger()
+
   def queueStr(queue: Queue[(Unique, ActorCell, Envelope)]) : String = {
     var str = "Queue content: "
     

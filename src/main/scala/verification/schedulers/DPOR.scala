@@ -75,13 +75,15 @@ class DPOR extends Scheduler with LazyLogging {
 
   
   // Is this message a system message
-  def isSystemMessage(sender: String, receiver: String): Boolean = 
-  ((actorNames contains sender) || (actorNames contains receiver)) match {
-    case true => return false
-    case _ => return true
+  def isSystemMessage(sender: String, receiver: String): Boolean = {
+    ((actorNames contains sender) || (actorNames contains receiver)) match
+    {
+      case true => return false
+      case _ => return true
+    }
   }
-  
-  
+
+
   // Notification that the system has been reset
   def start_trace() : Unit = {
     

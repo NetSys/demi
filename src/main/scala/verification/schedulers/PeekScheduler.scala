@@ -79,6 +79,7 @@ class PeekScheduler()
   }
 
   // Mark a node as unreachable, used to kill a node.
+  // TODO(cs): to be implemented later: actually kill the node so that its state is cleared?
   private[this] def isolate_node (node: String) {
     inaccessible += node
     fdState(node).clear()
@@ -109,6 +110,8 @@ class PeekScheduler()
     instrumenter.actorSystem.actorOf(Props[FailureDetector], fdName)
     // We begin by starting all actors at the beginning of time, just mark them as 
     // isolated (i.e., unreachable)
+    // If the user wants to start an Actor later in the execution, this disallows them from doing so.
+    // TODO(cs): document or fix the problem described in the above comment.
     for (t <- trace) {
       t match {
         case Start (prop, name) => 
@@ -170,6 +173,7 @@ class PeekScheduler()
     started.set(true)
     var loop = true
     while (loop && traceIdx < trace.size) {
+      // TODO(cs): factor this code out. Currently redundant with ReplayScheduler's advanceTrace().
       trace(traceIdx) match {
         case Start (_, name) =>
           events += actorToSpawnEvent(name)
@@ -219,7 +223,7 @@ class PeekScheduler()
       envelope.message match {
         case QueryReachableGroup =>
           // Allow queries to be made during class initialization (more than one might be happening at
-          // a time
+          // a time)
           pendingFDRequests += snd
         case _ =>
           assert(false)
