@@ -134,6 +134,15 @@ class Instrumenter {
   }
   
   
+  def schedule_new_message() = scheduler.schedule_new_message() match {
+      case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
+      case None =>
+        counter += 1
+        started.set(false)
+        scheduler.notify_quiescence()
+    }
+  
+  
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
     
@@ -154,14 +163,7 @@ class Instrumenter {
     inActor = false
     currentActor = ""
     scheduler.after_receive(cell)          
-    scheduler.schedule_new_message() match {
-      case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
-      case None =>
-        counter += 1
-        started.set(false)
-        scheduler.notify_quiescence()
-    }
-
+    schedule_new_message()
   }
 
   // Dispatch a message, i.e., deliver it to the intended recipient
@@ -170,7 +172,7 @@ class Instrumenter {
     val rcv = cell.self.path.name
     
     allowedEvents += ((cell, envelope) : (ActorCell, Envelope))        
-
+    
     val dispatcher = dispatchers.get(cell.self) match {
       case Some(value) => value
       case None => throw new Exception("internal error")
@@ -218,13 +220,7 @@ class Instrumenter {
   // actually kickstarting things. 
   def start_dispatch() {
     started.set(true)
-    scheduler.schedule_new_message() match {
-      case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
-      case None =>
-        counter += 1
-        started.set(false)
-        scheduler.notify_quiescence()
-    }
+    schedule_new_message()
   }
 
 

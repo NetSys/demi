@@ -35,6 +35,7 @@ import com.typesafe.scalalogging.LazyLogging,
 class DPOR extends Scheduler with LazyLogging {
   
   var instrumenter = Instrumenter
+  var externalEventList : Seq[ExternalEvent] = Vector()
   var started = false
   
   var currentTime = 0
@@ -86,6 +87,9 @@ class DPOR extends Scheduler with LazyLogging {
     
     started = false
     actorNames.clear
+    
+    runExternal()
+    
     /*
     val firstActor = nextTrace.dequeue() match {
       case Unique( firstSpawn : SpawnEvent, _ ) => 
@@ -114,7 +118,8 @@ class DPOR extends Scheduler with LazyLogging {
   // Get next message event from the trace.
   def get_next_trace_message() : Option[Unique] =
   mutableTraceIterator(nextTrace) match {
-    case some @ Some(Unique(m : MsgEvent, id)) => some 
+    case some @ Some(Unique(m : MsgEvent, 0)) => get_next_trace_message()
+    case some @ Some(Unique(m : MsgEvent, id)) => some
     case some @ Some(Unique(s: SpawnEvent, id)) => get_next_trace_message()
     case _ => None
   }
@@ -179,7 +184,7 @@ class DPOR extends Scheduler with LazyLogging {
       // There is a pending event that matches a message in our trace.
       // We call this a convergent state.
       case Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
-        logger.trace( Console.GREEN + "Now playing: " +
+        logger.trace( Console.GREEN + "Found the exact message: " +
             "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
         Some((u, cell, env))
         
@@ -194,13 +199,16 @@ class DPOR extends Scheduler with LazyLogging {
 
     result match {
       
-      case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
-        
+      case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
+
         invariant.headOption match {
-          case Some(Unique(m : MsgEvent, id)) =>
-            logger.trace("Replaying message event " + id)
+          case Some(Unique(m : MsgEvent, invID)) if (nID == invID) =>
+            logger.trace( Console.RED + "Now playing: " +
+            "(" + snd + " -> " + rcv + ") " +  + nID + Console.RESET )
             invariant.dequeue()
           case _ =>
+            logger.trace( Console.GREEN + "Now playing: " +
+            "(" + snd + " -> " + rcv + ") " +  + nID + Console.RESET )
         }
         
         currentTrace += nextEvent
@@ -246,34 +254,35 @@ class DPOR extends Scheduler with LazyLogging {
     producedEvents.enqueue( event )
   }
   
-  import akka.actor.DynamicAccess,
-         akka.actor.ReflectiveDynamicAccess,
-         akka.actor.InternalActorRef,
-         akka.actor.ActorSystemImpl,
-         akka.actor.dungeon.Children,
-         akka.actor.LocalActorRef
-
+  
+  def runExternal() = {
+    currentTrace += getRootEvent
+    
+    for(event <- externalEventList) event match {
+      case Start(props, name) => 
+        instrumenter().actorSystem().actorOf(props, name)
+        
+      case Send(rcv, msg) =>
+        val ref = instrumenter().actorMappings(rcv)
+        instrumenter().actorMappings(rcv) ! msg
+        
+      case _ => throw new Exception("unsuported external event")
+    }
+    
+    instrumenter().tellEnqueue.await()
+    
+    schedule_new_message() match {
+      case Some((cell, env)) =>
+        instrumenter().dispatch_new_message(cell, env)
+      case None => 
+        throw new Exception("internal error")
+    }
+  }
         
 
   def run(externalEvents: Seq[ExternalEvent]) = {
-    val x = instrumenter().actorSystem().asInstanceOf[ActorSystemImpl]
-    val z : Children = x.systemGuardian.underlying
-
-    println("reinitialize_system")
+    externalEventList = externalEvents
     instrumenter().reinitialize_system(null, null)
-    for(event <- externalEvents) event match {
-      case Start(props, name) =>
-        println("new actor " + name)
-        
-        val ref : LocalActorRef = instrumenter().actorSystem().actorOf(props, name).asInstanceOf[LocalActorRef]
-        val env = Envelope("message", null, instrumenter().actorSystem())
-        val call : ActorCell = ref.underlying
-        
-      case Send(rcv, msg) =>
-      case _ => throw new Exception("unsuported external event")
-    }
-
-
   }
   
   
@@ -319,20 +328,18 @@ class DPOR extends Scheduler with LazyLogging {
     producedEvents.enqueue( msg )
 
     depGraph.addEdge(unique, parentEvent)(DiEdge)
-    
-    if (!started) {
-      started = true
-      instrumenter().start_dispatch()
-    }
+
   }
   
   
   // Called before we start processing a newly received event
-  def before_receive(cell: ActorCell) {}
+  def before_receive(cell: ActorCell) {
+  }
   
   
   // Called after receive is done being processed 
-  def after_receive(cell: ActorCell) {}
+  def after_receive(cell: ActorCell) {
+  }
   
 
   
@@ -357,13 +364,8 @@ class DPOR extends Scheduler with LazyLogging {
     logger.debug(Console.BLUE + "Current trace: " +
         Util.traceStr(currentTrace) + Console.RESET)
 
-    val firstSpawn = consumedEvents.find( x => x.isInstanceOf[SpawnEvent]) match {
-      case Some(s: SpawnEvent) => s
-      case _ => throw new Exception("first event not a spawn")
-    }
     
     nextTrace.clear()
-    nextTrace += Unique(firstSpawn)
     nextTrace ++= dpor(currentTrace)
     
     logger.debug(Console.BLUE + "Next trace:  " + 
@@ -397,7 +399,7 @@ class DPOR extends Scheduler with LazyLogging {
     
     interleavingCounter += 1
     val root = getEvent(0, currentTrace)
-    val rootN = ( depGraph get root )
+    val rootN = ( depGraph get getRootEvent )
     
     val racingIndices = new HashSet[Integer]
     
@@ -436,7 +438,10 @@ class DPOR extends Scheduler with LazyLogging {
       // root event (root node) in the system.
       val laterPath = laterN.pathTo( rootN ) match {
         case Some(path) => path.nodes.toList.reverse
-        case None => throw new Exception("no such path")
+        case None =>
+          println(rootN)
+          println(laterN)
+          throw new Exception("no such path")
       }
       
       // Get the dependency path between earlier event and the
