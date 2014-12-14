@@ -54,14 +54,12 @@ class Logger () {
   }
 
   def mergeVectorClocks(src: String, dst: String) {
-    println("MergeVectorClocks! " + src + " " + dst)
     val srcVC = ensureKeyExists(src)
     var dstVC = ensureKeyExists(dst)
     // Increment, then merge the clocks.
     dstVC :+ dst
     dstVC = dstVC.merge(srcVC)
     actor2vc = actor2vc + (dst -> dstVC)
-    println("Made it!")
   }
 }
 
