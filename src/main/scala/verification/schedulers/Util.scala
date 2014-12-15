@@ -47,7 +47,7 @@ class Logger () {
   def log(src: String, msg: String) {
     val vc = ensureKeyExists(src)
     // Increment the clock.
-    vc :+ src
+    vc = vc :+ src
     // Then print it, along with the message.
     println(JSONObject(vc.versions).toString() + " " + src + ": " + msg)
     actor2vc = actor2vc + (src -> vc)
@@ -56,8 +56,6 @@ class Logger () {
   def mergeVectorClocks(src: String, dst: String) {
     val srcVC = ensureKeyExists(src)
     var dstVC = ensureKeyExists(dst)
-    // Increment, then merge the clocks.
-    dstVC :+ dst
     dstVC = dstVC.merge(srcVC)
     actor2vc = actor2vc + (dst -> dstVC)
   }
