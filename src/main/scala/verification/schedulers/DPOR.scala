@@ -49,8 +49,8 @@ class DPOR extends Scheduler with LazyLogging {
  
   val depGraph = Graph[Unique, DiEdge]()
   
-  val backTrack = new HashMap[Int, ((Unique, Unique), List[Unique]) ] 
-  val freezeSet = new HashSet[Integer]
+  val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
+
   val alreadyExplored = new HashSet[(Unique, Unique)]
   var invariant : Queue[Unique] = Queue()
   
@@ -200,7 +200,7 @@ class DPOR extends Scheduler with LazyLogging {
         currentTrace += nextEvent
         (depGraph get nextEvent)
         parentEvent = nextEvent
-        println("parentEvent " + parentEvent)
+        //println("parentEvent " + parentEvent)
         return Some((cell, env))
         
       case _ => return None
@@ -467,31 +467,20 @@ class DPOR extends Scheduler with LazyLogging {
       // Debugging stuff...
       racingIndices += branchI
       
-      // If the freeze flag is not set on that index
-      // it means we can add it to the backtrack set 
-      freezeSet contains branchI match {
-        
-        case false =>
-          logger.trace(Console.CYAN + "Earlier: " + 
-              printPath(earlierPath) + Console.RESET)
-          logger.trace(Console.CYAN + "Later:   " + 
-              printPath(laterPath) + Console.RESET)
-          logger.trace(Console.CYAN + "Replay:  " + 
-              printPath(needToReplay) + Console.RESET)
-          logger.info(Console.GREEN + 
-              "Found a race between " + earlier.id +  " and " + 
-              later.id + " with a common index " + branchI +
-              Console.RESET)
 
-          return Some((branchI, needToReplayV))
-          
-        case true => 
-          logger.info(Console.MAGENTA + 
-              "Found a race between " + earlier.id +  " and " + 
-              later.id + " with a common index " + branchI +
-              Console.RESET)
-          return None
-      }
+      //logger.trace(Console.CYAN + "Earlier: " + 
+      //    printPath(earlierPath) + Console.RESET)
+      //logger.trace(Console.CYAN + "Later:   " + 
+      //    printPath(laterPath) + Console.RESET)
+      //logger.trace(Console.CYAN + "Replay:  " + 
+      //    printPath(needToReplay) + Console.RESET)
+      logger.info(Console.GREEN + 
+          "Found a race between " + earlier.id +  " and " + 
+          later.id + " with a common index " + branchI +
+          Console.RESET)
+
+      return Some((branchI, needToReplayV))
+
 
 
     }
@@ -543,12 +532,10 @@ class DPOR extends Scheduler with LazyLogging {
         if (sameReceiver && isCoEnabeled(earlier, later)) {
           analyize_dep(earlierI, laterI, trace) match {
             
-            case Some((branchI, needToReplayV)) =>              
+            case Some((branchI, needToReplayV)) => 
               val racingPair = ((later, earlier))
-              backTrack(branchI) = (racingPair, needToReplayV)
-          
-              freezeSet += branchI
-              
+              backTrack.getOrElseUpdate(branchI, new HashMap[(Unique, Unique), List[Unique]])
+              backTrack(branchI)(racingPair) = needToReplayV
             case None => // Nothing
           }
           
@@ -566,22 +553,19 @@ class DPOR extends Scheduler with LazyLogging {
     // Find the deepest backtrack value, and make sure
     // its index is removed from the freeze set.
     val maxIndex = backTrack.keySet.max
-    freezeSet -= maxIndex
-    
     val (u1 @ Unique(m1 : MsgEvent, id1),
-         u2 @ Unique(m2 : MsgEvent, id2)) = backTrack(maxIndex)._1 match {
-      case (u1 @ Unique(m1: MsgEvent, id1), 
-            u2 @ Unique(m2: MsgEvent, id2)) => (u1, u2)
+         u2 @ Unique(m2 : MsgEvent, id2)) = backTrack(maxIndex).head match {
+      case ((u1 @ Unique(m1: MsgEvent, id1), 
+            u2 @ Unique(m2: MsgEvent, id2)), eventList ) => (u1, u2)
       case _ => throw new Exception("invalid interleaving event types")
     }
     
     logger.info(Console.RED + "Exploring a new message interleaving " + 
        id1 + " and " + id2  + " at index " + maxIndex + Console.RESET)
+        
+    val ((e1, e2), replayThis) = backTrack(maxIndex).head
     
-    logger.debug("Unexplored indices: " + racingIndices)
-    logger.debug("Frozen indices:     " + freezeSet)
-    
-    val ((e1, e2), replayThis) = backTrack(maxIndex)
+    backTrack(maxIndex).remove((e1, e2))
     
     /*
      * Mark the new interleaving as explored.
@@ -591,16 +575,18 @@ class DPOR extends Scheduler with LazyLogging {
      */
     alreadyExplored += ((e1, e2))
     
-    for (ev <- alreadyExplored) ev match {
-      case (Unique(MsgEvent(_, _, _), id1), Unique(MsgEvent(_, _, _), id2)) =>
-        println("(" + id1 + ", " + id2 + ")")
-    }
+    //for (ev <- alreadyExplored) ev match {
+    //  case (Unique(MsgEvent(_, _, _), id1), Unique(MsgEvent(_, _, _), id2)) =>
+    //    println("(" + id1 + ", " + id2 + ")")
+    //}
     
     // A variable used to figure out if the replay diverged.
     invariant = Queue(e1, e2)
     
     // Remove the backtrack branch, since we're about explore it now.
-    backTrack -= maxIndex
+    if (backTrack(maxIndex).isEmpty) {
+      backTrack -= maxIndex
+    }
     
     // Return all events up to the backtrack index we're interested in
     // and slap on it a new set of events that need to be replayed in
