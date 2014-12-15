@@ -89,20 +89,6 @@ class DPOR extends Scheduler with LazyLogging {
     actorNames.clear
     
     runExternal()
-    
-    /*
-    val firstActor = nextTrace.dequeue() match {
-      case Unique( firstSpawn : SpawnEvent, _ ) => 
-        instrumenter().actorSystem().actorOf(firstSpawn.props, firstSpawn.name)
-      case _ => throw new Exception("cannot find the first spawn")
-    }
-    
-    nextTrace.head match {
-      case Unique( firstMsg : MsgEvent, _ ) => firstActor ! firstMsg.msg
-      case _ => throw new Exception("cannot find the first message")
-    }
-    
-    */
   }
   
   
@@ -214,6 +200,7 @@ class DPOR extends Scheduler with LazyLogging {
         currentTrace += nextEvent
         (depGraph get nextEvent)
         parentEvent = nextEvent
+        println("parentEvent " + parentEvent)
         return Some((cell, env))
         
       case _ => return None
@@ -498,7 +485,12 @@ class DPOR extends Scheduler with LazyLogging {
 
           return Some((branchI, needToReplayV))
           
-        case true => return None
+        case true => 
+          logger.info(Console.MAGENTA + 
+              "Found a race between " + earlier.id +  " and " + 
+              later.id + " with a common index " + branchI +
+              Console.RESET)
+          return None
       }
 
 
@@ -598,6 +590,11 @@ class DPOR extends Scheduler with LazyLogging {
      *      mark them as explored?
      */
     alreadyExplored += ((e1, e2))
+    
+    for (ev <- alreadyExplored) ev match {
+      case (Unique(MsgEvent(_, _, _), id1), Unique(MsgEvent(_, _, _), id2)) =>
+        println("(" + id1 + ", " + id2 + ")")
+    }
     
     // A variable used to figure out if the replay diverged.
     invariant = Queue(e1, e2)
