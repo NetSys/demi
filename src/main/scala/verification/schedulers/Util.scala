@@ -45,7 +45,7 @@ class Logger () {
   }
 
   def log(src: String, msg: String) {
-    val vc = ensureKeyExists(src)
+    var vc = ensureKeyExists(src)
     // Increment the clock.
     vc = vc :+ src
     // Then print it, along with the message.
