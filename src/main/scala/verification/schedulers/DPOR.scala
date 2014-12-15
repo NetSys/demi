@@ -53,6 +53,7 @@ class DPOR extends Scheduler with LazyLogging {
 
   val alreadyExplored = new HashSet[(Unique, Unique)]
   var invariant : Queue[Unique] = Queue()
+  var currentlyExploring : (Unique, Unique) = null
   
   val currentTrace = new Queue[Unique]
   val nextTrace = new Queue[Unique]
@@ -384,6 +385,11 @@ class DPOR extends Scheduler with LazyLogging {
   
   def dpor(trace: Queue[Unique]) : Queue[Unique] = {
     
+
+    if (invariant.isEmpty && currentlyExploring != null) {
+      alreadyExplored += currentlyExploring
+    }
+    
     interleavingCounter += 1
     val root = getEvent(0, currentTrace)
     val rootN = ( depGraph get getRootEvent )
@@ -573,7 +579,7 @@ class DPOR extends Scheduler with LazyLogging {
      *      diverges and is unable to replay both events, do we still
      *      mark them as explored?
      */
-    alreadyExplored += ((e1, e2))
+    currentlyExploring = (e1, e2)
     
     //for (ev <- alreadyExplored) ev match {
     //  case (Unique(MsgEvent(_, _, _), id1), Unique(MsgEvent(_, _, _), id2)) =>
