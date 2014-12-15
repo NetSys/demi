@@ -19,7 +19,7 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.HashSet,
        scala.collection.mutable.ArrayBuffer,
        scala.collection.mutable.ArraySeq,
-       scala.collection.Iterator
+       scala.collection.mutable.Stack
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
@@ -51,9 +51,10 @@ class DPOR extends Scheduler with LazyLogging {
   
   val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
 
-  val alreadyExplored = new HashSet[(Unique, Unique)]
+  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
+  //val alreadyExplored = new HashSet[(Unique, Unique)]
   var invariant : Queue[Unique] = Queue()
-  var currentlyExploring : (Unique, Unique) = null
+  var currentlyExploring : (Int, (Unique, Unique)) = null
   
   val currentTrace = new Queue[Unique]
   val nextTrace = new Queue[Unique]
@@ -380,14 +381,46 @@ class DPOR extends Scheduler with LazyLogging {
       case _ => throw new Exception("internal error not a message")
     }
   }
+  
+  
+  
+  def setExplored(index: Int, pair: (Unique, Unique)) =
+    exploredStack.get(index) match {
+      case Some(set) => set += pair
+      case None =>
+        val newElem = new HashSet[(Unique, Unique)] + pair
+        exploredStack(index) = newElem
+    }
 
   
+  def isExplored(pair: (Unique, Unique)) : Boolean = {
+    
+    for ((index, set) <- exploredStack) set.contains(pair) match {
+      case true => return true
+      case false =>
+    }
+    
+    return false
+    
+  }
+  
+  def trimExplored(index: Int) = {
+    exploredStack = exploredStack.filter { other => other._1   <= index }
+  }
+  
+  
+  def printExplored() = {
+    for ((index, set) <- exploredStack) { 
+      println(index + ": " + set.size) 
+    }
+  }
   
   def dpor(trace: Queue[Unique]) : Queue[Unique] = {
     
 
     if (invariant.isEmpty && currentlyExploring != null) {
-      alreadyExplored += currentlyExploring
+      //alreadyExplored += currentlyExploring._2
+      setExplored(currentlyExploring._1, currentlyExploring._2)
     }
     
     interleavingCounter += 1
@@ -414,13 +447,9 @@ class DPOR extends Scheduler with LazyLogging {
       val later = getEvent(laterI, trace)
       
       // See if this interleaving has been explored.
-      val explored = alreadyExplored.contains((later, earlier))
+      //val explored = alreadyExplored.contains((later, earlier))
+      val explored = isExplored((later, earlier))
       if (explored) return None
-      
-      // Since we're exploring an already executed trace, we can
-      // safely mark the interleaving of (earlier, later) as
-      // already explored.
-      alreadyExplored += ((earlier, later))
       
       // Get the actual nodes in the dependency graph that
       // correspond to those events
@@ -474,6 +503,12 @@ class DPOR extends Scheduler with LazyLogging {
       racingIndices += branchI
       
 
+      // Since we're exploring an already executed trace, we can
+      // safely mark the interleaving of (earlier, later) as
+      // already explored.
+      //alreadyExplored += ((earlier, later))
+      setExplored(branchI, (earlier, later))
+      
       //logger.trace(Console.CYAN + "Earlier: " + 
       //    printPath(earlierPath) + Console.RESET)
       //logger.trace(Console.CYAN + "Later:   " + 
@@ -573,18 +608,13 @@ class DPOR extends Scheduler with LazyLogging {
     
     backTrack(maxIndex).remove((e1, e2))
     
-    /*
-     * Mark the new interleaving as explored.
-     * XXX: Not sure if this is the correct behavior. If the replay
-     *      diverges and is unable to replay both events, do we still
-     *      mark them as explored?
-     */
-    currentlyExploring = (e1, e2)
+    currentlyExploring = (maxIndex, (e1, e2))
     
-    //for (ev <- alreadyExplored) ev match {
-    //  case (Unique(MsgEvent(_, _, _), id1), Unique(MsgEvent(_, _, _), id2)) =>
-    //    println("(" + id1 + ", " + id2 + ")")
-    //}
+    printExplored()
+    println("trimming at " + maxIndex)
+    trimExplored(maxIndex)
+    printExplored()
+    println("done")
     
     // A variable used to figure out if the replay diverged.
     invariant = Queue(e1, e2)
