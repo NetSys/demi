@@ -30,6 +30,45 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
+       
+class ExploredTacker {
+  
+  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
+
+  
+  def setExplored(index: Int, pair: (Unique, Unique)) =
+  exploredStack.get(index) match {
+    case Some(set) => set += pair
+    case None =>
+      val newElem = new HashSet[(Unique, Unique)] + pair
+      exploredStack(index) = newElem
+  }
+  
+  
+  def isExplored(pair: (Unique, Unique)): Boolean = {
+
+    for ((index, set) <- exploredStack) set.contains(pair) match {
+      case true => return true
+      case false =>
+    }
+
+    return false
+  }
+
+  
+  def trimExplored(index: Int) = {
+    exploredStack = exploredStack.filter { other => other._1 <= index }
+  }
+
+  
+  def printExplored() = {
+    for ((index, set) <- exploredStack) {
+      println(index + ": " + set.size)
+    }
+  }
+
+}
+       
 
 // DPOR scheduler.
 class DPOR extends Scheduler with LazyLogging {
@@ -50,11 +89,8 @@ class DPOR extends Scheduler with LazyLogging {
   val depGraph = Graph[Unique, DiEdge]()
   
   val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
-
-  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
-  //val alreadyExplored = new HashSet[(Unique, Unique)]
   var invariant : Queue[Unique] = Queue()
-  var currentlyExploring : (Int, (Unique, Unique)) = null
+  var exploredTacker = new ExploredTacker
   
   val currentTrace = new Queue[Unique]
   val nextTrace = new Queue[Unique]
@@ -143,7 +179,10 @@ class DPOR extends Scheduler with LazyLogging {
             }
 
           } else {
-            Some(queue.dequeue())
+            val next @ (Unique(MsgEvent(snd, rcv, msg), id), cell, env) = queue.dequeue()
+            logger.trace( Console.GREEN + "Now playing pending: " +
+              "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
+            Some(next)
           }
           
         case None => None
@@ -172,7 +211,7 @@ class DPOR extends Scheduler with LazyLogging {
       // There is a pending event that matches a message in our trace.
       // We call this a convergent state.
       case Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
-        logger.trace( Console.GREEN + "Found the exact message: " +
+        logger.trace( Console.GREEN + "Replaying the exact message: " +
             "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
         Some((u, cell, env))
         
@@ -191,12 +230,10 @@ class DPOR extends Scheduler with LazyLogging {
 
         invariant.headOption match {
           case Some(Unique(m : MsgEvent, invID)) if (nID == invID) =>
-            logger.trace( Console.RED + "Now playing: " +
+            logger.trace( Console.RED + "Managed to replay the intended message: " +
             "(" + snd + " -> " + rcv + ") " +  + nID + Console.RESET )
             invariant.dequeue()
           case _ =>
-            logger.trace( Console.GREEN + "Now playing: " +
-            "(" + snd + " -> " + rcv + ") " +  + nID + Console.RESET )
         }
         
         currentTrace += nextEvent
@@ -382,47 +419,8 @@ class DPOR extends Scheduler with LazyLogging {
     }
   }
   
-  
-  
-  def setExplored(index: Int, pair: (Unique, Unique)) =
-    exploredStack.get(index) match {
-      case Some(set) => set += pair
-      case None =>
-        val newElem = new HashSet[(Unique, Unique)] + pair
-        exploredStack(index) = newElem
-    }
 
-  
-  def isExplored(pair: (Unique, Unique)) : Boolean = {
-    
-    for ((index, set) <- exploredStack) set.contains(pair) match {
-      case true => return true
-      case false =>
-    }
-    
-    return false
-    
-  }
-  
-  def trimExplored(index: Int) = {
-    exploredStack = exploredStack.filter { other => other._1   <=   index }
-  }
-  
-  
-  def printExplored() = {
-    for ((index, set) <- exploredStack) { 
-      println(index + ": " + set.size) 
-    }
-  }
-  
   def dpor(trace: Queue[Unique]) : Queue[Unique] = {
-    
-
-    //if (invariant.isEmpty && currentlyExploring != null) {
-    if (currentlyExploring != null) {
-      //alreadyExplored += currentlyExploring._2
-      setExplored(currentlyExploring._1, currentlyExploring._2)
-    }
     
     interleavingCounter += 1
     val root = getEvent(0, currentTrace)
@@ -449,7 +447,7 @@ class DPOR extends Scheduler with LazyLogging {
       
       // See if this interleaving has been explored.
       //val explored = alreadyExplored.contains((later, earlier))
-      val explored = isExplored((later, earlier))
+      val explored = exploredTacker.isExplored((later, earlier))
       if (explored) return None
       
       // Get the actual nodes in the dependency graph that
@@ -477,16 +475,6 @@ class DPOR extends Scheduler with LazyLogging {
       // Find the common prefix for the above paths.
       val commonPrefix = laterPath.intersect(earlierPath)
       
-      // Find the suffix for each path by taking the original
-      // path and subtracting the common prefix.
-      val laterDiff = laterPath.diff(commonPrefix)
-      val earlierDiff = earlierPath.diff(commonPrefix)
-
-      // We need to replay the entirety of the later suffix except 
-      // for the last event, plus the entirety of the later suffix.
-      // This effectively swaps the earlier and the later event.
-      //val needToReplay = earlierDiff.dropRight(1) ++ laterDiff 
-      
       // Figure out where in the provided trace this needs to be
       // replayed. In other words, get the last element of the
       // common prefix and figure out which index in the trace
@@ -494,8 +482,10 @@ class DPOR extends Scheduler with LazyLogging {
       val lastElement = commonPrefix.last
       val branchI = trace.indexWhere { e => (e == lastElement.value) }
       
-      val needToReplay = currentTrace.clone().drop(branchI + 1).dropRight(currentTrace.size - laterI -1).filter { x => x.id != earlier.id }
-      println("ALTERNATIVE: " +  Util.traceStr(needToReplay))
+      val needToReplay = currentTrace.clone()
+        .drop(branchI + 1)
+        .dropRight(currentTrace.size - laterI - 1)
+        .filter { x => x.id != earlier.id }
       
       require(branchI < laterI)
       
@@ -503,22 +493,14 @@ class DPOR extends Scheduler with LazyLogging {
       // events, we need to extract the values.
       val needToReplayV = needToReplay.toList
       
-      // Debugging stuff...
-      racingIndices += branchI
-      
 
       // Since we're exploring an already executed trace, we can
       // safely mark the interleaving of (earlier, later) as
       // already explored.
-      //alreadyExplored += ((earlier, later))
-      setExplored(branchI, (earlier, later))
+      exploredTacker.setExplored(branchI, (earlier, later))
       
-      //logger.trace(Console.CYAN + "Earlier: " + 
-      //    printPath(earlierPath) + Console.RESET)
-      //logger.trace(Console.CYAN + "Later:   " + 
-      //    printPath(laterPath) + Console.RESET)
-      //logger.trace(Console.CYAN + "Replay:  " + 
-      //    printPath(needToReplay) + Console.RESET)
+      logger.trace(Console.CYAN + "Replay:  " + 
+          Util.traceStr(needToReplay) + Console.RESET)
       logger.info(Console.GREEN + 
           "Found a race between " + earlier.id +  " and " + 
           later.id + " with a common index " + branchI +
@@ -612,21 +594,16 @@ class DPOR extends Scheduler with LazyLogging {
     
     backTrack(maxIndex).remove((e1, e2))
     
-    currentlyExploring = (maxIndex, (e1, e2))
-    
-    //printExplored()
-    //println("trimming at " + maxIndex)
-    trimExplored(maxIndex)
-    printExplored()
-    //println("done")
+    exploredTacker.setExplored(maxIndex, (e1, e2))
+    exploredTacker.trimExplored(maxIndex)
+    exploredTacker.printExplored()
     
     // A variable used to figure out if the replay diverged.
     invariant = Queue(e1, e2)
     
     // Remove the backtrack branch, since we're about explore it now.
-    if (backTrack(maxIndex).isEmpty) {
+    if (backTrack(maxIndex).isEmpty)
       backTrack -= maxIndex
-    }
     
     // Return all events up to the backtrack index we're interested in
     // and slap on it a new set of events that need to be replayed in
