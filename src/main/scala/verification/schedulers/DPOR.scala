@@ -405,7 +405,7 @@ class DPOR extends Scheduler with LazyLogging {
   }
   
   def trimExplored(index: Int) = {
-    exploredStack = exploredStack.filter { other => other._1   <= index }
+    exploredStack = exploredStack.filter { other => other._1   <=   index }
   }
   
   
@@ -418,7 +418,8 @@ class DPOR extends Scheduler with LazyLogging {
   def dpor(trace: Queue[Unique]) : Queue[Unique] = {
     
 
-    if (invariant.isEmpty && currentlyExploring != null) {
+    //if (invariant.isEmpty && currentlyExploring != null) {
+    if (currentlyExploring != null) {
       //alreadyExplored += currentlyExploring._2
       setExplored(currentlyExploring._1, currentlyExploring._2)
     }
@@ -484,7 +485,7 @@ class DPOR extends Scheduler with LazyLogging {
       // We need to replay the entirety of the later suffix except 
       // for the last event, plus the entirety of the later suffix.
       // This effectively swaps the earlier and the later event.
-      val needToReplay = earlierDiff.dropRight(1) ++ laterDiff 
+      //val needToReplay = earlierDiff.dropRight(1) ++ laterDiff 
       
       // Figure out where in the provided trace this needs to be
       // replayed. In other words, get the last element of the
@@ -493,11 +494,14 @@ class DPOR extends Scheduler with LazyLogging {
       val lastElement = commonPrefix.last
       val branchI = trace.indexWhere { e => (e == lastElement.value) }
       
+      val needToReplay = currentTrace.clone().drop(branchI + 1).dropRight(currentTrace.size - laterI -1).filter { x => x.id != earlier.id }
+      println("ALTERNATIVE: " +  Util.traceStr(needToReplay))
+      
       require(branchI < laterI)
       
       // Since we're dealing with the vertices and not the
       // events, we need to extract the values.
-      val needToReplayV = needToReplay.map(v => v.value)
+      val needToReplayV = needToReplay.toList
       
       // Debugging stuff...
       racingIndices += branchI
@@ -610,11 +614,11 @@ class DPOR extends Scheduler with LazyLogging {
     
     currentlyExploring = (maxIndex, (e1, e2))
     
-    printExplored()
-    println("trimming at " + maxIndex)
+    //printExplored()
+    //println("trimming at " + maxIndex)
     trimExplored(maxIndex)
     printExplored()
-    println("done")
+    //println("done")
     
     // A variable used to figure out if the replay diverged.
     invariant = Queue(e1, e2)
