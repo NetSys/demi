@@ -150,16 +150,22 @@ class ReplayScheduler() extends Scheduler {
           // TODO(cs): factor this code out. Currently redundant with PeekScheduler's advanceTrace().
           case SpawnEvent (_, _, name, _) =>
             events += actorToSpawnEvent(name)
+            Util.logger.log(name, "God spawned me")
             unisolate_node(name)
           case KillEvent (name) =>
             events += KillEvent(name)
+            Util.logger.log(name, "God killed me")
             isolate_node(name)
-          case PartitionEvent(endpoints) =>
-            events += PartitionEvent(endpoints)
-            add_to_partition(endpoints)
-          case UnPartitionEvent(endpoints) =>
-            events += UnPartitionEvent(endpoints)
-            remove_partition(endpoints)
+          case PartitionEvent((a,b)) =>
+            events += PartitionEvent((a,b))
+            Util.logger.log(a, "God partitioned me from " + b)
+            Util.logger.log(b, "God partitioned me from " + a)
+            add_to_partition((a,b))
+          case UnPartitionEvent((a,b)) =>
+            events += UnPartitionEvent((a,b))
+            Util.logger.log(a, "God reconnected me to " + b)
+            Util.logger.log(b, "God reconnected me to " + a)
+            remove_partition((a,b))
           case MsgSend (sender, receiver, message) =>
             if (sender == "deadLetters") {
               enqueue_message(receiver, message)

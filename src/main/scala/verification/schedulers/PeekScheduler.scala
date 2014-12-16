@@ -175,6 +175,7 @@ class PeekScheduler()
       // TODO(cs): factor this code out. Currently redundant with ReplayScheduler's advanceTrace().
       trace(traceIdx) match {
         case Start (_, name) =>
+          Util.logger.log(name, "God spawned me")
           events += actorToSpawnEvent(name)
           unisolate_node(name)
           // Send FD message before adding an actor
@@ -182,6 +183,7 @@ class PeekScheduler()
           informNodeReachable(name)
           activeActors += name
         case Kill (name) =>
+          Util.logger.log(name, "God killed me")
           events += KillEvent(name)
           isolate_node(name)
           activeActors -= name
@@ -192,17 +194,21 @@ class PeekScheduler()
         case Partition (a, b) =>
           events += PartitionEvent((a, b))
           add_to_partition((a, b))
+          Util.logger.log(a, "God partitioned me from " + b)
+          Util.logger.log(b, "God partitioned me from " + a)
           // Send FD information to each of the actors
           informNodeUnreachable(a, b)
           informNodeUnreachable(b, a)
         case UnPartition (a, b) =>
           events += UnPartitionEvent((a, b))
           remove_partition((a, b))
+          Util.logger.log(a, "God reconnected me to " + b)
+          Util.logger.log(b, "God reconnected me to " + a)
           // Send FD information to each of the actors
           informNodeReachable(a, b)
           informNodeReachable(b, a)
         case WaitQuiescence =>
-          loop = false // Start waiting for quiscence
+          loop = false // Start waiting for quiescence
       }
       traceIdx += 1
     }
