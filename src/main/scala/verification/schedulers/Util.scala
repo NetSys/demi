@@ -65,6 +65,7 @@ class Logger () {
 object Util {
     
   
+  // Global logger instance.
   val logger = new Logger()
 
   def queueStr(queue: Queue[(Unique, ActorCell, Envelope)]) : String = {

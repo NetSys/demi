@@ -109,9 +109,8 @@ class PeekScheduler()
     traceIdx = 0
     instrumenter.actorSystem.actorOf(Props[FailureDetector], fdName)
     // We begin by starting all actors at the beginning of time, just mark them as 
-    // isolated (i.e., unreachable)
-    // If the user wants to start an Actor later in the execution, this disallows them from doing so.
-    // TODO(cs): document or fix the problem described in the above comment.
+    // isolated (i.e., unreachable). Later, when we replay the `Start` event,
+    // we unisolate the actor.
     for (t <- trace) {
       t match {
         case Start (prop, name) => 

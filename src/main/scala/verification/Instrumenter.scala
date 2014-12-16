@@ -166,8 +166,6 @@ class Instrumenter {
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    // TODO(cs): as far as I can tell, snd is always "deadLetters", never the name of a real actor.
-    // Can someone explain to me why it is never set to a real actor name?
     Util.logger.mergeVectorClocks(snd, rcv)
     
     allowedEvents += ((cell, envelope) : (ActorCell, Envelope))        
