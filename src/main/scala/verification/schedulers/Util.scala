@@ -33,7 +33,7 @@ import scala.util.parsing.json.JSONObject
 
 // Used by applications to log messages to the console. Transparently attaches vector
 // clocks to log messages.
-class Logger () {
+class VCLogger () {
   var actor2vc : Map[String, VectorClock] = Map()
 
   // TODO(cs): is there a way to specify default values for Maps in scala?
@@ -66,7 +66,7 @@ object Util {
     
   
   // Global logger instance.
-  val logger = new Logger()
+  val logger = new VCLogger()
 
   def queueStr(queue: Queue[(Unique, ActorCell, Envelope)]) : String = {
     var str = "Queue content: "
