@@ -34,7 +34,7 @@ case class SpawnEvent(
 // Base class for failure detector messages
 abstract class FDMessage
 
-// Failure detector node information
+// Notification telling a node that it can query a failure detector by sending messages to fdNode.
 case class FailureDetectorOnline(fdNode: String) extends FDMessage
 
 // A node is unreachable, either due to node failure or partition.
