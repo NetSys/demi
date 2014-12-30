@@ -182,6 +182,10 @@ class DPOR extends Scheduler with LazyLogging {
     // Send all pending fd responses
     fd.send_all_pending_responses()
     // Drain message queue 
+    // TODO(cs): think about whether this violates what DPOR is expecting. In particular,
+    // it isn't expecting new messages during replay.. otoh, these messages
+    // aren't always flushed up front before DPOR has a chance to observe
+    // them, so it may not affect anything.
     for ((receiver, msg) <- messagesToSend) {
       receiver ! msg
     }
