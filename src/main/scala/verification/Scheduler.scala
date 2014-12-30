@@ -32,6 +32,10 @@ trait Scheduler {
   // Record that an event was consumed
   def event_consumed(event: Event) : Unit  
   def event_consumed(cell: ActorCell, envelope: Envelope)
+  // Tell the scheduler that it should eventually schedule the given message.
+  // Used to feed messages from the external world into actor systems.
+  def enqueue_message(receiver: String, msg: Any)
+  // TODO(cs): add shutdown()
 
 }
 

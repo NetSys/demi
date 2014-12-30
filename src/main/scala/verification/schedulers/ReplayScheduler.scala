@@ -85,7 +85,7 @@ class ReplayScheduler() extends Scheduler {
   }
 
   // Enqueue a message for future delivery
-  private[this] def enqueue_message(receiver: String, msg: Any) {
+  def enqueue_message(receiver: String, msg: Any) {
     if (actorNames contains receiver) {
       enqueue_message(actorToActorRef(receiver), msg)
     }
@@ -333,5 +333,4 @@ class ReplayScheduler() extends Scheduler {
 
     return true
   }
-
 }

@@ -13,33 +13,17 @@ import scala.collection.mutable.HashSet
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
-// A fake actor, used as a placeholder to which failure detector requests can be sent.
-class FailureDetector () extends Actor {
-  def receive = {
-    // This should never be called
-    case _ => assert(false)
-  }
-}
 
 // Just a very simple, non-null scheduler that supports 
 // partitions and injecting external events.
 class PeekScheduler()
     extends FairScheduler {
 
-  // Name of the failure detector actor
-  val fdName = "failure_detector"
-
   // Pairs of actors that cannot communicate
   val partitioned = new HashSet[(String, String)]
   
   // Actors that are unreachable
   val inaccessible = new HashSet[String]
-
-  // Failure detector information
-  // For each actor, track the set of other actors who are reachable.
-  val fdState = new HashMap[String, HashSet[String]]
-  val activeActors = new HashSet[String]
-  val pendingFDRequests = new Queue[String]
 
   // Actors to actor ref
   val actorToActorRef = new HashMap[String, ActorRef]
@@ -58,7 +42,8 @@ class PeekScheduler()
   // Semaphore to use when shutting down the scheduler
   private[this] val shutdownSem = new Semaphore(0)
 
-  // A set of messages to send
+  // A set of external messages to send. Messages sent between actors are not
+  // queued here.
   val messagesToSend = new HashSet[(ActorRef, Any)]
 
   // Are we expecting message receives
@@ -67,6 +52,8 @@ class PeekScheduler()
   // Ensure exactly one thread in the scheduler at a time
   private[this] val schedSemaphore = new Semaphore(1)
 
+  // Handler for FailureDetector messages
+  val fd = new FDMessageOrchestrator(this)
 
   // Mark a couple of nodes as partitioned (so they cannot communicate)
   private[this] def add_to_partition (newly_partitioned: (String, String)) {
@@ -82,19 +69,21 @@ class PeekScheduler()
   // TODO(cs): to be implemented later: actually kill the node so that its state is cleared?
   private[this] def isolate_node (node: String) {
     inaccessible += node
-    fdState(node).clear()
+    fd.isolate_node(node)
   }
 
   // Mark a node as reachable, also used to start a node
   private[this] def unisolate_node (actor: String) {
     inaccessible -= actor
-    fdState(actor) ++= activeActors
+    fd.unisolate_node(actor)
   }
 
   // Enqueue a message for future delivery
-  private[this] def enqueue_message(receiver: String, msg: Any) {
+  override def enqueue_message(receiver: String, msg: Any) {
     if (actorNames contains receiver) {
       enqueue_message(actorToActorRef(receiver), msg)
+    } else {
+      throw new IllegalArgumentException("Unknown receiver " + receiver)
     }
   }
 
@@ -107,7 +96,7 @@ class PeekScheduler()
     trace = _trace
     events = new Queue[Event]()
     traceIdx = 0
-    instrumenter.actorSystem.actorOf(Props[FailureDetector], fdName)
+    fd.startFD(instrumenter.actorSystem)
     // We begin by starting all actors at the beginning of time, just mark them as 
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
@@ -131,39 +120,6 @@ class PeekScheduler()
     return events
   }
 
-  private[this] def informFailureDetectorLocation(actor: String) {
-    enqueue_message(actor, FailureDetectorOnline(fdName))
-  }
-
-  private[this] def informNodeReachable(actor: String, node: String) {
-   enqueue_message(actor, NodeReachable(node))
-   fdState(actor) += node
-  }
-
-  private[this] def informNodeReachable(node: String) {
-    for (actor <- activeActors) {
-      informNodeReachable(actor, node)
-    }
-  }
-
-  private[this] def informNodeUnreachable(actor: String, node: String) {
-    enqueue_message(actor, NodeUnreachable(node))
-    fdState(actor) -= node
-  }
-
-  private[this] def informNodeUnreachable(node: String) {
-    for (actor <- activeActors) {
-      informNodeUnreachable(actor, node)
-    }
-  }
-
-  private[this] def answerFdQuery(sender: String) {
-    // Compute the message
-    val msg = ReachableGroup(fdState(sender).toArray)
-    // Send failure detector information
-    enqueue_message(sender, msg)
-  }
-
   // Advance the trace
   private[this] def advanceTrace() {
     // Make sure the actual scheduler makes no progress until we have injected all
@@ -178,17 +134,12 @@ class PeekScheduler()
           Util.logger.log(name, "God spawned me")
           events += actorToSpawnEvent(name)
           unisolate_node(name)
-          // Send FD message before adding an actor
-          informFailureDetectorLocation(name)
-          informNodeReachable(name)
-          activeActors += name
+          fd.handle_start_event(name)
         case Kill (name) =>
           Util.logger.log(name, "God killed me")
           events += KillEvent(name)
           isolate_node(name)
-          activeActors -= name
-          // Send FD message after removing the actor
-          informNodeUnreachable(name)
+          fd.handle_kill_event(name)
         case Send (name, message) =>
           enqueue_message(name, message)
         case Partition (a, b) =>
@@ -196,17 +147,13 @@ class PeekScheduler()
           add_to_partition((a, b))
           Util.logger.log(a, "God partitioned me from " + b)
           Util.logger.log(b, "God partitioned me from " + a)
-          // Send FD information to each of the actors
-          informNodeUnreachable(a, b)
-          informNodeUnreachable(b, a)
+          fd.handle_partition_event(a,b)
         case UnPartition (a, b) =>
           events += UnPartitionEvent((a, b))
           remove_partition((a, b))
           Util.logger.log(a, "God reconnected me to " + b)
           Util.logger.log(b, "God reconnected me to " + a)
-          // Send FD information to each of the actors
-          informNodeReachable(a, b)
-          informNodeReachable(b, a)
+          fd.handle_unpartition_event(a,b)
         case WaitQuiescence =>
           loop = false // Start waiting for quiescence
       }
@@ -224,15 +171,8 @@ class PeekScheduler()
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     events += MsgSend(snd, rcv, envelope.message) 
     // Intercept any messages sent towards the failure detector
-    if (rcv == fdName) {
-      envelope.message match {
-        case QueryReachableGroup =>
-          // Allow queries to be made during class initialization (more than one might be happening at
-          // a time)
-          pendingFDRequests += snd
-        case _ =>
-          assert(false)
-      }
+    if (rcv == FailureDetector.fdName) {
+      fd.handle_fd_message(envelope.message, snd)
     } else if (!((partitioned contains (snd, rcv)) // Drop any messages that crosses a partition.
          || (partitioned contains (rcv, snd))
          || (inaccessible contains rcv) 
@@ -246,7 +186,7 @@ class PeekScheduler()
     super.event_produced(event)
     event match { 
       case event : SpawnEvent => 
-        fdState(event.name) = new HashSet[String]
+        fd.create_node(event.name)
         actorToActorRef(event.name) = event.actor
     }
   }
@@ -272,11 +212,8 @@ class PeekScheduler()
     schedSemaphore.acquire
     assert(started.get)
     
-    // Send all waiting fd responses
-    for (receiver <- pendingFDRequests) {
-      answerFdQuery(receiver)
-    }
-    pendingFDRequests.clear
+    // Send all pending fd responses
+    fd.send_all_pending_responses()
     // Drain message queue 
     for ((receiver, msg) <- messagesToSend) {
       receiver ! msg
