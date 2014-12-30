@@ -47,7 +47,7 @@ case class NodeReachable(actor: String) extends FDMessage
 case object QueryReachableGroup extends FDMessage
 
 // Response to failure detector queries.
-case class ReachableGroup(actors: Array[String]) extends FDMessage
+case class ReachableGroup(actors: Set[String]) extends FDMessage
 
 trait TellEnqueue {
   def tell()
