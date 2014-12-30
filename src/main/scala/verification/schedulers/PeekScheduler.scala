@@ -79,6 +79,7 @@ class PeekScheduler()
   }
 
   // Mark a node as unreachable, used to kill a node.
+  // TODO(cs): to be implemented later: actually kill the node so that its state is cleared?
   private[this] def isolate_node (node: String) {
     inaccessible += node
     fdState(node).clear()
@@ -108,7 +109,8 @@ class PeekScheduler()
     traceIdx = 0
     instrumenter.actorSystem.actorOf(Props[FailureDetector], fdName)
     // We begin by starting all actors at the beginning of time, just mark them as 
-    // isolated (i.e., unreachable)
+    // isolated (i.e., unreachable). Later, when we replay the `Start` event,
+    // we unisolate the actor.
     for (t <- trace) {
       t match {
         case Start (prop, name) => 
@@ -170,8 +172,10 @@ class PeekScheduler()
     started.set(true)
     var loop = true
     while (loop && traceIdx < trace.size) {
+      // TODO(cs): factor this code out. Currently redundant with ReplayScheduler's advanceTrace().
       trace(traceIdx) match {
         case Start (_, name) =>
+          Util.logger.log(name, "God spawned me")
           events += actorToSpawnEvent(name)
           unisolate_node(name)
           // Send FD message before adding an actor
@@ -179,6 +183,7 @@ class PeekScheduler()
           informNodeReachable(name)
           activeActors += name
         case Kill (name) =>
+          Util.logger.log(name, "God killed me")
           events += KillEvent(name)
           isolate_node(name)
           activeActors -= name
@@ -189,17 +194,21 @@ class PeekScheduler()
         case Partition (a, b) =>
           events += PartitionEvent((a, b))
           add_to_partition((a, b))
+          Util.logger.log(a, "God partitioned me from " + b)
+          Util.logger.log(b, "God partitioned me from " + a)
           // Send FD information to each of the actors
           informNodeUnreachable(a, b)
           informNodeUnreachable(b, a)
         case UnPartition (a, b) =>
           events += UnPartitionEvent((a, b))
           remove_partition((a, b))
+          Util.logger.log(a, "God reconnected me to " + b)
+          Util.logger.log(b, "God reconnected me to " + a)
           // Send FD information to each of the actors
           informNodeReachable(a, b)
           informNodeReachable(b, a)
         case WaitQuiescence =>
-          loop = false // Start waiting for quiscence
+          loop = false // Start waiting for quiescence
       }
       traceIdx += 1
     }
@@ -219,7 +228,7 @@ class PeekScheduler()
       envelope.message match {
         case QueryReachableGroup =>
           // Allow queries to be made during class initialization (more than one might be happening at
-          // a time
+          // a time)
           pendingFDRequests += snd
         case _ =>
           assert(false)

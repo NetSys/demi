@@ -19,9 +19,10 @@ import scala.collection.Iterator
 
 import scala.collection.generic.GenericTraversableTemplate
 
-// A basic scheduler
+// A scheduler that always forwards messages immediately.
 class NullScheduler extends Scheduler {
-  
+
+  // Mechanism to forward messages immediately: mark everything as a "system message".
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
     return true
   }
