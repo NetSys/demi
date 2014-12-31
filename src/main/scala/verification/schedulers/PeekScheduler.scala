@@ -9,9 +9,13 @@ import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
 import scala.collection.immutable.Set
 import scala.collection.mutable.HashSet
+import scala.collection.JavaConversions._
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
+
 
 
 // Just a very simple, non-null scheduler that supports 
@@ -44,12 +48,14 @@ class PeekScheduler()
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
-  val messagesToSend = new HashSet[(ActorRef, Any)]
+  val messagesToSend = Collections.newSetFromMap(new ConcurrentHashMap[(ActorRef, Any),java.lang.Boolean])
 
   // Are we expecting message receives
   private[this] val started = new AtomicBoolean(false)
 
-  // Ensure exactly one thread in the scheduler at a time
+  // Ensure that only one thread is running inside the scheduler when we are
+  // dispatching external messages to actors. (Does not guard the scheduler's instance
+  // variables.)
   private[this] val schedSemaphore = new Semaphore(1)
 
   // Handler for FailureDetector messages

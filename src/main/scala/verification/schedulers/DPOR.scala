@@ -19,7 +19,8 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.HashSet,
        scala.collection.mutable.ArrayBuffer,
        scala.collection.mutable.ArraySeq,
-       scala.collection.mutable.Stack
+       scala.collection.mutable.Stack,
+       scala.collection.JavaConversions._
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
@@ -31,6 +32,8 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Logger
 
 import java.util.concurrent.Semaphore
+import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
        
@@ -78,7 +81,9 @@ class DPOR extends Scheduler with LazyLogging {
   
   var instrumenter = Instrumenter
 
-  // Ensure exactly one thread in the scheduler at a time
+  // Ensure that only one thread is running inside the scheduler when we are
+  // dispatching external messages to actors. (Does not guard the scheduler's instance
+  // variables.)
   private[this] val schedSemaphore = new Semaphore(1)
   // Are we expecting message receives
   private[this] val started = new AtomicBoolean(false)
@@ -110,8 +115,7 @@ class DPOR extends Scheduler with LazyLogging {
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
-  val messagesToSend = new HashSet[(ActorRef, Any)]
-
+  val messagesToSend = Collections.newSetFromMap(new ConcurrentHashMap[(ActorRef, Any),java.lang.Boolean])
   
   
   def getRootEvent : Unique = {
