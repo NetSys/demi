@@ -1,5 +1,6 @@
 package akka.dispatch.verification
 
+
 import akka.actor.ActorCell,
        akka.actor.ActorSystem,
        akka.actor.ActorRef,
@@ -172,12 +173,7 @@ class DPOR extends Scheduler with LazyLogging {
     case _ => None
   }
 
-  
-  
-  
-  // Figure out what is the next message to schedule.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    
+  def dispatch_external_messages() {
     // While we deal with external messages,
     // ensure that only one thread is accessing shared scheduler structures.
     schedSemaphore.acquire
@@ -188,7 +184,7 @@ class DPOR extends Scheduler with LazyLogging {
     // Drain message queue 
     // TODO(cs): think about whether this violates what DPOR is expecting. In particular,
     // it isn't expecting new messages during replay.. otoh, these messages
-    // aren't always flushed up front before DPOR has a chance to observe
+    // are always flushed up front before DPOR has a chance to observe
     // them, so it may not affect anything.
     for ((receiver, msg) <- messagesToSend) {
       receiver ! msg
@@ -199,6 +195,16 @@ class DPOR extends Scheduler with LazyLogging {
     instrumenter().await_enqueue()
     // schedule_new_message is reenterant, hence release before proceeding.
     schedSemaphore.release
+  }
+
+  
+  
+  
+  // Figure out what is the next message to schedule.
+  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+    
+    // First, dispatch external messages
+    dispatch_external_messages
 
     // Now proceed with DPOR-controlled messages.
 
@@ -335,6 +341,8 @@ class DPOR extends Scheduler with LazyLogging {
   def runExternal() = {
     started.set(true)
     fd.startFD(instrumenter().actorSystem())
+    // Allow the failure detector to send its bootstrap messages
+    dispatch_external_messages
 
     currentTrace += getRootEvent
     
