@@ -1,5 +1,6 @@
 package akka.dispatch.verification
 
+
 import akka.actor.ActorCell,
        akka.actor.ActorSystem,
        akka.actor.ActorRef,
@@ -19,7 +20,8 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.HashSet,
        scala.collection.mutable.ArrayBuffer,
        scala.collection.mutable.ArraySeq,
-       scala.collection.mutable.Stack
+       scala.collection.mutable.Stack,
+       scala.collection.JavaConversions._
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
@@ -31,6 +33,8 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Logger
 
 import java.util.concurrent.Semaphore
+import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
        
@@ -78,7 +82,9 @@ class DPOR extends Scheduler with LazyLogging {
   
   var instrumenter = Instrumenter
 
-  // Ensure exactly one thread in the scheduler at a time
+  // Ensure that only one thread is running inside the scheduler when we are
+  // dispatching external messages to actors. (Does not guard the scheduler's instance
+  // variables.)
   private[this] val schedSemaphore = new Semaphore(1)
   // Are we expecting message receives
   private[this] val started = new AtomicBoolean(false)
@@ -110,8 +116,7 @@ class DPOR extends Scheduler with LazyLogging {
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
-  val messagesToSend = new HashSet[(ActorRef, Any)]
-
+  val messagesToSend = Collections.newSetFromMap(new ConcurrentHashMap[(ActorRef, Any),java.lang.Boolean])
   
   
   def getRootEvent : Unique = {
@@ -168,12 +173,7 @@ class DPOR extends Scheduler with LazyLogging {
     case _ => None
   }
 
-  
-  
-  
-  // Figure out what is the next message to schedule.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    
+  def dispatch_external_messages() {
     // While we deal with external messages,
     // ensure that only one thread is accessing shared scheduler structures.
     schedSemaphore.acquire
@@ -184,7 +184,7 @@ class DPOR extends Scheduler with LazyLogging {
     // Drain message queue 
     // TODO(cs): think about whether this violates what DPOR is expecting. In particular,
     // it isn't expecting new messages during replay.. otoh, these messages
-    // aren't always flushed up front before DPOR has a chance to observe
+    // are always flushed up front before DPOR has a chance to observe
     // them, so it may not affect anything.
     for ((receiver, msg) <- messagesToSend) {
       receiver ! msg
@@ -195,6 +195,16 @@ class DPOR extends Scheduler with LazyLogging {
     instrumenter().await_enqueue()
     // schedule_new_message is reenterant, hence release before proceeding.
     schedSemaphore.release
+  }
+
+  
+  
+  
+  // Figure out what is the next message to schedule.
+  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+    
+    // First, dispatch external messages
+    dispatch_external_messages
 
     // Now proceed with DPOR-controlled messages.
 
@@ -331,6 +341,8 @@ class DPOR extends Scheduler with LazyLogging {
   def runExternal() = {
     started.set(true)
     fd.startFD(instrumenter().actorSystem())
+    // Allow the failure detector to send its bootstrap messages
+    dispatch_external_messages
 
     currentTrace += getRootEvent
     

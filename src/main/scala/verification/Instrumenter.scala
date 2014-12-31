@@ -226,6 +226,12 @@ class Instrumenter {
     }
   }
 
+  // When akka.actor.schedulerOnce decides to schedule a message to be sent,
+  // we intercept it here.
+  def handleTick(receiver: ActorRef, msg: Any) {
+    println("handleTick " + receiver.path.name)
+    scheduler.enqueue_message(receiver.path.name, msg)
+  }
 
 }
 
