@@ -35,7 +35,8 @@ trait Scheduler {
   // Tell the scheduler that it should eventually schedule the given message.
   // Used to feed messages from the external world into actor systems.
   def enqueue_message(receiver: String, msg: Any)
-  // TODO(cs): add shutdown()
+  // Shut down the actor system.
+  def shutdown()
 
 }
 

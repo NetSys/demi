@@ -125,4 +125,8 @@ class FairScheduler extends Scheduler {
   def enqueue_message(receiver: String, msg: Any) {
     throw new Exception("NYI")
   }
+
+  def shutdown() {
+    instrumenter.restart_system
+  }
 }

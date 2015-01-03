@@ -4,7 +4,22 @@ import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{Envelope}
 
 // External events used to specify a trace
-abstract class ExternalEvent
+abstract class ExternalEvent {
+  // Ensure that ExternalEvents are unique
+  val id = IDGenerator.get()
+
+  override def equals(other: Any) : Boolean = {
+    other match {
+      case o: ExternalEvent => return id == o.id
+      case _ => return false
+    }
+  }
+
+  override def hashCode : Int = {
+    return id
+  }
+}
+
 final case class Start (prop: Props, name: String) extends ExternalEvent
 final case class Kill (name: String) extends ExternalEvent {}
 final case class Send (name: String, message: Any) extends ExternalEvent
