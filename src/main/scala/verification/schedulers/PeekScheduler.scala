@@ -21,7 +21,7 @@ import java.util.Collections
 // Just a very simple, non-null scheduler that supports 
 // partitions and injecting external events.
 class PeekScheduler()
-    extends FairScheduler {
+    extends FairScheduler with TestOracle {
 
   // Pairs of actors that cannot communicate
   val partitioned = new HashSet[(String, String)]
@@ -33,17 +33,21 @@ class PeekScheduler()
   val actorToActorRef = new HashMap[String, ActorRef]
   val actorToSpawnEvent = new HashMap[String, SpawnEvent]
 
-  private[this] var trace: Array[ExternalEvent] = Array()
+  private[this] var trace: Seq[ExternalEvent] = new Array[ExternalEvent](0)
   private[this] var traceIdx: Int = 0
   var events: Queue[Event] = new Queue[Event]() 
   
-  // Semaphore to wait for trace replay to be done 
+  // Semaphore to wait for trace replay to be done. We initialize the
+  // semaphore to 0 rather than 1, so that the main thread blocks upon
+  // invoking acquire() until another thread release()'s it.
   private[this] val traceSem = new Semaphore(0)
 
   // Are we in peek or is someone using this scheduler in some strange way.
   private[this] val peek = new AtomicBoolean(false)
 
-  // Semaphore to use when shutting down the scheduler
+  // Semaphore to use when shutting down the scheduler. We initialize the
+  // semaphore to 0 rather than 1, so that the main thread blocks upon
+  // invoking acquire() until another thread release()'s it.
   private[this] val shutdownSem = new Semaphore(0)
 
   // A set of external messages to send. Messages sent between actors are not
@@ -60,6 +64,8 @@ class PeekScheduler()
 
   // Handler for FailureDetector messages
   val fd = new FDMessageOrchestrator(this)
+
+  var test_invariant : Invariant = null
 
   // Mark a couple of nodes as partitioned (so they cannot communicate)
   private[this] def add_to_partition (newly_partitioned: (String, String)) {
@@ -98,7 +104,7 @@ class PeekScheduler()
   }
 
   // Given an external event trace, see the events produced
-  def peek (_trace: Array[ExternalEvent]) : Queue[Event]  = {
+  def peek (_trace: Seq[ExternalEvent]) : Queue[Event]  = {
     trace = _trace
     events = new Queue[Event]()
     traceIdx = 0
@@ -251,7 +257,7 @@ class PeekScheduler()
 
   // Shutdown the scheduler, this ensures that the instrumenter is returned to its
   // original pristine form, so one can change schedulers
-  def shutdown () = {
+  override def shutdown () = {
     instrumenter.restart_system
     shutdownSem.acquire
   }
@@ -265,5 +271,19 @@ class PeekScheduler()
   }
   override def after_receive(cell: ActorCell) : Unit = {
     events += ChangeContext("scheduler")
+  }
+
+  def setInvariant(invariant: Invariant) {
+    test_invariant = invariant
+  }
+
+  def test(events: Seq[ExternalEvent]) : Boolean = {
+    peek(events)
+    if (test_invariant == null) {
+      throw new IllegalArgumentException("Must invoke setInvariant before test()")
+    }
+    val passes = test_invariant()
+    shutdown()
+    return passes
   }
 }

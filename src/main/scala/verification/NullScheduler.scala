@@ -51,5 +51,6 @@ class NullScheduler extends Scheduler {
   def enqueue_message(receiver: String, msg: Any) {
     throw new Exception("NYI")
   }
+  def shutdown() {}
 
 }

@@ -1,15 +1,5 @@
 package akka.dispatch.verification
 // TODO(cs): put me in a different package?
-// TODO(cs): treat failure and recovery events as atomic pairs.
-
-class IndexedEvent(_idx: Integer, _event: ExternalEvent) extends Ordered[IndexedEvent] {
-  val idx = _idx
-  val event = _event
-
-  def compare(that: IndexedEvent) : Int = {
-    return this.idx - that.idx
-  }
-}
 
 class DDMin (oracle: TestOracle) extends Minimizer {
   // Taken from the 1999 version of delta debugging:
@@ -18,34 +8,42 @@ class DDMin (oracle: TestOracle) extends Minimizer {
   //
   // Note that this differs from the 2001 version:
   //   https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf
-  def minimize(events: List[ExternalEvent]) : List[ExternalEvent] = {
-    var remainder = List[IndexedEvent]()
-    var indexed = events.zipWithIndex.map(t => new IndexedEvent(t._2, t._1))
-    return ddmin2(indexed, remainder).map(e => e.event)
-  }
-
-  def ddmin2(events: List[IndexedEvent],
-             remainder: List[IndexedEvent]) : List[IndexedEvent] = {
-    if (events.length <= 1) {
-      return events
+  def minimize(events: Seq[ExternalEvent]) : Seq[ExternalEvent] = {
+    // First check if the initial trace violates the exception
+    println("Checking if unmodified trace triggers violation...")
+    if (oracle.test(events)) {
+      throw new IllegalArgumentException("Unmodified trace does not trigger violation")
     }
 
-    val splits : List[List[IndexedEvent]] =
-        MinificationUtil.split_list(events, 2).asInstanceOf[List[List[IndexedEvent]]]
+    var dag : EventDag = new UnmodifiedEventDag(events)
+    var remainder : EventDag = new UnmodifiedEventDag(List[ExternalEvent]())
+    return ddmin2(dag, remainder).get_all_events
+  }
 
-    // First, check both halves:
+  def ddmin2(dag: EventDag, remainder: EventDag) : EventDag = {
+    if (dag.get_all_events.length <= 1) {
+      return dag
+    }
+
+    // N.B., because we invoke remove_events() on each split, we are actually
+    // testing the right half of events first, then the left half.
+    val splits : Seq[EventDag] =
+        MinificationUtil.split_list(dag.get_atomic_events, 2).
+            asInstanceOf[Seq[Seq[AtomicEvent]]].
+            map(split => dag.remove_events(split))
+
+    // First, check both halves.
     for (split <- splits) {
-      // Always sort by index before executing.
-      var union = (split ++ remainder).sorted.map(e => e.event)
-      var passes = oracle.test(union)
+      val union = split.union(remainder)
+      val passes = oracle.test(union.get_all_events)
       if (!passes) {
         return ddmin2(split, remainder)
       }
     }
 
     // Interference:
-    var left = ddmin2(splits(0), splits(1) ++ remainder)
-    var right = ddmin2(splits(1), splits(0) ++ remainder)
-    return left ++ right
+    val left = ddmin2(splits(0), splits(1).union(remainder))
+    val right = ddmin2(splits(1), splits(0).union(remainder))
+    return left.union(right)
   }
 }

@@ -207,4 +207,8 @@ class BasicScheduler extends Scheduler {
     throw new Exception("NYI")
   }
 
+  def shutdown() {
+    instrumenter.restart_system
+  }
+
 }

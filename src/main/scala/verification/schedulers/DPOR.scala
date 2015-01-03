@@ -696,4 +696,9 @@ class DPOR extends Scheduler with LazyLogging {
   private[this] def enqueue_message(actor: ActorRef, msg: Any) {
     messagesToSend += ((actor, msg))
   }
+
+  def shutdown() {
+    instrumenter().restart_system
+    // TODO(cs): not thread-safe? see PeekScheduler's shutdown()
+  }
 }
