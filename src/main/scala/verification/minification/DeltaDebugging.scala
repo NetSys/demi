@@ -21,27 +21,34 @@ class DDMin (oracle: TestOracle) extends Minimizer {
   }
 
   def ddmin2(dag: EventDag, remainder: EventDag) : EventDag = {
-    if (dag.get_all_events.length <= 1) {
+    if (dag.get_atomic_events.length <= 1) {
+      println("base case")
       return dag
     }
 
-    // N.B., because we invoke remove_events() on each split, we are actually
-    // testing the right half of events first, then the left half.
+    // N.B. we reverse to ensure that we test the left half of events before
+    // the right half of events. Necessary b/c of our use of remove_events().
+    // Just a matter of convention.
     val splits : Seq[EventDag] =
         MinificationUtil.split_list(dag.get_atomic_events, 2).
             asInstanceOf[Seq[Seq[AtomicEvent]]].
-            map(split => dag.remove_events(split))
+            map(split => dag.remove_events(split)).reverse
 
     // First, check both halves.
     for (split <- splits) {
       val union = split.union(remainder)
+      println("Checking split")
       val passes = oracle.test(union.get_all_events)
       if (!passes) {
+        println("Split fails. Recursing")
         return ddmin2(split, remainder)
+      } else {
+        println("Split passes.")
       }
     }
 
     // Interference:
+    println("Interference")
     val left = ddmin2(splits(0), splits(1).union(remainder))
     val right = ddmin2(splits(1), splits(0).union(remainder))
     return left.union(right)
