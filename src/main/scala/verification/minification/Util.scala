@@ -102,54 +102,6 @@ trait EventDag {
 
 // Internal utility methods
 object EventDag {
-  def get_atomic_events(events: Seq[ExternalEvent]) : Seq[AtomicEvent] = {
-    // TODO(cs): memoize this computation?
-    // As we iterate through events, check whether the "fingerprint" of the
-    // current recovery event matches a "fingerprint" of a preceding failure
-    // event. If so, group them together as an Atomic pair.
-    var fingerprint_2_previous_failure : Map[String, ExternalEvent] = Map()
-    var atomics = new ListBuffer[AtomicEvent]()
-
-    for (event <- events) {
-      event match {
-        case Kill(name) => {
-          fingerprint_2_previous_failure(name) = event
-        }
-        case Partition(a,b) => {
-          val key = a + "->" + b
-          fingerprint_2_previous_failure(key) = event
-        }
-        case Start(_, name) => {
-          fingerprint_2_previous_failure get name match {
-            case Some(failure) => {
-              atomics = atomics :+ new AtomicEvent(failure, event)
-              fingerprint_2_previous_failure -= name
-            }
-            case None => {
-              // A Start at the beginning of the trace
-              atomics = atomics :+ new AtomicEvent(event)
-            }
-          }
-        }
-        case UnPartition(a,b) => {
-          val key = a + "->" + b
-          fingerprint_2_previous_failure get key match {
-            case Some(partition) => {
-              atomics = atomics :+ new AtomicEvent(partition, event)
-              fingerprint_2_previous_failure -= key
-            }
-            case None => {
-              throw new RuntimeException("UnPartition without preceding Partition")
-            }
-          }
-        }
-        case _ => atomics = atomics :+ new AtomicEvent(event)
-      }
-    }
-
-    return atomics
-  }
-
   def remove_events(to_remove: Seq[AtomicEvent], events: Seq[ExternalEvent]) : Seq[ExternalEvent] = {
     var all_removed = Set(to_remove.map(atomic => atomic.events).flatten: _*)
 
@@ -213,7 +165,65 @@ class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
   }
 
   def get_atomic_events() : Seq[AtomicEvent] = {
-    return EventDag.get_atomic_events(events)
+    return get_atomic_events(events)
+  }
+
+  // Internal API
+  def get_atomic_events(given_events: Seq[ExternalEvent]) : Seq[AtomicEvent] = {
+    // TODO(cs): memoize this computation?
+    // As we iterate through events, check whether the "fingerprint" of the
+    // current recovery event matches a "fingerprint" of a preceding failure
+    // event. If so, group them together as an Atomic pair.
+    //
+    // For Partition/UnPartition, the Partition always comes first. For
+    // Kill/Start, the Start always comes first.
+    var fingerprint_2_previous_dual : Map[String, ExternalEvent] = Map()
+    var atomics = new ListBuffer[AtomicEvent]()
+
+    for (event <- given_events) {
+      event match {
+        case Kill(name) => {
+          fingerprint_2_previous_dual get name match {
+            case Some(start) => {
+              atomics = atomics :+ new AtomicEvent(start, event)
+              fingerprint_2_previous_dual -= name
+            }
+            case None => {
+              throw new RuntimeException("Kill without preceding Start")
+            }
+          }
+        }
+        case Partition(a,b) => {
+          val key = a + "->" + b
+          fingerprint_2_previous_dual(key) = event
+        }
+        case Start(_, name) => {
+          fingerprint_2_previous_dual(name) = event
+        }
+        case UnPartition(a,b) => {
+          val key = a + "->" + b
+          fingerprint_2_previous_dual get key match {
+            case Some(partition) => {
+              atomics = atomics :+ new AtomicEvent(partition, event)
+              fingerprint_2_previous_dual -= key
+            }
+            case None => {
+              throw new RuntimeException("UnPartition without preceding Partition")
+            }
+          }
+        }
+        case _ => atomics = atomics :+ new AtomicEvent(event)
+      }
+    }
+
+    // Make sure to include any remaining Start or Partition events that never had
+    // corresponding Kill/UnPartition events.
+    for (e <- fingerprint_2_previous_dual.values) {
+      atomics = atomics :+ new AtomicEvent(e)
+    }
+
+    // Sort by the original index of first element in the event list.
+    return atomics.sortBy[Int](a => event_to_idx(a.events(0)))
   }
 
   def get_all_events() : Seq[ExternalEvent] = {
@@ -240,7 +250,7 @@ class EventDagView(parent: UnmodifiedEventDag, events: Seq[ExternalEvent]) exten
   }
 
   def get_atomic_events() : Seq[AtomicEvent] = {
-    return EventDag.get_atomic_events(events)
+    return parent.get_atomic_events(events)
   }
 
   def get_all_events() : Seq[ExternalEvent] = {
