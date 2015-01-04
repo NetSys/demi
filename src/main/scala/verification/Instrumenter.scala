@@ -7,6 +7,7 @@ import akka.actor.Actor
 import akka.actor.PoisonPill
 import akka.actor.Props;
 import java.util.concurrent.atomic.AtomicBoolean
+import java.io.Closeable
 
 import akka.dispatch.Envelope
 import akka.dispatch.MessageQueue
@@ -126,10 +127,13 @@ class Instrumenter {
     seenActors.clear()
     for ((system, argQueue) <- allSystems) {
         println("Shutting down the actor system. " + argQueue.size)
-        system.shutdown()
         system.registerOnTermination(reinitialize_system(system, argQueue))
+        system.scheduler.asInstanceOf[Closeable].close()
+        system.shutdown()
         println("Shut down the actor system. " + argQueue.size)
     }
+
+    Util.logger.reset
   }
   
   
