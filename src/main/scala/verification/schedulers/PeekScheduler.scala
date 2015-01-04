@@ -251,6 +251,8 @@ class PeekScheduler()
       if (peek.get) {
         // Tell the calling thread we are done
         traceSem.release
+      } else {
+        throw new RuntimeException("peek.get returned false")
       }
     }
   }

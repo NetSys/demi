@@ -59,6 +59,10 @@ class VCLogger () {
     dstVC = dstVC.merge(srcVC)
     actor2vc = actor2vc + (dst -> dstVC)
   }
+
+  def reset() {
+    actor2vc = Map()
+  }
 }
 
 

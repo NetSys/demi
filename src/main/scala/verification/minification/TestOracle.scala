@@ -15,3 +15,34 @@ trait TestOracle {
    */
   def test(events: Seq[ExternalEvent]) : Boolean
 }
+
+object StatelessTestOracle {
+  type OracleConstructor = () => TestOracle
+}
+
+/*
+ * A TestOracle that throws away all state between invocations of test().
+ * Useful for debugging or avoiding statefulness problems, e.g. deadlocks.
+ */
+// TODO(cs): there is currently a deadlock in PeekScheduler: if you invoke
+// PeekScheduler.test() multiple times, it runs the first execution just fine,
+// but the second execution never reaches Quiescence, and blocks infinitely
+// trying to acquire traceSem. Figure out why.
+class StatelessTestOracle(oracle_ctor: StatelessTestOracle.OracleConstructor) extends TestOracle {
+  var invariant : Invariant = null
+
+  def setInvariant(inv: Invariant) = {
+    invariant = inv
+  }
+
+  def test(events: Seq[ExternalEvent]) : Boolean = {
+    val oracle = oracle_ctor()
+    try {
+      Instrumenter().scheduler = oracle.asInstanceOf[Scheduler]
+    } catch {
+      case e: Exception => println("oracle not a scheduler?")
+    }
+    oracle.setInvariant(invariant)
+    return oracle.test(events)
+  }
+}
