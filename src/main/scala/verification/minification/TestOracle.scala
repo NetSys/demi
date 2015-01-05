@@ -2,7 +2,7 @@ package akka.dispatch.verification
 
 
 trait TestOracle {
-  type Invariant = () => Boolean
+  type Invariant = (Seq[ExternalEvent]) => Boolean
 
   def setInvariant(invariant: Invariant)
 

@@ -25,6 +25,8 @@ import scala.util.control.Breaks
 
 
 class Instrumenter {
+  type ShutdownCallback = () => Unit
+
   var scheduler : Scheduler = new NullScheduler
   var tellEnqueue : TellEnqueue = new TellEnqueueSemaphore
   
@@ -40,6 +42,7 @@ class Instrumenter {
   var inActor = false
   var counter = 0   
   var started = new AtomicBoolean(false);
+  var shutdownCallback : ShutdownCallback = () => {}
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
@@ -97,6 +100,7 @@ class Instrumenter {
   def reinitialize_system(sys: ActorSystem, argQueue: Queue[Any]) {
     require(scheduler != null)
     _actorSystem = ActorSystem("new-system-" + counter)
+    shutdownCallback()
     counter += 1
     println("Started a new actor system.")
     // This is safe, we have just started a new actor system (after killing all
@@ -237,6 +241,9 @@ class Instrumenter {
     scheduler.enqueue_message(receiver.path.name, msg)
   }
 
+  def registerShutdownCallback(callback: ShutdownCallback) {
+    shutdownCallback = callback
+  }
 }
 
 object Instrumenter {

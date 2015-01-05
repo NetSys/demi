@@ -7,14 +7,12 @@ import akka.dispatch.Envelope
 
 import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
+import scala.collection.mutable.SynchronizedQueue
 import scala.collection.immutable.Set
 import scala.collection.mutable.HashSet
-import scala.collection.JavaConversions._
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.ConcurrentHashMap
-import java.util.Collections
 
 
 
@@ -52,7 +50,7 @@ class PeekScheduler()
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
-  val messagesToSend = Collections.newSetFromMap(new ConcurrentHashMap[(ActorRef, Any),java.lang.Boolean])
+  val messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
 
   // Are we expecting message receives
   private[this] val started = new AtomicBoolean(false)
@@ -284,7 +282,7 @@ class PeekScheduler()
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
-    val passes = test_invariant()
+    val passes = test_invariant(events)
     shutdown()
     return passes
   }
