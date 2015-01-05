@@ -21,7 +21,7 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.ArrayBuffer,
        scala.collection.mutable.ArraySeq,
        scala.collection.mutable.Stack,
-       scala.collection.JavaConversions._
+       scala.collection.mutable.SynchronizedQueue
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
@@ -33,8 +33,6 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Logger
 
 import java.util.concurrent.Semaphore
-import java.util.concurrent.ConcurrentHashMap
-import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
        
@@ -116,7 +114,7 @@ class DPOR extends Scheduler with LazyLogging {
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
-  val messagesToSend = Collections.newSetFromMap(new ConcurrentHashMap[(ActorRef, Any),java.lang.Boolean])
+  val messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
   
   
   def getRootEvent : Unique = {
