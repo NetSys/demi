@@ -26,19 +26,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PeekScheduler()
     extends FairScheduler with TestOracle {
 
-  // Pairs of actors that cannot communicate
-  val partitioned = new HashSet[(String, String)]
-  
-  // Actors that are unreachable
-  val inaccessible = new HashSet[String]
+  private[this] val event_orchestrator = new EventOrchestrator[ExternalEvent]()
 
-  // Actors to actor ref
-  val actorToActorRef = new HashMap[String, ActorRef]
-  val actorToSpawnEvent = new HashMap[String, SpawnEvent]
-
-  private[this] var trace: Seq[ExternalEvent] = new Array[ExternalEvent](0)
-  private[this] var traceIdx: Int = 0
-  var events: Queue[Event] = new Queue[Event]() 
+  // Handler for FailureDetector messages
+  val fd = new FDMessageOrchestrator(this)
+  event_orchestrator.set_failure_detector(fd)
   
   // Semaphore to wait for trace replay to be done. We initialize the
   // semaphore to 0 rather than 1, so that the main thread blocks upon
@@ -65,38 +57,12 @@ class PeekScheduler()
   // variables.)
   private[this] val schedSemaphore = new Semaphore(1)
 
-  // Handler for FailureDetector messages
-  val fd = new FDMessageOrchestrator(this)
-
   var test_invariant : Invariant = null
-
-  // Mark a couple of nodes as partitioned (so they cannot communicate)
-  private[this] def add_to_partition (newly_partitioned: (String, String)) {
-    partitioned += newly_partitioned
-  }
-
-  // Mark a couple of node as unpartitioned, i.e. they can communicate
-  private[this] def remove_partition (newly_partitioned: (String, String)) {
-    partitioned -= newly_partitioned
-  }
-
-  // Mark a node as unreachable, used to kill a node.
-  // TODO(cs): to be implemented later: actually kill the node so that its state is cleared?
-  private[this] def isolate_node (node: String) {
-    inaccessible += node
-    fd.isolate_node(node)
-  }
-
-  // Mark a node as reachable, also used to start a node
-  private[this] def unisolate_node (actor: String) {
-    inaccessible -= actor
-    fd.unisolate_node(actor)
-  }
 
   // Enqueue a message for future delivery
   override def enqueue_message(receiver: String, msg: Any) {
     if (actorNames contains receiver) {
-      enqueue_message(actorToActorRef(receiver), msg)
+      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
     } else {
       throw new IllegalArgumentException("Unknown receiver " + receiver)
     }
@@ -108,19 +74,17 @@ class PeekScheduler()
 
   // Given an external event trace, see the events produced
   def peek (_trace: Seq[ExternalEvent]) : Queue[Event]  = {
-    trace = _trace
-    events = new Queue[Event]()
-    traceIdx = 0
+    event_orchestrator.set_trace(_trace)
     fd.startFD(instrumenter.actorSystem)
-    // We begin by starting all actors at the beginning of time, just mark them as 
+    // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
-    for (t <- trace) {
+    for (t <- event_orchestrator.trace) {
       t match {
         case Start (prop, name) => 
           // Just start and isolate all actors we might eventually care about [top-level actors]
           instrumenter.actorSystem.actorOf(prop, name)
-          isolate_node(name)
+          event_orchestrator.isolate_node(name)
         case _ =>
           None
       }
@@ -132,7 +96,7 @@ class PeekScheduler()
     // the caller.
     traceSem.acquire
     peek.set(false)
-    return events
+    return event_orchestrator.events
   }
 
   // Advance the trace
@@ -141,39 +105,7 @@ class PeekScheduler()
     // events. 
     schedSemaphore.acquire
     started.set(true)
-    var loop = true
-    while (loop && traceIdx < trace.size) {
-      // TODO(cs): factor this code out. Currently redundant with ReplayScheduler's advanceTrace().
-      trace(traceIdx) match {
-        case Start (_, name) =>
-          Util.logger.log(name, "God spawned me")
-          events += actorToSpawnEvent(name)
-          unisolate_node(name)
-          fd.handle_start_event(name)
-        case Kill (name) =>
-          Util.logger.log(name, "God killed me")
-          events += KillEvent(name)
-          isolate_node(name)
-          fd.handle_kill_event(name)
-        case Send (name, message) =>
-          enqueue_message(name, message)
-        case Partition (a, b) =>
-          events += PartitionEvent((a, b))
-          add_to_partition((a, b))
-          Util.logger.log(a, "God partitioned me from " + b)
-          Util.logger.log(b, "God partitioned me from " + a)
-          fd.handle_partition_event(a,b)
-        case UnPartition (a, b) =>
-          events += UnPartitionEvent((a, b))
-          remove_partition((a, b))
-          Util.logger.log(a, "God reconnected me to " + b)
-          Util.logger.log(b, "God reconnected me to " + a)
-          fd.handle_unpartition_event(a,b)
-        case WaitQuiescence =>
-          loop = false // Start waiting for quiescence
-      }
-      traceIdx += 1
-    }
+    event_orchestrator.inject_until_quiescence(enqueue_message)
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all 
     // events, let us start dispatching
@@ -184,14 +116,12 @@ class PeekScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
-    events += MsgSend(snd, rcv, envelope.message) 
+    event_orchestrator.events += MsgSend(snd, rcv, envelope.message)
     // Intercept any messages sent towards the failure detector
     if (rcv == FailureDetector.fdName) {
       fd.handle_fd_message(envelope.message, snd)
-    } else if (!((partitioned contains (snd, rcv)) // Drop any messages that crosses a partition.
-         || (partitioned contains (rcv, snd))
-         || (inaccessible contains rcv) 
-         || (inaccessible contains snd))) {
+    // Drop any messages that crosses a partition.
+    } else if (!event_orchestrator.crosses_partition(snd, rcv)) {
       pendingEvents(rcv) = msgs += ((cell, envelope))
     }
   }
@@ -201,15 +131,14 @@ class PeekScheduler()
     super.event_produced(event)
     event match { 
       case event : SpawnEvent => 
-        fd.create_node(event.name)
-        actorToActorRef(event.name) = event.actor
+        event_orchestrator.handle_spawn_produced(event)
     }
   }
 
   // Record that an event was consumed
   override def event_consumed(event: Event) = {
     val spawn_event = event.asInstanceOf[SpawnEvent]
-    actorToSpawnEvent(spawn_event.name) = spawn_event
+    event_orchestrator.handle_spawn_consumed(spawn_event)
   }
   
   // Record a message send event
@@ -218,8 +147,8 @@ class PeekScheduler()
     val rcv = cell.self.path.name
     val msg = envelope.message
     assert(started.get)
-    events += ChangeContext(cell.self.path.name)
-    events += MsgEvent(snd, rcv, msg)
+    event_orchestrator.events += ChangeContext(cell.self.path.name)
+    event_orchestrator.events += MsgEvent(snd, rcv, msg)
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
@@ -246,8 +175,8 @@ class PeekScheduler()
   override def notify_quiescence () {
     assert(started.get)
     started.set(false)
-    events += Quiescence
-    if (traceIdx < trace.size) {
+    event_orchestrator.events += Quiescence
+    if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       advanceTrace()
     } else {
@@ -275,7 +204,7 @@ class PeekScheduler()
   override def before_receive(cell: ActorCell) : Unit = {
   }
   override def after_receive(cell: ActorCell) : Unit = {
-    events += ChangeContext("scheduler")
+    event_orchestrator.events += ChangeContext("scheduler")
   }
 
   def setInvariant(invariant: Invariant) {
