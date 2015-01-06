@@ -15,8 +15,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
-// Just a very simple, non-null scheduler that supports
-// partitions and injecting external events.
+/**
+ * Scheduler that takes a list of both internal and external events (e.g. the
+ * return value of PeekScheduler.peek()), and attempts to replay that schedule
+ * exactly.
+ *
+ * Deals with non-determinism as follows:
+ *  - If the application sends unexpected messages, this scheduler does not allow them through.
+ *  - If the application does not send a message that was previously sent,
+ *    die.
+ */
 class ReplayScheduler() extends Scheduler {
 
   var instrumenter = Instrumenter()

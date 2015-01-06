@@ -8,7 +8,9 @@ import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
-// Schedules events in a round-robin fashion.
+/**
+ * Schedules events in a round-robin fashion.
+ */
 class FairScheduler extends Scheduler {
   
   var instrumenter = Instrumenter()
