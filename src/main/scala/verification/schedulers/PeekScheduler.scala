@@ -16,8 +16,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 
 
-// Just a very simple, non-null scheduler that supports 
-// partitions and injecting external events.
+/**
+ * Takes a sequence of ExternalEvents as input, and plays the execution
+ * forward in the same way as FairScheduler. While playing forward,
+ * PeekScheduler records all internal events that occur, e.g. Message Sends.
+ * PeekScheduler finally returns all events observed during the execution, including
+ * external and internal events.
+ */
 class PeekScheduler()
     extends FairScheduler with TestOracle {
 
