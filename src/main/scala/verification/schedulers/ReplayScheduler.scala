@@ -242,7 +242,7 @@ class ReplayScheduler() extends Scheduler {
   }
 
   override def notify_quiescence () {
-    if (event_orchestrator.trace_finished) {
+    if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       throw new Exception("Divergence")
     } else {

@@ -220,18 +220,4 @@ class PeekScheduler()
     shutdown()
     return passes
   }
-
-  def setInvariant(invariant: Invariant) {
-    test_invariant = invariant
-  }
-
-  def test(events: Seq[ExternalEvent]) : Boolean = {
-    peek(events)
-    if (test_invariant == null) {
-      throw new IllegalArgumentException("Must invoke setInvariant before test()")
-    }
-    val passes = test_invariant(events)
-    shutdown()
-    return passes
-  }
 }
