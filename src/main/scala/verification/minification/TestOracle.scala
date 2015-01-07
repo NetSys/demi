@@ -13,8 +13,6 @@ trait TestOracle {
    * to ensure that the ActorSystem is returned to a clean initial state.
    * Throws an IllegaleArgumentException if setInvariant has not been invoked.
    */
-  // TODO(cs): should probably ensure that WaitQuiescence events aren't ever
-  // pruned.
   def test(events: Seq[ExternalEvent]) : Boolean
 }
 
