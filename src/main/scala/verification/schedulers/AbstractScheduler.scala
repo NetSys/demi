@@ -82,4 +82,9 @@ abstract class AbstractScheduler extends Scheduler {
   def next_event() : Event = {
     throw new Exception("NYI")
   }
+
+  def reset_all_state () = {
+    actorNames = new HashSet[String]
+    currentTime = 0
+  }
 }

@@ -15,9 +15,9 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
 abstract class MessageType()
-final case class ExternalMessage() extends MessageType
-final case class InternalMessage() extends MessageType
-final case class SystemMessage() extends MessageType
+final case object ExternalMessage extends MessageType
+final case object InternalMessage extends MessageType
+final case object SystemMessage extends MessageType
 
 // Provides O(1) lookup, but allows multiple distinct elements
 class MultiSet[E] {
@@ -176,11 +176,11 @@ trait ExternalEventInjector {
     // Intercept any messages sent towards the failure detector
     if (rcv == FailureDetector.fdName) {
       fd.handle_fd_message(envelope.message, snd)
-      return SystemMessage()
+      return SystemMessage
     } else if (enqueuedExternalMessages.contains(envelope.message)) {
-      return ExternalMessage()
+      return ExternalMessage
     } else {
-      return InternalMessage()
+      return InternalMessage
     }
   }
 

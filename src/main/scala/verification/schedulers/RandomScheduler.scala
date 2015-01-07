@@ -123,15 +123,15 @@ class RandomScheduler(max_interleavings: Int)
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     handle_event_produced(snd, rcv, envelope) match {
-      case InternalMessage() => {
+      case InternalMessage => {
         if (!crosses_partition(snd, rcv)) {
           pendingInternalEvents.insert((cell, envelope))
         }
       }
-      case ExternalMessage() => {
+      case ExternalMessage => {
         pendingExternalEvents += ((cell, envelope))
       }
-      case SystemMessage() => None
+      case SystemMessage => None
     }
   }
 
@@ -188,11 +188,10 @@ class RandomScheduler(max_interleavings: Int)
     test_invariant = invariant
   }
 
-  def reset_all_state () {
+  override def reset_all_state () {
+    super.reset_all_state
     pendingInternalEvents = new RandomizedHashSet[(ActorCell, Envelope)]
     pendingExternalEvents = new Queue[(ActorCell, Envelope)]
-    actorNames = new HashSet[String]
-    currentTime = 0
     // TODO(cs): also reset Instrumenter()'s state?
     reset_state
   }
