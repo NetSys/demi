@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Additionally records which events occured during the execution, possibly including internal events.
  *
- * Generic E specifies the type of event trace. Usually either Event or
+ * Generic E specifies the type of given trace. Usually either Event or
  * ExternalEvent.
  */
 class EventOrchestrator[E] {
@@ -109,11 +109,17 @@ class EventOrchestrator[E] {
   // TODO(cs): to be implemented later: actually kill the node so that its state is cleared?
   def isolate_node (node: String) {
     inaccessible += node
+    if (fd != null) {
+      fd.isolate_node(node)
+    }
   }
 
   // Mark a node as reachable, also used to start a node
   def unisolate_node (actor: String) {
     inaccessible -= actor
+    if (fd != null) {
+      fd.unisolate_node(actor)
+    }
   }
 
   def trigger_start (name: String) = {
