@@ -36,7 +36,7 @@ class PeekScheduler()
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     handle_event_produced(snd, rcv, envelope) match {
-      case SystemMessage() => None
+      case SystemMessage => None
       case _ => {
         if (!crosses_partition(snd, rcv)) {
           pendingEvents(rcv) = msgs += ((cell, envelope))
