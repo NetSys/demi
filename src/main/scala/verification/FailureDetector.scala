@@ -36,7 +36,13 @@ class FailureDetector () extends Actor {
   }
 }
 
-class FDMessageOrchestrator (sched: Scheduler) {
+object FDMessageOrchestrator {
+  // Function that queues a message to be sent later.
+  type EnqueueMessage = (String, Any) => Unit
+}
+
+class FDMessageOrchestrator (enqueue_message: FDMessageOrchestrator.EnqueueMessage) {
+
   // Failure detector information
   // For each actor, track the set of other actors who are reachable.
   val fdState = new HashMap[String, HashSet[String]]
@@ -109,11 +115,11 @@ class FDMessageOrchestrator (sched: Scheduler) {
   }
 
   private[this] def informFailureDetectorLocation(actor: String) {
-    sched.enqueue_message(actor, FailureDetectorOnline(FailureDetector.fdName))
+    enqueue_message(actor, FailureDetectorOnline(FailureDetector.fdName))
   }
 
   private[this] def informNodeReachable(actor: String, node: String) {
-    sched.enqueue_message(actor, NodeReachable(node))
+    enqueue_message(actor, NodeReachable(node))
     fdState(actor) += node
   }
 
@@ -124,7 +130,7 @@ class FDMessageOrchestrator (sched: Scheduler) {
   }
 
   private[this] def informNodeUnreachable(actor: String, node: String) {
-    sched.enqueue_message(actor, NodeUnreachable(node))
+    enqueue_message(actor, NodeUnreachable(node))
     fdState(actor) -= node
   }
 
@@ -138,6 +144,6 @@ class FDMessageOrchestrator (sched: Scheduler) {
     // Compute the message
     val msg = ReachableGroup(fdState(sender).toSet)
     // Send failure detector information
-    sched.enqueue_message(sender, msg)
+    enqueue_message(sender, msg)
   }
 }
