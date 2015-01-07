@@ -81,6 +81,7 @@ trait EventDag {
    *  - if a recovery is removed, its preceding failure or partition is also removed
    *  - if a Start event is removed, all subsequent Send events destined for
    *    that node are removed
+   *  - WaitQuiescence events are never removed
    */
   def remove_events(events: Seq[AtomicEvent]) : EventDag
 
@@ -212,6 +213,7 @@ class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
             }
           }
         }
+        case WaitQuiescence => None
         case _ => atomics = atomics :+ new AtomicEvent(event)
       }
     }
@@ -245,7 +247,10 @@ class EventDagView(parent: UnmodifiedEventDag, events: Seq[ExternalEvent]) exten
   }
 
   def union(other: EventDag) : EventDag = {
-    val union = (events ++ other.get_all_events).sortBy[Int](e => parent.event_to_idx(e))
+    // First remove redundant WaitQuiescence events, then sort by original
+    // index.
+    val union = Set((events ++ other.get_all_events): _*).
+                  toList.sortBy[Int](e => parent.event_to_idx(e))
     return new EventDagView(parent, union)
   }
 
