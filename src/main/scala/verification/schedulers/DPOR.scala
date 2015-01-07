@@ -110,7 +110,7 @@ class DPOR extends Scheduler with LazyLogging {
   var parentEvent = getRootEvent
 
   // Handler for FailureDetector messages
-  val fd = new FDMessageOrchestrator(this)
+  val fd = new FDMessageOrchestrator(enqueue_message)
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
