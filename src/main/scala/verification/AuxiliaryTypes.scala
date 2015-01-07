@@ -21,13 +21,15 @@ case class Unique(
   var id : Int = IDGenerator.get()
 )
 
-abstract class Event
+abstract trait Event
 
 case class MsgEvent(
     sender: String, receiver: String, msg: Any) extends Event
 
 case class SpawnEvent(
     parent: String, props: Props, name: String, actor: ActorRef) extends Event
+
+case class NetworkPartition(first: Set[String], second: Set[String]) extends Event with ExternalEvent
 
 
 
@@ -47,7 +49,7 @@ case class NodeReachable(actor: String) extends FDMessage
 case object QueryReachableGroup extends FDMessage
 
 // Response to failure detector queries.
-case class ReachableGroup(actors: Array[String]) extends FDMessage
+case class ReachableGroup(actors: Set[String]) extends FDMessage
 
 trait TellEnqueue {
   def tell()

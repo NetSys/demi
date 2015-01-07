@@ -157,7 +157,7 @@ class PeekScheduler()
 
   private[this] def answerFdQuery(sender: String) {
     // Compute the message
-    val msg = ReachableGroup(fdState(sender).toArray)
+    val msg = ReachableGroup(fdState(sender).toSet)
     // Send failure detector information
     enqueue_message(sender, msg)
   }

@@ -4,7 +4,8 @@ import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{Envelope}
 
 // External events used to specify a trace
-abstract class ExternalEvent
+abstract trait ExternalEvent
+
 final case class Start (prop: Props, name: String) extends ExternalEvent
 final case class Kill (name: String) extends ExternalEvent {}
 final case class Send (name: String, message: Any) extends ExternalEvent

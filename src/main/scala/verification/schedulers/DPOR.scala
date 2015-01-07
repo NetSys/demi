@@ -96,6 +96,8 @@ class DPOR extends Scheduler with LazyLogging {
   val nextTrace = new Queue[Unique]
   var parentEvent = getRootEvent
   
+  val reachabilityMap = new HashMap[String, Set[String]]
+  
   
   def getRootEvent : Unique = {
     var root = Unique(MsgEvent("null", "null", null), 0)
@@ -190,23 +192,29 @@ class DPOR extends Scheduler with LazyLogging {
     }
     
     
-    val matchingMessage = get_next_trace_message() match {
-      // The trace says there is a message event to run.
-      case Some(u @ Unique(MsgEvent(snd, rcv, msg), id)) =>
-        
-        // Look at the pending events to see if such message event exists. 
-        pendingEvents.get(rcv) match {
-          case Some(queue) => queue.dequeueFirst(is_the_same(u, _))
-          case None =>  None
-        }
-        
-      // The trace says there is nothing to run so we have either exhausted our
-      // trace or are running for the first time. Use any enabled transitions.
-      case _ => None
-    }
+    def getMatchingMessage() : Option[(Unique, ActorCell, Envelope)] = 
+      
+      get_next_trace_message() match {
+        // The trace says there is a message event to run.
+        case Some(u @ Unique(MsgEvent(snd, rcv, msg), id)) =>
+          
+          // Look at the pending events to see if such message event exists. 
+          pendingEvents.get(rcv) match {
+            case Some(queue) => queue.dequeueFirst(is_the_same(u, _))
+            case None =>  None
+          }
+  
+        case Some(u @ Unique(NetworkPartition(part1, part2), id)) =>
+          // XXX: Skip for now.
+          getMatchingMessage()
+          
+        // The trace says there is nothing to run so we have either exhausted our
+        // trace or are running for the first time. Use any enabled transitions.
+        case _ => None
+      }
     
     
-    val result = matchingMessage match {
+    val result = getMatchingMessage() match {
       
       // There is a pending event that matches a message in our trace.
       // We call this a convergent state.
@@ -214,6 +222,11 @@ class DPOR extends Scheduler with LazyLogging {
         logger.trace( Console.GREEN + "Replaying the exact message: " +
             "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
         Some((u, cell, env))
+        
+      case Some((u @ Unique(NetworkPartition(part1, part2), id), _, _)) =>
+        logger.trace( Console.GREEN + "Partitioning " + part1 + 
+            " and " + part2 + Console.RESET )
+        None
         
       // We call this a divergent state.
       case None => get_pending_event()
@@ -287,10 +300,15 @@ class DPOR extends Scheduler with LazyLogging {
     for(event <- externalEventList) event match {
       case Start(props, name) => 
         instrumenter().actorSystem().actorOf(props, name)
-        
+  
       case Send(rcv, msg) =>
         val ref = instrumenter().actorMappings(rcv)
         instrumenter().actorMappings(rcv) ! msg
+        
+      case NetworkPartition(part1, part2) =>
+        val msgs = pendingEvents.getOrElse("__SCHEDULER__", new Queue[(Unique, ActorCell, Envelope)])
+        pendingEvents("__SCHEDULER__") = msgs += ((
+            Unique(NetworkPartition(part1, part2)), null, null))
         
       case _ => throw new Exception("unsuported external event")
     }

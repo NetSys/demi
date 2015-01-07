@@ -135,7 +135,7 @@ class Instrumenter {
   
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
-    
+    println("beforeMessageReceive")
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
    
     scheduler.before_receive(cell)
@@ -146,6 +146,7 @@ class Instrumenter {
   
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell) {
+    println("afterMessageReceive")
     if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
 
     tellEnqueue.await()
@@ -165,6 +166,7 @@ class Instrumenter {
 
   // Dispatch a message, i.e., deliver it to the intended recipient
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
+    println("dispatch_new_message")
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     
