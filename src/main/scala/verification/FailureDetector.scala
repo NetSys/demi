@@ -74,7 +74,8 @@ class FDMessageOrchestrator (sched: Scheduler) {
 
   def handle_kill_event(node: String) {
     activeActors -= node
-    // Send FD message after removing the actor informNodeUnreachable(node)
+    // Send FD message after removing the actor
+    informNodeUnreachable(node)
   }
 
   def handle_partition_event(a: String, b: String) {

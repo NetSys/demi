@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
+// TODO(cs): add FailureDetector support?
+
 /**
  * Scheduler that takes a list of both internal and external events (e.g. the
  * return value of PeekScheduler.peek()), and attempts to replay that schedule
@@ -27,6 +29,8 @@ import scala.util.control.Breaks._
  */
 class ReplayScheduler() extends Scheduler {
 
+  private[this] val event_orchestrator = new EventOrchestrator[Event]()
+
   var instrumenter = Instrumenter()
   var currentTime = 0
   var index = 0
@@ -36,19 +40,6 @@ class ReplayScheduler() extends Scheduler {
 
   val actorNames = new HashSet[String]
   val actorQueue = new Queue[String]
-  // Pairs of actors that cannot communicate
-  val partitioned = new HashSet[(String, String)]
-
-  // An actor that is unreachable
-  val inaccessible = new HashSet[String]
-
-  // Actors to actor ref
-  val actorToActorRef = new HashMap[String, ActorRef]
-  val actorToSpawnEvent = new HashMap[String, SpawnEvent]
-
-  private[this] var trace: Array[Event] = Array()
-  private[this] var traceIdx: Int = 0
-  var events: Queue[Event] = new Queue[Event]()
 
   // Semaphore to wait for trace replay to be done
   private[this] val traceSem = new Semaphore(0)
@@ -71,35 +62,15 @@ class ReplayScheduler() extends Scheduler {
   // Ensure exactly one thread in the scheduler at a time
   private[this] val schedSemaphore = new Semaphore(1)
 
-
-  // Mark a couple of nodes as partitioned (so they cannot communicate)
-  private[this] def add_to_partition (newly_partitioned: (String, String)) {
-    partitioned += newly_partitioned
-  }
-
-  // Mark a couple of node as unpartitioned, i.e. they can communicate
-  private[this] def remove_partition (newly_partitioned: (String, String)) {
-    partitioned -= newly_partitioned
-  }
-
-  // Mark a node as unreachable, used to kill a node.
-  private[this] def isolate_node (node: String) {
-    inaccessible += node
-  }
-
-  // Mark a node as reachable, also used to start a node
-  private[this] def unisolate_node (actor: String) {
-    inaccessible -= actor
-  }
-
   // Enqueue a message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
     if (actorNames contains receiver) {
-      enqueue_message(actorToActorRef(receiver), msg)
+      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
     }
   }
 
   private[this] def enqueue_message(actor: ActorRef, msg: Any) {
+    // TODO(cs): is this thread-safe?
     actor ! msg
     // Wait to make sure all messages are enqueued
     instrumenter.await_enqueue()
@@ -109,30 +80,28 @@ class ReplayScheduler() extends Scheduler {
   def replay (_trace: Array[Event],
               _props: Map[String, Props]
               ) : Queue[Event]  = {
-    trace = _trace
-    events = new Queue[Event]()
-    traceIdx = 0
+    event_orchestrator.set_trace(_trace)
     val actors = HashSet[String]()
     actors += "deadLetters"
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
-    for (t <- trace) {
+    for (t <- event_orchestrator.trace) {
       t match {
         case SpawnEvent (_, props, name, _) =>
           // Just start and isolate all actors we might eventually care about
           instrumenter.actorSystem.actorOf(props, name)
-          isolate_node(name)
+          event_orchestrator.isolate_node(name)
           actors += name
         case MsgSend (snd, rcv, msg) =>
           allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) + 1
           if (!(actors contains snd)) {
             instrumenter.actorSystem.actorOf(_props(snd), snd)
-            isolate_node(snd)
+            event_orchestrator.isolate_node(snd)
             actors += snd
           }
           if (!(actors contains rcv)) {
             instrumenter.actorSystem.actorOf(_props(rcv), rcv)
-            isolate_node(rcv)
+            event_orchestrator.isolate_node(rcv)
             actors += rcv
           }
         case _ =>
@@ -146,34 +115,23 @@ class ReplayScheduler() extends Scheduler {
     // the caller.
     traceSem.acquire
     replay.set(false)
-    return events
+    return event_orchestrator.events
   }
 
   private[this] def advanceTrace() {
     schedSemaphore.acquire
     var loop = true
     breakable {
-      while (loop && traceIdx < trace.size) {
-        trace(traceIdx) match {
-          // TODO(cs): factor this code out. Currently redundant with PeekScheduler's advanceTrace().
+      while (loop && !event_orchestrator.trace_finished) {
+        event_orchestrator.current_event match {
           case SpawnEvent (_, _, name, _) =>
-            events += actorToSpawnEvent(name)
-            Util.logger.log(name, "God spawned me")
-            unisolate_node(name)
+            event_orchestrator.trigger_start(name)
           case KillEvent (name) =>
-            events += KillEvent(name)
-            Util.logger.log(name, "God killed me")
-            isolate_node(name)
+            event_orchestrator.trigger_kill(name)
           case PartitionEvent((a,b)) =>
-            events += PartitionEvent((a,b))
-            Util.logger.log(a, "God partitioned me from " + b)
-            Util.logger.log(b, "God partitioned me from " + a)
-            add_to_partition((a,b))
+            event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
-            events += UnPartitionEvent((a,b))
-            Util.logger.log(a, "God reconnected me to " + b)
-            Util.logger.log(b, "God reconnected me to " + a)
-            remove_partition((a,b))
+            event_orchestrator.trigger_unpartition(a,b)
           case MsgSend (sender, receiver, message) =>
             if (sender == "deadLetters") {
               enqueue_message(receiver, message)
@@ -182,10 +140,10 @@ class ReplayScheduler() extends Scheduler {
             break
           case Quiescence =>
             // This is just a nop. Do nothing
-            events += Quiescence
+            event_orchestrator.events += Quiescence
           case ChangeContext(_) => () // Check what is going on
         }
-        traceIdx += 1
+        event_orchestrator.trace_advanced
       }
     }
     schedSemaphore.release
@@ -203,12 +161,9 @@ class ReplayScheduler() extends Scheduler {
     val msg = envelope.message
     require(allSends((snd, rcv, msg)) > 0)
     allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
-    events += MsgSend(snd, rcv, envelope.message)
+    event_orchestrator.events += MsgSend(snd, rcv, envelope.message)
     // Drop any messages that crosses a partition.
-    if (!((partitioned contains (snd, rcv))
-         || (partitioned contains (rcv, snd))
-         || (inaccessible contains rcv)
-         || (inaccessible contains snd))) {
+    if (!event_orchestrator.crosses_partition(snd, rcv)) {
       val msgs = pendingEvents.getOrElse((snd, rcv, msg),
                           new Queue[(ActorCell, Envelope)])
       pendingEvents((snd, rcv, msg)) = msgs += ((cell, envelope))
@@ -222,7 +177,7 @@ class ReplayScheduler() extends Scheduler {
         if (!(actorNames contains event.name)) {
           actorQueue += event.name
           actorNames += event.name
-          actorToActorRef(event.name) = event.actor
+          event_orchestrator.handle_spawn_produced(event)
         }
     }
   }
@@ -230,7 +185,7 @@ class ReplayScheduler() extends Scheduler {
   // Record that an event was consumed
   override def event_consumed(event: Event) = {
     val spawn_event = event.asInstanceOf[SpawnEvent]
-    actorToSpawnEvent(spawn_event.name) = spawn_event
+    event_orchestrator.handle_spawn_consumed(spawn_event)
   }
 
   // Record a message send event
@@ -238,7 +193,7 @@ class ReplayScheduler() extends Scheduler {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    events += MsgEvent(snd, rcv, msg)
+    event_orchestrator.events += MsgEvent(snd, rcv, msg)
   }
 
   // TODO: The first message send ever is not queued, and hence leads to a bug.
@@ -246,7 +201,7 @@ class ReplayScheduler() extends Scheduler {
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     // First get us to kind of a good place
     advanceTrace
-    if (traceIdx >= trace.size) {
+    if (event_orchestrator.trace_finished) {
       // We are done, let us wait for notify_quiescence to notice this
       // FIXME: We could check here to see if there are any pending messages.
       None
@@ -256,14 +211,14 @@ class ReplayScheduler() extends Scheduler {
 
       // Pick next message based on trace. We are guaranteed to be at a MsgEvent
       // unless something else went wrong.
-      val key = trace(traceIdx) match {
+      val key = event_orchestrator.current_event match {
         case MsgEvent(snd, rcv, msg) =>
           (snd, rcv, msg)
         case _ =>
          throw new Exception("Replay error")
       }
       // Now that we have found the key advance to the next thing to replay
-      traceIdx += 1
+      event_orchestrator.trace_advanced
       val nextMessage = pendingEvents.get(key) match {
         case Some(queue) =>
           if (queue.isEmpty) {
@@ -287,7 +242,7 @@ class ReplayScheduler() extends Scheduler {
   }
 
   override def notify_quiescence () {
-    if (traceIdx < trace.size) {
+    if (event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       throw new Exception("Divergence")
     } else {
@@ -319,12 +274,12 @@ class ReplayScheduler() extends Scheduler {
   // Called before we start processing a newly received event
   def before_receive(cell: ActorCell) {
     currentTime += 1
-    events += ChangeContext(cell.self.path.name)
+    event_orchestrator.events += ChangeContext(cell.self.path.name)
   }
 
   // Called after receive is done being processed
   def after_receive(cell: ActorCell) {
-    events += ChangeContext("scheduler")
+    event_orchestrator.events += ChangeContext("scheduler")
   }
 
   // Is this message a system message
