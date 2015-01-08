@@ -132,6 +132,11 @@ class Instrumenter {
     }
   }
   
+  // Called before a message is received
+  def beforeMessageReceive(cell: ActorCell, msg: Any) {
+    beforeMessageReceive(cell)
+  }
+  
   
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
@@ -141,6 +146,12 @@ class Instrumenter {
     scheduler.before_receive(cell)
     currentActor = cell.self.path.name
     inActor = true
+  }
+  
+  
+  // Called after the message receive is done.
+  def afterMessageReceive(cell: ActorCell, msg: Any) {
+    afterMessageReceive(cell)
   }
   
   

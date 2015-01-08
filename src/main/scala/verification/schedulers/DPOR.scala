@@ -111,7 +111,7 @@ class DPOR extends Scheduler with LazyLogging {
   def decomposePartitionEvent(event: NetworkPartition) : Queue[(String, NodesUnreachable)] = {
     val queue = new Queue[(String, NodesUnreachable)]
     queue ++= event.first.map { x => (x, NodesUnreachable(event.second)) }
-    queue ++= event.second.map { x => (x, NodesUnreachable(event.second)) }
+    queue ++= event.second.map { x => (x, NodesUnreachable(event.first)) }
     return queue
   }
   
@@ -125,10 +125,18 @@ class DPOR extends Scheduler with LazyLogging {
 
   
   // Is this message a system message
-  def isSystemMessage(sender: String, receiver: String): Boolean = 
+  def isValidActor(sender: String, receiver: String): Boolean = 
   ((actorNames contains sender) || (actorNames contains receiver)) match {
     case true => return false
     case _ => return true
+  }
+  
+  
+  
+  
+  // Is this message a system message
+  def isSystemMessage(sender: String, receiver: String): Boolean = {
+    return isValidActor(sender, receiver)
   }
   
   
@@ -338,8 +346,8 @@ class DPOR extends Scheduler with LazyLogging {
         instrumenter().actorMappings(rcv) ! msg
         
       case NetworkPartition(part1, part2) =>
-        val msgs = pendingEvents.getOrElse("__SCHEDULER__", new Queue[(Unique, ActorCell, Envelope)])
-        pendingEvents("__SCHEDULER__") = msgs += ((
+        val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
+        pendingEvents(SCHEDULER) = msgs += ((
             Unique(NetworkPartition(part1, part2)), null, null))
         
       case _ => throw new Exception("unsuported external event")
