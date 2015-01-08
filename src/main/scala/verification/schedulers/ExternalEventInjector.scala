@@ -19,33 +19,6 @@ final case object ExternalMessage extends MessageType
 final case object InternalMessage extends MessageType
 final case object SystemMessage extends MessageType
 
-// Provides O(1) lookup, but allows multiple distinct elements
-class MultiSet[E] {
-  var m = new HashMap[E, List[E]]
-
-  def add(e: E) = {
-    if (m.contains(e)) {
-      m(e) = e :: m(e)
-    } else {
-      m(e) = List(e)
-    }
-  }
-
-  def contains(e: E) : Boolean = {
-    return m.contains(e)
-  }
-
-  def remove(e: E) = {
-    if (!m.contains(e)) {
-      throw new IllegalArgumentException("No such element " + e)
-    }
-    m(e) = m(e).tail
-    if (m(e).isEmpty) {
-      m -= e
-    }
-  }
-}
-
 /**
  * A mix-in for schedulers that take external events as input, and generate
  * executions containing both external and internal events as output.
@@ -87,6 +60,9 @@ trait ExternalEventInjector {
   // If we enqueued an external message, keep track of it, so that we can
   // later identify it as an external message when it is plumbed through
   // event_produced
+  // Assumes that external message objects never == internal message objects.
+  // That assumption would be broken if, for example, nodes relayed external
+  // messages to eachother...
   val enqueuedExternalMessages = new MultiSet[Any]
 
   // Enqueue an external message for future delivery
