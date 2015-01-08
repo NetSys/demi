@@ -14,7 +14,8 @@ import akka.dispatch.Envelope,
        akka.dispatch.MessageDispatcher
        
 import scala.collection.concurrent.TrieMap,
-       scala.collection.mutable.Queue
+       scala.collection.mutable.Queue,
+       scala.collection.mutable.HashMap
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphPredef._, 
@@ -30,6 +31,33 @@ import scalax.collection.edge.LDiEdge,
 
 import akka.cluster.VectorClock
 import scala.util.parsing.json.JSONObject
+
+// Provides O(1) lookup, but allows multiple distinct elements
+class MultiSet[E] {
+  var m = new HashMap[E, List[E]]
+
+  def add(e: E) = {
+    if (m.contains(e)) {
+      m(e) = e :: m(e)
+    } else {
+      m(e) = List(e)
+    }
+  }
+
+  def contains(e: E) : Boolean = {
+    return m.contains(e)
+  }
+
+  def remove(e: E) = {
+    if (!m.contains(e)) {
+      throw new IllegalArgumentException("No such element " + e)
+    }
+    m(e) = m(e).tail
+    if (m(e).isEmpty) {
+      m -= e
+    }
+  }
+}
 
 // Used by applications to log messages to the console. Transparently attaches vector
 // clocks to log messages.

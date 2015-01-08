@@ -83,7 +83,7 @@ class DPOR extends Scheduler with LazyLogging {
   // Ensure that only one thread is running inside the scheduler when we are
   // dispatching external messages to actors. (Does not guard the scheduler's instance
   // variables.)
-  private[this] val schedSemaphore = new Semaphore(1)
+  private[this] var schedSemaphore = new Semaphore(1)
   // Are we expecting message receives
   private[this] val started = new AtomicBoolean(false)
 
@@ -110,11 +110,23 @@ class DPOR extends Scheduler with LazyLogging {
   var parentEvent = getRootEvent
 
   // Handler for FailureDetector messages
-  val fd = new FDMessageOrchestrator(enqueue_message)
+  var fd = new FDMessageOrchestrator(enqueue_message)
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
   val messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
+
+  // If we enqueued an external message, keep track of it, so that we can
+  // later identify it as an external message when it is plumbed through
+  // event_produced.
+  // Assumes that external message objects never == internal message objects.
+  // That assumption would be broken if, for example, nodes relayed external
+  // messages to eachother...
+  var enqueuedExternalMessages = new MultiSet[Any]
+
+  // Analogous to pendingEvents, except we always dispatch external events
+  // in the order they arrived.
+  val pendingExternalEvents = new Queue[(ActorCell, Envelope)]
   
   
   def getRootEvent : Unique = {
@@ -146,7 +158,6 @@ class DPOR extends Scheduler with LazyLogging {
   def start_trace() : Unit = {
     
     started.set(false)
-    fd.clear
     actorNames.clear
     
     runExternal()
@@ -171,7 +182,7 @@ class DPOR extends Scheduler with LazyLogging {
     case _ => None
   }
 
-  def dispatch_external_messages() {
+  def enqueue_external_messages() {
     // While we deal with external messages,
     // ensure that only one thread is accessing shared scheduler structures.
     schedSemaphore.acquire
@@ -179,11 +190,7 @@ class DPOR extends Scheduler with LazyLogging {
     
     // Send all pending fd responses
     fd.send_all_pending_responses()
-    // Drain message queue 
-    // TODO(cs): think about whether this violates what DPOR is expecting. In particular,
-    // it isn't expecting new messages during replay.. otoh, these messages
-    // are always flushed up front before DPOR has a chance to observe
-    // them, so it may not affect anything.
+    // Drain message queue
     for ((receiver, msg) <- messagesToSend) {
       receiver ! msg
     }
@@ -201,10 +208,13 @@ class DPOR extends Scheduler with LazyLogging {
   // Figure out what is the next message to schedule.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     
-    // First, dispatch external messages
-    dispatch_external_messages
+    // First, try to enqueue and dispatch external messages, if there are any.
+    enqueue_external_messages
+    if (!pendingExternalEvents.isEmpty) {
+      return Some(pendingExternalEvents.dequeue())
+    }
 
-    // Now proceed with DPOR-controlled messages.
+    // When there are no external message, proceed with DPOR-controlled messages.
 
     // Filter messages belonging to a particular actor.
     def is_the_same(u1: Unique, other: (Unique, ActorCell, Envelope)) : 
@@ -339,19 +349,31 @@ class DPOR extends Scheduler with LazyLogging {
   def runExternal() = {
     started.set(true)
     fd.startFD(instrumenter().actorSystem())
-    // Allow the failure detector to send its bootstrap messages
-    dispatch_external_messages
+
+    // We begin by starting all actors at the beginning of time, just mark them as
+    // isolated (i.e., unreachable). Later, when we replay the `Start` event,
+    // we unisolate the actor.
+    for (t <- externalEventList) {
+      t match {
+        case Start (prop, name) => 
+          // Just start and isolate all actors we might eventually care about [top-level actors]
+          // TODO(cs): doesn't actually isolate the nodes at the moment..
+          instrumenter().actorSystem.actorOf(prop, name)
+          fd.isolate_node(name)
+        case _ =>
+          None
+      }
+    }
 
     currentTrace += getRootEvent
     
     for(event <- externalEventList) event match {
       case Start(props, name) => 
-        instrumenter().actorSystem().actorOf(props, name)
+        fd.unisolate_node(name)
         fd.handle_start_event(name)
         
       case Send(rcv, msg) =>
-        val ref = instrumenter().actorMappings(rcv)
-        instrumenter().actorMappings(rcv) ! msg
+        enqueue_message(rcv, msg)
         
       case _ => throw new Exception("unsuported external event")
     }
@@ -402,12 +424,19 @@ class DPOR extends Scheduler with LazyLogging {
   
   
   def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
-    // TODO(cs): route failure detector messages as normal DPOR-controlled
-    // messages, rather than special casing them?
     if (cell.self.path.name == FailureDetector.fdName) {
       fd.handle_fd_message(envelope.message, envelope.sender.path.name)
       return
     }
+
+    // Check if it's an external event.
+    if (enqueuedExternalMessages.contains(envelope.message)) {
+      pendingExternalEvents += ((cell, envelope))
+      enqueuedExternalMessages.remove(envelope.message)
+      return
+    }
+
+    // Else, it's an internal event.
 
     val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
     val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
@@ -468,6 +497,15 @@ class DPOR extends Scheduler with LazyLogging {
     consumedEvents.clear()
   
     currentTrace.clear
+
+    messagesToSend.clear
+    actorToActorRef.clear
+    fd = new FDMessageOrchestrator(enqueue_message)
+    enqueuedExternalMessages = new MultiSet[Any]
+    pendingExternalEvents.clear
+    schedSemaphore = new Semaphore(1)
+    // Are we expecting message receives
+    started.set(false)
     
     parentEvent = getRootEvent
 
@@ -681,8 +719,8 @@ class DPOR extends Scheduler with LazyLogging {
   
 
   // Enqueue a message for future delivery
-  // TODO(cs): redundant with PeekScheduler's enqueue_message. Consider
-  // factoring this out into a superclass.
+  // TODO(cs): redundant with ExternalEventInjector's enqueue_message. Consider
+  // mixing in ExternalEventInjector.
   override def enqueue_message(receiver: String, msg: Any) {
     if (actorNames contains receiver) {
       enqueue_message(actorToActorRef(receiver), msg)
@@ -692,6 +730,7 @@ class DPOR extends Scheduler with LazyLogging {
   }
 
   private[this] def enqueue_message(actor: ActorRef, msg: Any) {
+    enqueuedExternalMessages.add(msg)
     messagesToSend += ((actor, msg))
   }
 
