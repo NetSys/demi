@@ -73,6 +73,8 @@ class ExploredTacker {
 // DPOR scheduler.
 class DPOR extends Scheduler with LazyLogging {
   
+  final val SCHEDULER = "__SCHEDULER__"
+  
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
   var started = false
@@ -103,6 +105,14 @@ class DPOR extends Scheduler with LazyLogging {
     var root = Unique(MsgEvent("null", "null", null), 0)
     depGraph.add(root)
     return root
+  }
+  
+  
+  def decomposePartitionEvent(event: NetworkPartition) : Queue[(String, NodesUnreachable)] = {
+    val queue = new Queue[(String, NodesUnreachable)]
+    queue ++= event.first.map { x => (x, NodesUnreachable(event.second)) }
+    queue ++= event.second.map { x => (x, NodesUnreachable(event.second)) }
+    return queue
   }
   
   
@@ -159,11 +169,17 @@ class DPOR extends Scheduler with LazyLogging {
     // Filter messages belonging to a particular actor.
     def is_the_same(u1: Unique, other: (Unique, ActorCell, Envelope)) : 
     Boolean = (u1, other) match {
+      
       case (Unique(MsgEvent(snd1, rcv1, msg1), id1), 
             (Unique(MsgEvent(snd2, rcv2, msg2), id2) , cell, env) ) =>
+              
         if (id1 == 0) rcv1 == cell.self.path.name
         else rcv1 == cell.self.path.name && id1 == id2
-      case _ => throw new Exception("not a message event")
+        
+      case (Unique(NetworkPartition(_, _), id1), 
+            (Unique(NetworkPartition(_, _), id2) , _, _) ) => id1 == id2
+        
+      case _ => false
     }
 
 
@@ -181,10 +197,18 @@ class DPOR extends Scheduler with LazyLogging {
             }
 
           } else {
-            val next @ (Unique(MsgEvent(snd, rcv, msg), id), cell, env) = queue.dequeue()
-            logger.trace( Console.GREEN + "Now playing pending: " +
-              "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
-            Some(next)
+            
+            queue.dequeue() match {
+              
+              case next @ (Unique(MsgEvent(snd, rcv, msg), id), cell, env) =>
+                logger.trace( Console.GREEN + "Now playing pending: " 
+                    + "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
+                Some(next)
+                
+              case par @ (Unique(NetworkPartition(part1, part2), id), cell, env) =>
+                logger.trace( Console.GREEN + "Now playing the high level partition event.")
+                Some(par)
+            }
           }
           
         case None => None
@@ -203,10 +227,14 @@ class DPOR extends Scheduler with LazyLogging {
             case Some(queue) => queue.dequeueFirst(is_the_same(u, _))
             case None =>  None
           }
-  
-        case Some(u @ Unique(NetworkPartition(part1, part2), id)) =>
-          // XXX: Skip for now.
-          getMatchingMessage()
+          
+        case Some(u @ Unique(NetworkPartition(_, _), id)) =>
+          
+          // Look at the pending events to see if such message event exists. 
+          pendingEvents.get(SCHEDULER) match {
+            case Some(queue) => queue.dequeueFirst(is_the_same(u, _))
+            case None =>  None
+          }
           
         // The trace says there is nothing to run so we have either exhausted our
         // trace or are running for the first time. Use any enabled transitions.
@@ -218,7 +246,7 @@ class DPOR extends Scheduler with LazyLogging {
       
       // There is a pending event that matches a message in our trace.
       // We call this a convergent state.
-      case Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
+      case m @ Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
         logger.trace( Console.GREEN + "Replaying the exact message: " +
             "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
         Some((u, cell, env))
@@ -226,7 +254,7 @@ class DPOR extends Scheduler with LazyLogging {
       case Some((u @ Unique(NetworkPartition(part1, part2), id), _, _)) =>
         logger.trace( Console.GREEN + "Partitioning " + part1 + 
             " and " + part2 + Console.RESET )
-        None
+        Some((u, null, null))
         
       // We call this a divergent state.
       case None => get_pending_event()
@@ -252,8 +280,12 @@ class DPOR extends Scheduler with LazyLogging {
         currentTrace += nextEvent
         (depGraph get nextEvent)
         parentEvent = nextEvent
-        //println("parentEvent " + parentEvent)
         return Some((cell, env))
+        
+      case Some((nextEvent @ Unique(par : NetworkPartition, nID), cell, env)) =>
+        // XXX: Fix this.
+        val internalMsgs = decomposePartitionEvent(par)
+        return None
         
       case _ => return None
     }

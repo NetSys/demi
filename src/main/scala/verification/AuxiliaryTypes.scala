@@ -40,7 +40,10 @@ abstract class FDMessage
 case class FailureDetectorOnline(fdNode: String) extends FDMessage
 
 // A node is unreachable, either due to node failure or partition.
-case class NodeUnreachable(actor: String) extends FDMessage
+case class NodeUnreachable(actor: String) extends FDMessage with Event
+
+case class NodesUnreachable(actors: Set[String]) extends FDMessage with Event
+
 
 // A new node is now reachable, either because a partition healed or an actor spawned.
 case class NodeReachable(actor: String) extends FDMessage
