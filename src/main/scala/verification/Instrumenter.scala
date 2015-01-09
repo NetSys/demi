@@ -56,7 +56,7 @@ class Instrumenter {
   }
   
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
-    if (!scheduler.isSystemCommunication(sender, receiver)) {
+    if (!scheduler.isSystemCommunication(sender, receiver, msg)) {
       tellEnqueue.tell()
     }
   }
@@ -134,14 +134,11 @@ class Instrumenter {
   
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell, msg: Any) {
-    beforeMessageReceive(cell)
-  }
-  
-  
-  // Called before a message is received
-  def beforeMessageReceive(cell: ActorCell) {
     println("beforeMessageReceive")
-    if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
+    if (scheduler.isSystemMessage(
+        cell.sender.path.name, 
+        cell.self.path.name,
+        msg)) return
    
     scheduler.before_receive(cell)
     currentActor = cell.self.path.name
@@ -149,16 +146,21 @@ class Instrumenter {
   }
   
   
-  // Called after the message receive is done.
-  def afterMessageReceive(cell: ActorCell, msg: Any) {
-    afterMessageReceive(cell)
+  // Called before a message is received
+  def beforeMessageReceive(cell: ActorCell) {
+    throw new Exception("not implemented")
   }
   
   
+  
+  
   // Called after the message receive is done.
-  def afterMessageReceive(cell: ActorCell) {
+  def afterMessageReceive(cell: ActorCell, msg: Any) {
     println("afterMessageReceive")
-    if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
+    if (scheduler.isSystemMessage(
+        cell.sender.path.name, 
+        cell.self.path.name,
+        msg)) return
 
     tellEnqueue.await()
     
@@ -174,6 +176,12 @@ class Instrumenter {
     }
 
   }
+  
+  // Called after the message receive is done.
+  def afterMessageReceive(cell: ActorCell) {
+    throw new Exception("not implemented")
+  }
+
 
   // Dispatch a message, i.e., deliver it to the intended recipient
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
@@ -202,7 +210,7 @@ class Instrumenter {
     val rcv = receiver.path.name
     
     // If this is a system message just let it through.
-    if (scheduler.isSystemMessage(snd, rcv)) { return true }
+    if (scheduler.isSystemMessage(snd, rcv, envelope.message)) { return true }
     
     // If this is not a system message then check if we have already recorded
     // this event. Recorded => we are injecting this event (as opposed to some 

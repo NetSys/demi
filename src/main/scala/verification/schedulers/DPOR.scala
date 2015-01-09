@@ -116,27 +116,39 @@ class DPOR extends Scheduler with LazyLogging {
   }
   
   
-  def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = 
+  def isSystemCommunication(sender: ActorRef, receiver: ActorRef) : Boolean =
+    throw new Exception("not implemented")
+
+  
+  override def isSystemCommunication(sender: ActorRef, receiver: ActorRef, msg: Any): Boolean = 
   (receiver, sender) match {
     case (null, _) => return true
-    case (_, null) => isSystemMessage("deadletters", receiver.path.name)
-    case _ => isSystemMessage(sender.path.name, receiver.path.name)
+    case (_, null) => isSystemMessage("deadletters", receiver.path.name, msg)
+    case _ => isSystemMessage(sender.path.name, receiver.path.name, msg)
   }
 
   
   // Is this message a system message
   def isValidActor(sender: String, receiver: String): Boolean = 
   ((actorNames contains sender) || (actorNames contains receiver)) match {
-    case true => return false
-    case _ => return true
+    case true => return true
+    case _ => return false
+  }
+
+
+  
+  def ignoreMsg[T](t: T): Boolean = t match {
+    case msg : NodesUnreachable => return true
+    case _ => return false
   }
   
   
-  
+  def isSystemMessage(sender: String, receiver: String) : Boolean =
+    throw new Exception("not implemented")
   
   // Is this message a system message
-  def isSystemMessage(sender: String, receiver: String): Boolean = {
-    return isValidActor(sender, receiver)
+  override def isSystemMessage(sender: String, receiver: String, msg: Any): Boolean = {
+    return ignoreMsg(msg) || !isValidActor(sender, receiver)
   }
   
   
