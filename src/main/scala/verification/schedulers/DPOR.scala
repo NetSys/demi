@@ -302,10 +302,13 @@ class DPOR extends Scheduler with LazyLogging {
         parentEvent = nextEvent
         return Some((cell, env))
         
+        
       case Some((nextEvent @ Unique(par : NetworkPartition, nID), cell, env)) =>
-        // XXX: Fix this.
+        
         val internalMsgs = decomposePartitionEvent(par)
-        return None
+        internalMsgs.map{ case (rcv, msg) => instrumenter().actorMappings(rcv) ! msg}
+        currentTrace += nextEvent
+        return schedule_new_message()
         
       case _ => return None
     }
@@ -498,87 +501,103 @@ class DPOR extends Scheduler with LazyLogging {
     
     val racingIndices = new HashSet[Integer]
     
-    
-    /** Analyze the dependency between two events that are co-enabled
-     ** and have the same receiver.
-     * 
-     ** @param earleirI: Index of the earlier event.
-     ** @param laterI: Index of the later event.
-     ** @param trace: The trace to which the events belong to.
-     * 
-     ** @return none
+    /**
+     * Analyze the dependency between two events that are co-enabled
+     * * and have the same receiver.
+     *
+     * * @param earleirI: Index of the earlier event.
+     * * @param laterI: Index of the later event.
+     * * @param trace: The trace to which the events belong to.
+     *
+     * * @return none
      */
-    def analyize_dep(earlierI: Int, laterI: Int, trace: Queue[Unique]) :
-      Option[ (Int, List[Unique]) ] = {
-      
+    def analyize_dep(earlierI: Int, laterI: Int, trace: Queue[Unique]): 
+    Option[(Int, List[Unique])] = {
+
       // Retrieve the actual events.
       val earlier = getEvent(earlierI, trace)
       val later = getEvent(laterI, trace)
-      
+
       // See if this interleaving has been explored.
       //val explored = alreadyExplored.contains((later, earlier))
       val explored = exploredTacker.isExplored((later, earlier))
       if (explored) return None
-      
-      // Get the actual nodes in the dependency graph that
-      // correspond to those events
-      val earlierN = (depGraph get earlier)
-      val laterN = (depGraph get later)
-      
-      // Get the dependency path between later event and the
-      // root event (root node) in the system.
-      val laterPath = laterN.pathTo( rootN ) match {
-        case Some(path) => path.nodes.toList.reverse
-        case None =>
-          println(rootN)
-          println(laterN)
-          throw new Exception("no such path")
+
+      (earlier.event, later.event) match {
+        case (_: MsgEvent,_: NetworkPartition) =>
+          val needToReplay : List[Unique] = 
+            trace.take(earlierI).toList :+ 
+            later :+ earlier
+          val branchI = earlierI
+          
+          return Some((branchI, needToReplay))
+          
+        case (_: NetworkPartition, _: MsgEvent) =>
+
+          val newTrace = trace.clone().filter { x => x.id != earlier.id }
+          assert(newTrace.size + 1 == trace.size)
+          val needToReplay = newTrace.take(laterI).toList :+ earlier
+          val branchI = laterI - 1
+          
+          return Some((branchI, needToReplay))
+          
+        case (_: MsgEvent, _: MsgEvent) =>
+
+          // Get the actual nodes in the dependency graph that
+          // correspond to those events
+          val earlierN = (depGraph get earlier)
+          val laterN = (depGraph get later)
+
+          // Get the dependency path between later event and the
+          // root event (root node) in the system.
+          val laterPath = laterN.pathTo(rootN) match {
+            case Some(path) => path.nodes.toList.reverse
+            case None => throw new Exception("no such path")
+          }
+
+          // Get the dependency path between earlier event and the
+          // root event (root node) in the system.
+          val earlierPath = earlierN.pathTo(rootN) match {
+            case Some(path) => path.nodes.toList.reverse
+            case None => throw new Exception("no such path")
+          }
+
+          // Find the common prefix for the above paths.
+          val commonPrefix = laterPath.intersect(earlierPath)
+
+          // Figure out where in the provided trace this needs to be
+          // replayed. In other words, get the last element of the
+          // common prefix and figure out which index in the trace
+          // it corresponds to.
+          val lastElement = commonPrefix.last
+          val branchI = trace.indexWhere { e => (e == lastElement.value) }
+
+          val needToReplay = currentTrace.clone()
+            .drop(branchI + 1)
+            .dropRight(currentTrace.size - laterI - 1)
+            .filter { x => x.id != earlier.id }
+
+          require(branchI < laterI)
+
+          // Since we're dealing with the vertices and not the
+          // events, we need to extract the values.
+          val needToReplayV = needToReplay.toList
+
+          // Since we're exploring an already executed trace, we can
+          // safely mark the interleaving of (earlier, later) as
+          // already explored.
+          exploredTacker.setExplored(branchI, (earlier, later))
+
+          logger.trace(Console.CYAN + "Replay:  " +
+            Util.traceStr(needToReplay) + Console.RESET)
+          logger.info(Console.GREEN +
+            "Found a race between " + earlier.id + " and " +
+            later.id + " with a common index " + branchI +
+            Console.RESET)
+
+          return Some((branchI, needToReplayV))
+
       }
-      
-      // Get the dependency path between earlier event and the
-      // root event (root node) in the system.
-      val earlierPath = earlierN.pathTo( rootN ) match {
-        case Some(path) => path.nodes.toList.reverse
-        case None => throw new Exception("no such path")
-      }
-      
-      // Find the common prefix for the above paths.
-      val commonPrefix = laterPath.intersect(earlierPath)
-      
-      // Figure out where in the provided trace this needs to be
-      // replayed. In other words, get the last element of the
-      // common prefix and figure out which index in the trace
-      // it corresponds to.
-      val lastElement = commonPrefix.last
-      val branchI = trace.indexWhere { e => (e == lastElement.value) }
-      
-      val needToReplay = currentTrace.clone()
-        .drop(branchI + 1)
-        .dropRight(currentTrace.size - laterI - 1)
-        .filter { x => x.id != earlier.id }
-      
-      require(branchI < laterI)
-      
-      // Since we're dealing with the vertices and not the
-      // events, we need to extract the values.
-      val needToReplayV = needToReplay.toList
-      
-
-      // Since we're exploring an already executed trace, we can
-      // safely mark the interleaving of (earlier, later) as
-      // already explored.
-      exploredTacker.setExplored(branchI, (earlier, later))
-      
-      logger.trace(Console.CYAN + "Replay:  " + 
-          Util.traceStr(needToReplay) + Console.RESET)
-      logger.info(Console.GREEN + 
-          "Found a race between " + earlier.id +  " and " + 
-          later.id + " with a common index " + branchI +
-          Console.RESET)
-
-      return Some((branchI, needToReplayV))
-
-
 
     }
     
@@ -591,21 +610,24 @@ class DPOR extends Scheduler with LazyLogging {
      * the other one.
      * 
      ** @param earlier: First event
-     ** @param earlier: First event
+     ** @param later: Second event
      * 
      ** @return: Boolean 
      */
-    def isCoEnabeled(earlier: Unique, later: Unique) : Boolean = {
+    def isCoEnabeled(earlier: Unique, later: Unique) : Boolean = (earlier, later) match {
       
-      val earlierN = (depGraph get earlier)
-      val laterN = (depGraph get later)
-      
-      val coEnabeled = laterN.pathTo(earlierN) match {
-        case None => true
-        case _ => false
-      }
-      
-      return coEnabeled
+      case (Unique(p : NetworkPartition, _), _) => true
+      case (_, Unique(p : NetworkPartition, _)) => true
+      case (_, _) =>
+        val earlierN = (depGraph get earlier)
+        val laterN = (depGraph get later)
+        
+        val coEnabeled = laterN.pathTo(earlierN) match {
+          case None => true
+          case _ => false
+        }
+        
+        return coEnabeled
     }
     
 
