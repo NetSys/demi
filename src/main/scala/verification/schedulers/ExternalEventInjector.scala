@@ -211,6 +211,10 @@ trait ExternalEventInjector[E] {
     shutdownSem.release
   }
 
+  def handle_before_receive (cell: ActorCell) : Unit = {
+    event_orchestrator.events += ChangeContext(cell.self.path.name)
+  }
+
   def handle_after_receive (cell: ActorCell) : Unit = {
     event_orchestrator.events += ChangeContext("scheduler")
   }

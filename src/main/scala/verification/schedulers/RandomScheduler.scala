@@ -189,6 +189,10 @@ class RandomScheduler(max_interleavings: Int)
     handle_start_trace
   }
 
+  override def before_receive(cell: ActorCell) : Unit = {
+    handle_before_receive(cell)
+  }
+
   override def after_receive(cell: ActorCell) : Unit = {
     handle_after_receive(cell)
   }

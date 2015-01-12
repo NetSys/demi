@@ -91,6 +91,10 @@ class PeekScheduler()
     handle_after_receive(cell)
   }
 
+  override def before_receive(cell: ActorCell) : Unit = {
+    handle_before_receive(cell)
+  }
+
   // Enqueue an external message for future delivery
   override def enqueue_message(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {

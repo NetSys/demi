@@ -223,13 +223,11 @@ class ReplayScheduler()
   override def notify_quiescence () {
     assert(started.get)
     started.set(false)
-    event_orchestrator.events += Quiescence
     if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       throw new Exception("Divergence")
     } else {
       if (currentlyInjecting.get) {
-        println("Done " + pendingEvents)
         // Tell the calling thread we are done
         traceSem.release
       } else {
@@ -252,7 +250,7 @@ class ReplayScheduler()
   // Called before we start processing a newly received event
   override def before_receive(cell: ActorCell) {
     super.before_receive(cell)
-    event_orchestrator.events += ChangeContext(cell.self.path.name)
+    handle_before_receive(cell)
   }
 
   // Called after receive is done being processed
