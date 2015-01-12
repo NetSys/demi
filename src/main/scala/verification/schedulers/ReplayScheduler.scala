@@ -8,14 +8,16 @@ import akka.dispatch.Envelope
 import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
 import scala.collection.immutable.Set
+import scala.collection.mutable.Iterable
 import scala.collection.mutable.HashSet
+import scala.collection.JavaConversions._
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
 
 import scala.util.control.Breaks._
-
-// TODO(cs): add FailureDetector support?
 
 /**
  * Scheduler that takes a list of both internal and external events (e.g. the
@@ -27,62 +29,31 @@ import scala.util.control.Breaks._
  *  - If the application does not send a message that was previously sent,
  *    die.
  */
-class ReplayScheduler() extends Scheduler {
+class ReplayScheduler()
+    extends AbstractScheduler with ExternalEventInjector[Event] {
 
-  private[this] val event_orchestrator = new EventOrchestrator[Event]()
+  init_failure_detector(enqueue_message)
 
-  var instrumenter = Instrumenter()
-  var currentTime = 0
-  var index = 0
+  // Have we started off the execution yet?
+  private[this] var firstMessage = true
 
   // Current set of enabled events.
   val pendingEvents = new HashMap[(String, String, Any), Queue[(ActorCell, Envelope)]]
 
-  val actorNames = new HashSet[String]
-  val actorQueue = new Queue[String]
-
-  // Semaphore to wait for trace replay to be done
-  private[this] val traceSem = new Semaphore(0)
-
-  // Are we in replay or is someone using this scheduler in some strange way.
-  private[this] val replay = new AtomicBoolean(false)
-
-  // Semaphore to use when shutting down the scheduler
-  private[this] val shutdownSem = new Semaphore(0)
-
-  private[this] var firstMessage = true
-
-  // A set of messages to send
-  val messagesToSend = new HashSet[(ActorRef, Any)]
+  // A set of external messages to send. Messages sent between actors are
+  // not queued here.
+  var messagesToSend = Collections.newSetFromMap(new
+          ConcurrentHashMap[(ActorRef, Any),java.lang.Boolean])
 
   // Just do a cheap test to ensure that no new unexpected messages are sent. This
   // is not perfect.
   private[this] val allSends = new HashMap[(String, String, Any), Int]
 
-  // Ensure exactly one thread in the scheduler at a time
-  private[this] val schedSemaphore = new Semaphore(1)
-
-  // Enqueue a message for future delivery
-  def enqueue_message(receiver: String, msg: Any) {
-    if (actorNames contains receiver) {
-      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
-    }
-  }
-
-  private[this] def enqueue_message(actor: ActorRef, msg: Any) {
-    // TODO(cs): is this thread-safe?
-    actor ! msg
-    // Wait to make sure all messages are enqueued
-    instrumenter.await_enqueue()
-  }
-
   // Given an external event trace, see the events produced
-  def replay (_trace: Array[Event],
-              _props: Map[String, Props]
-              ) : Queue[Event]  = {
+  // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
+  def replay (_trace: Seq[Event]) : Queue[Event] = {
     event_orchestrator.set_trace(_trace)
-    val actors = HashSet[String]()
-    actors += "deadLetters"
+    fd.startFD(instrumenter.actorSystem)
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- event_orchestrator.trace) {
@@ -91,35 +62,26 @@ class ReplayScheduler() extends Scheduler {
           // Just start and isolate all actors we might eventually care about
           instrumenter.actorSystem.actorOf(props, name)
           event_orchestrator.isolate_node(name)
-          actors += name
         case MsgSend (snd, rcv, msg) =>
+          // Track all messages we expect.
           allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) + 1
-          if (!(actors contains snd)) {
-            instrumenter.actorSystem.actorOf(_props(snd), snd)
-            event_orchestrator.isolate_node(snd)
-            actors += snd
-          }
-          if (!(actors contains rcv)) {
-            instrumenter.actorSystem.actorOf(_props(rcv), rcv)
-            event_orchestrator.isolate_node(rcv)
-            actors += rcv
-          }
         case _ =>
           None
       }
     }
-    replay.set(true)
+    currentlyInjecting.set(true)
     // Start playing back trace
-    advanceTrace()
+    advanceReplay()
     // Have this thread wait until the trace is down. This allows us to safely notify
     // the caller.
     traceSem.acquire
-    replay.set(false)
+    currentlyInjecting.set(false)
     return event_orchestrator.events
   }
 
-  private[this] def advanceTrace() {
+  def advanceReplay() {
     schedSemaphore.acquire
+    started.set(true)
     var loop = true
     breakable {
       while (loop && !event_orchestrator.trace_finished) {
@@ -133,6 +95,7 @@ class ReplayScheduler() extends Scheduler {
           case UnPartitionEvent((a,b)) =>
             event_orchestrator.trigger_unpartition(a,b)
           case MsgSend (sender, receiver, message) =>
+            // sender == "deadLetters" means the message is external.
             if (sender == "deadLetters") {
               enqueue_message(receiver, message)
             }
@@ -155,11 +118,20 @@ class ReplayScheduler() extends Scheduler {
   }
 
   // Check no unexpected messages are enqueued
-  override def event_produced(cell: ActorCell, envelope: Envelope) = {
+  def event_produced(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    require(allSends((snd, rcv, msg)) > 0)
+    // N.B. we do not actually route messages destined for the
+    // FailureDetector, we simply take note of them. This is because all
+    // responses from the FailureDetector (from the previous execution)
+    // are already recorded as external
+    // messages, and will be injected by advanceReplay().
+
+    if (!allSends.contains((snd, rcv, msg)) ||
+         allSends((snd, rcv, msg)) <= 0) {
+      throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
+    }
     allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
     event_orchestrator.events += MsgSend(snd, rcv, envelope.message)
     // Drop any messages that crosses a partition.
@@ -172,35 +144,28 @@ class ReplayScheduler() extends Scheduler {
 
   // Record a mapping from actor names to actor refs
   override def event_produced(event: Event) = {
-    event match {
-      case event : SpawnEvent =>
-        if (!(actorNames contains event.name)) {
-          actorQueue += event.name
-          actorNames += event.name
-          event_orchestrator.handle_spawn_produced(event)
-        }
-    }
+    super.event_produced(event)
+    handle_spawn_produced(event)
   }
 
   // Record that an event was consumed
   override def event_consumed(event: Event) = {
-    val spawn_event = event.asInstanceOf[SpawnEvent]
-    event_orchestrator.handle_spawn_consumed(spawn_event)
+    handle_spawn_consumed(event)
   }
 
   // Record a message send event
   override def event_consumed(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
-    val rcv = cell.self.path.name
-    val msg = envelope.message
-    event_orchestrator.events += MsgEvent(snd, rcv, msg)
+    handle_event_consumed(cell, envelope)
   }
 
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
-  override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     // First get us to kind of a good place
-    advanceTrace
+    advanceReplay()
+    // Make sure to send any external messages that just got enqueued
+    enqueue_external_messages(messagesToSend)
+
     if (event_orchestrator.trace_finished) {
       // We are done, let us wait for notify_quiescence to notice this
       // FIXME: We could check here to see if there are any pending messages.
@@ -222,6 +187,7 @@ class ReplayScheduler() extends Scheduler {
       val nextMessage = pendingEvents.get(key) match {
         case Some(queue) =>
           if (queue.isEmpty) {
+            println("queue.isEmpty")
             // Message not enabled
             pendingEvents.remove(key)
             None
@@ -233,67 +199,78 @@ class ReplayScheduler() extends Scheduler {
             Some(willRet)
           }
         case None =>
+          println("key not found")
           // Message not enabled
           None
       }
+
+      // N.B. it is an error if nextMessage is None, since it means that a
+      // message we expected to occur did not show up. If this occurs, we are
+      // going to crash, but not quite yet. After this method returns,
+      // notify_quiescence will be immediately called, and we will crash there
+      // since since we are not yet at the end of the trace.
+      nextMessage match {
+        case None =>
+          println("Error: expected event " + key)
+        case _ => None
+      }
+
       schedSemaphore.release
       nextMessage
     }
   }
 
   override def notify_quiescence () {
+    assert(started.get)
+    started.set(false)
+    event_orchestrator.events += Quiescence
     if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       throw new Exception("Divergence")
     } else {
-      if (replay.get) {
+      if (currentlyInjecting.get) {
         println("Done " + pendingEvents)
         // Tell the calling thread we are done
         traceSem.release
+      } else {
+        throw new RuntimeException("currentlyInjecting.get returned false")
       }
     }
   }
 
-  // Get next event
-  def next_event() : Event = {
-    throw new Exception("NYI")
-  }
-
   // Shutdown the scheduler, this ensures that the instrumenter is returned to its
   // original pristine form, so one can change schedulers
-  def shutdown () = {
-    instrumenter.restart_system
-    shutdownSem.acquire
+  override def shutdown () = {
+    handle_shutdown
   }
 
   // Notification that the system has been reset
   override def start_trace() : Unit = {
-    shutdownSem.release
+    handle_start_trace
   }
 
   // Called before we start processing a newly received event
-  def before_receive(cell: ActorCell) {
-    currentTime += 1
+  override def before_receive(cell: ActorCell) {
+    super.before_receive(cell)
     event_orchestrator.events += ChangeContext(cell.self.path.name)
   }
 
   // Called after receive is done being processed
-  def after_receive(cell: ActorCell) {
-    event_orchestrator.events += ChangeContext("scheduler")
+  override def after_receive(cell: ActorCell) {
+    handle_after_receive(cell)
   }
 
-  // Is this message a system message
-  def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
-    if (sender == null && receiver == null) return true
-    val senderPath = if (sender != null) sender.path.name else "deadLetters"
-    val receiverPath = if (receiver != null) receiver.path.name else "deadLetters"
-    return isSystemMessage(senderPath, receiverPath)
+  // Enqueue an external message for future delivery
+  override def enqueue_message(receiver: String, msg: Any) {
+    if (event_orchestrator.actorToActorRef contains receiver) {
+      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
+    } else {
+      throw new IllegalArgumentException("Unknown receiver " + receiver)
+    }
   }
 
-  def isSystemMessage(src: String, dst: String): Boolean = {
-    if ((actorNames contains src) || (actorNames contains dst))
-      return false
-
-    return true
+  def enqueue_message(actor: ActorRef, msg: Any) {
+    handle_enqueue_message(actor, msg)
+    messagesToSend += ((actor, msg))
   }
 }

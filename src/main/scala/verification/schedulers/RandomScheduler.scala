@@ -75,7 +75,9 @@ class RandomizedHashSet[E] {
  * executions that trigger violations.
  */
 class RandomScheduler(max_interleavings: Int)
-    extends AbstractScheduler with ExternalEventInjector with TestOracle {
+    extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
+
+  init_failure_detector(enqueue_message)
 
   var test_invariant : Invariant = null
 
@@ -87,12 +89,19 @@ class RandomScheduler(max_interleavings: Int)
   // they arrive.
   var pendingExternalEvents = new Queue[(ActorCell, Envelope)]
 
+  // A set of external messages to send. Messages sent between actors are not
+  // queued here.
+  var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
+
   /**
    * Given an external event trace, randomly explore executions involving those
    * external events.
    *
    * Returns a trace of the internal and external events observed if a failing execution was found,
    * otherwise returns null if no failure was triggered within max_interleavings.
+   *
+   * Callers should call shutdown() sometime after this method returns if they
+   * want to invoke any other methods.
    *
    * Precondition: setInvariant has been invoked.
    */
@@ -152,7 +161,7 @@ class RandomScheduler(max_interleavings: Int)
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    enqueue_external_messages
+    enqueue_external_messages(messagesToSend)
     // Always prioritize external events.
     if (!pendingExternalEvents.isEmpty) {
       return Some(pendingExternalEvents.dequeue())
@@ -184,16 +193,33 @@ class RandomScheduler(max_interleavings: Int)
     handle_after_receive(cell)
   }
 
+  // Enqueue an external message for future delivery
+  override def enqueue_message(receiver: String, msg: Any) {
+    if (event_orchestrator.actorToActorRef contains receiver) {
+      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
+    } else {
+      throw new IllegalArgumentException("Unknown receiver " + receiver)
+    }
+  }
+
+  def enqueue_message(actor: ActorRef, msg: Any) {
+    handle_enqueue_message(actor, msg)
+    messagesToSend += ((actor, msg))
+  }
+
   def setInvariant(invariant: Invariant) {
     test_invariant = invariant
   }
 
   override def reset_all_state () {
+    // TODO(cs): also reset Instrumenter()'s state?
+    reset_state
+    // N.B. important to clear our state after we invoke reset_state, since
+    // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
     pendingInternalEvents = new RandomizedHashSet[(ActorCell, Envelope)]
     pendingExternalEvents = new Queue[(ActorCell, Envelope)]
-    // TODO(cs): also reset Instrumenter()'s state?
-    reset_state
+    messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
   }
 
   def test(events: Seq[ExternalEvent]) : Boolean = {

@@ -14,7 +14,6 @@ import scala.collection.mutable.HashSet
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
-
 /**
  * Takes a sequence of ExternalEvents as input, and plays the execution
  * forward in the same way as FairScheduler. While playing forward,
@@ -23,7 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * external and internal events.
  */
 class PeekScheduler()
-    extends FairScheduler with ExternalEventInjector with TestOracle {
+    extends FairScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
+
+  init_failure_detector(enqueue_message)
+
+  // A set of external messages to send. Messages sent between actors are not
+  // queued here.
+  var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
 
   var test_invariant : Invariant = null
 
@@ -62,7 +67,7 @@ class PeekScheduler()
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    enqueue_external_messages
+    enqueue_external_messages(messagesToSend)
     // FairScheduler gives us round-robin message dispatches.
     return super.schedule_new_message()
   }
@@ -76,7 +81,7 @@ class PeekScheduler()
   override def shutdown () = {
     handle_shutdown
   }
-  
+
   // Notification that the system has been reset
   override def start_trace() : Unit = {
     handle_start_trace
@@ -86,8 +91,18 @@ class PeekScheduler()
     handle_after_receive(cell)
   }
 
+  // Enqueue an external message for future delivery
   override def enqueue_message(receiver: String, msg: Any) {
-    super[ExternalEventInjector].enqueue_message(receiver, msg)
+    if (event_orchestrator.actorToActorRef contains receiver) {
+      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
+    } else {
+      throw new IllegalArgumentException("Unknown receiver " + receiver)
+    }
+  }
+
+  def enqueue_message(actor: ActorRef, msg: Any) {
+    handle_enqueue_message(actor, msg)
+    messagesToSend += ((actor, msg))
   }
 
   def setInvariant(invariant: Invariant) {
