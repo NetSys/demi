@@ -10,6 +10,8 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.immutable.Set
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.Iterable
+import scala.collection.generic.Clearable
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -23,13 +25,15 @@ final case object SystemMessage extends MessageType
  * A mix-in for schedulers that take external events as input, and generate
  * executions containing both external and internal events as output.
  */
-trait ExternalEventInjector {
+trait ExternalEventInjector[E] {
 
-  var event_orchestrator = new EventOrchestrator[ExternalEvent]()
+  var event_orchestrator = new EventOrchestrator[E]()
 
   // Handler for FailureDetector messages
-  var fd = new FDMessageOrchestrator(enqueue_message)
-  event_orchestrator.set_failure_detector(fd)
+  var fd : FDMessageOrchestrator = null
+
+  // Anonymous method, to be initialized in init_failure_detector
+  var _enqueue_message: FDMessageOrchestrator.EnqueueMessage = null
 
   // Semaphore to wait for trace replay to be done. We initialize the
   // semaphore to 0 rather than 1, so that the main thread blocks upon
@@ -45,10 +49,6 @@ trait ExternalEventInjector {
   // invoking acquire() until another thread release()'s it.
   var shutdownSem = new Semaphore(0)
 
-  // A set of external messages to send. Messages sent between actors are not
-  // queued here.
-  var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
-
   // Are we expecting message receives
   val started = new AtomicBoolean(false)
 
@@ -63,26 +63,22 @@ trait ExternalEventInjector {
   // Assumes that external message objects never == internal message objects.
   // That assumption would be broken if, for example, nodes relayed external
   // messages to eachother...
-  val enqueuedExternalMessages = new MultiSet[Any]
+  var enqueuedExternalMessages = new MultiSet[Any]
 
-  // Enqueue an external message for future delivery
-  def enqueue_message(receiver: String, msg: Any) {
-    if (event_orchestrator.actorToActorRef contains receiver) {
-      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
-    } else {
-      throw new IllegalArgumentException("Unknown receiver " + receiver)
-    }
+  def init_failure_detector(enqueue_message: FDMessageOrchestrator.EnqueueMessage) {
+    _enqueue_message = enqueue_message
+    fd = new FDMessageOrchestrator(enqueue_message)
+    event_orchestrator.set_failure_detector(fd)
   }
 
-  def enqueue_message(actor: ActorRef, msg: Any) {
+  def handle_enqueue_message(actor: ActorRef, msg: Any) {
     enqueuedExternalMessages.add(msg)
-    messagesToSend += ((actor, msg))
   }
 
   // Initiates message sends for all messages in messagesToSend. Note that
   // delivery does not occur immediately! These messages will subsequently show
   // up in event_produced as messages to be scheduled by schedule_new_message.
-  def enqueue_external_messages() {
+  def enqueue_external_messages(messagesToSend: Iterable[(ActorRef, Any)] with Clearable) {
     // Ensure that only one thread is accessing shared scheduler structures
     schedSemaphore.acquire
     assert(started.get)
@@ -103,7 +99,7 @@ trait ExternalEventInjector {
   }
 
   // Given an external event trace, see the events produced
-  def execute_trace (_trace: Seq[ExternalEvent]) : Queue[Event]  = {
+  def execute_trace (_trace: Seq[E]) : Queue[Event]  = {
     event_orchestrator.set_trace(_trace)
     fd.startFD(Instrumenter().actorSystem)
     // We begin by starting all actors at the beginning of time, just mark them as
@@ -135,7 +131,7 @@ trait ExternalEventInjector {
     // events.
     schedSemaphore.acquire
     started.set(true)
-    event_orchestrator.inject_until_quiescence(enqueue_message)
+    event_orchestrator.inject_until_quiescence(_enqueue_message)
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
@@ -200,12 +196,13 @@ trait ExternalEventInjector {
         // Tell the calling thread we are done
         traceSem.release
       } else {
-        throw new RuntimeException("exploring.get returned false")
+        throw new RuntimeException("currentlyInjecting.get returned false")
       }
     }
   }
 
   def handle_shutdown () {
+    println("restarting system")
     Instrumenter().restart_system
     shutdownSem.acquire
   }
@@ -224,15 +221,15 @@ trait ExternalEventInjector {
   def reset_state () = {
     println("resetting state...")
     handle_shutdown()
-    event_orchestrator = new EventOrchestrator[ExternalEvent]()
-    fd = new FDMessageOrchestrator(enqueue_message)
+    event_orchestrator = new EventOrchestrator[E]()
+    fd = new FDMessageOrchestrator(_enqueue_message)
     event_orchestrator.set_failure_detector(fd)
     traceSem = new Semaphore(0)
     currentlyInjecting.set(false)
     shutdownSem = new Semaphore(0)
-    messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
     started.set(false)
     schedSemaphore = new Semaphore(1)
+    enqueuedExternalMessages = new MultiSet[Any]
     println("state reset.")
   }
 }
