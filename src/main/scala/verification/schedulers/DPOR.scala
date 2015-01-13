@@ -196,9 +196,7 @@ class DPOR extends Scheduler with LazyLogging {
         if (id1 == 0) rcv1 == cell.self.path.name
         else rcv1 == cell.self.path.name && id1 == id2
         
-      case (Unique(NetworkPartition(_, _), id1), 
-            (Unique(NetworkPartition(_, _), id2) , _, _) ) => id1 == id2
-        
+      case (Unique(_, id1), (Unique(_, id2) , _, _) ) => id1 == id2  
       case _ => false
     }
 
@@ -225,7 +223,7 @@ class DPOR extends Scheduler with LazyLogging {
                     + "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
                 Some(next)
                 
-              case par @ (Unique(NetworkPartition(part1, part2), id), cell, env) =>
+              case par @ (Unique(NetworkPartition(part1, part2), id), _, _) =>
                 logger.trace( Console.GREEN + "Now playing the high level partition event.")
                 Some(par)
             }
@@ -303,8 +301,13 @@ class DPOR extends Scheduler with LazyLogging {
         return Some((cell, env))
         
         
-      case Some((nextEvent @ Unique(par : NetworkPartition, nID), cell, env)) =>
+      case Some((nextEvent @ Unique(par : NetworkPartition, nID), _, _)) =>
         
+        // A NetworkPartition event is translated into multiple
+        // NodesUnreachable messages which are atomically and
+        // and invisibly consumed by all relevant parties.
+        // Important: no messages are allowed to be dispatched
+        // as the result of NodesUnreachable being received.
         val internalMsgs = decomposePartitionEvent(par)
         internalMsgs.map{ case (rcv, msg) => instrumenter().actorMappings(rcv) ! msg}
         currentTrace += nextEvent
@@ -524,25 +527,23 @@ class DPOR extends Scheduler with LazyLogging {
       if (explored) return None
 
       (earlier.event, later.event) match {
+        
         case (_: MsgEvent,_: NetworkPartition) =>
-          val needToReplay : List[Unique] = 
-            trace.take(earlierI).toList :+ 
-            later :+ earlier
           val branchI = earlierI
+          val needToReplay = List(later, earlier)
           
           return Some((branchI, needToReplay))
           
-        case (_: NetworkPartition, _: MsgEvent) =>
-
-          val newTrace = trace.clone().filter { x => x.id != earlier.id }
-          assert(newTrace.size + 1 == trace.size)
-          val needToReplay = newTrace.take(laterI).toList :+ earlier
-          val branchI = laterI - 1
-          
+        case (_: NetworkPartition, _: MsgEvent) => 
+          val branchI = earlierI - 1
+          val needToReplay = currentTrace.clone()
+            .drop(earlierI + 1)
+            .take(laterI - earlierI)
+            .toList :+ earlier
+                      
           return Some((branchI, needToReplay))
           
         case (_: MsgEvent, _: MsgEvent) =>
-
           // Get the actual nodes in the dependency graph that
           // correspond to those events
           val earlierN = (depGraph get earlier)
@@ -649,12 +650,13 @@ class DPOR extends Scheduler with LazyLogging {
         
         val sameReceiver = earlierMsg.receiver == laterMsg.receiver
         if (sameReceiver && isCoEnabeled(earlier, later)) {
+          
           analyize_dep(earlierI, laterI, trace) match {
-            
             case Some((branchI, needToReplayV)) => 
               val racingPair = ((later, earlier))
               backTrack.getOrElseUpdate(branchI, new HashMap[(Unique, Unique), List[Unique]])
               backTrack(branchI)(racingPair) = needToReplayV
+              
             case None => // Nothing
           }
           
@@ -672,10 +674,9 @@ class DPOR extends Scheduler with LazyLogging {
     // Find the deepest backtrack value, and make sure
     // its index is removed from the freeze set.
     val maxIndex = backTrack.keySet.max
-    val (u1 @ Unique(m1 : MsgEvent, id1),
-         u2 @ Unique(m2 : MsgEvent, id2)) = backTrack(maxIndex).head match {
-      case ((u1 @ Unique(m1: MsgEvent, id1), 
-            u2 @ Unique(m2: MsgEvent, id2)), eventList ) => (u1, u2)
+    val (_ @ Unique(_, id1),
+         _ @ Unique(_, id2)) = backTrack(maxIndex).head match {
+      case ((u1, u2), eventList) => (u1, u2)
       case _ => throw new Exception("invalid interleaving event types")
     }
     
