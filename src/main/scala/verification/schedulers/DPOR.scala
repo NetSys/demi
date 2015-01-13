@@ -224,7 +224,8 @@ class DPOR extends Scheduler with LazyLogging {
                 Some(next)
                 
               case par @ (Unique(NetworkPartition(part1, part2), id), _, _) =>
-                logger.trace( Console.GREEN + "Now playing the high level partition event.")
+                logger.trace( Console.GREEN + "Now playing the high level partition event." +
+                    Console.RESET)
                 Some(par)
             }
           }
@@ -619,7 +620,10 @@ class DPOR extends Scheduler with LazyLogging {
       
       case (Unique(p : NetworkPartition, _), _) => true
       case (_, Unique(p : NetworkPartition, _)) => true
-      case (_, _) =>
+      //case (_, _) =>
+      case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
+        if (m1.receiver != m2.receiver) 
+          return false
         val earlierN = (depGraph get earlier)
         val laterN = (depGraph get later)
         
@@ -643,13 +647,13 @@ class DPOR extends Scheduler with LazyLogging {
      *    common backtrack index.
      */ 
     for(laterI <- 0 to trace.size - 1) {
-      val later @ Unique(laterMsg : MsgEvent, laterID) = getEvent(laterI, trace)
+      val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
 
       for(earlierI <- 0 to laterI - 1) {
-        val earlier @ Unique(earlierMsg : MsgEvent, earlierID) = getEvent(earlierI, trace) 
+        val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, trace) 
         
-        val sameReceiver = earlierMsg.receiver == laterMsg.receiver
-        if (sameReceiver && isCoEnabeled(earlier, later)) {
+        //val sameReceiver = earlierMsg.receiver == laterMsg.receiver
+        if ( isCoEnabeled(earlier, later)) {
           
           analyize_dep(earlierI, laterI, trace) match {
             case Some((branchI, needToReplayV)) => 
