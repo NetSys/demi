@@ -19,7 +19,7 @@ object IDGenerator {
 case class Unique(
   val event : Event,
   var id : Int = IDGenerator.get()
-)
+) extends ExternalEvent
 
 abstract trait Event
 
@@ -29,7 +29,9 @@ case class MsgEvent(
 case class SpawnEvent(
     parent: String, props: Props, name: String, actor: ActorRef) extends Event
 
-case class NetworkPartition(first: Set[String], second: Set[String]) extends Event with ExternalEvent
+case class NetworkPartition(
+    first: Set[String], 
+    second: Set[String]) extends Event with ExternalEvent
 
 
 

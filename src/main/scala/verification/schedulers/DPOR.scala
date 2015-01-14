@@ -224,8 +224,8 @@ class DPOR extends Scheduler with LazyLogging {
                 Some(next)
                 
               case par @ (Unique(NetworkPartition(part1, part2), id), _, _) =>
-                logger.trace( Console.GREEN + "Now playing the high level partition event." +
-                    Console.RESET)
+                logger.trace( Console.GREEN + "Now playing the high level partition event " +
+                    id + Console.RESET)
                 Some(par)
             }
           }
@@ -356,6 +356,11 @@ class DPOR extends Scheduler with LazyLogging {
   def runExternal() = {
     currentTrace += getRootEvent
     
+    externalEventList = externalEventList.map { x => x match {
+      case net: NetworkPartition => Unique(net)
+      case other => other
+    } }
+    
     for(event <- externalEventList) event match {
       case Start(props, name) => 
         instrumenter().actorSystem().actorOf(props, name)
@@ -363,12 +368,12 @@ class DPOR extends Scheduler with LazyLogging {
       case Send(rcv, msg) =>
         val ref = instrumenter().actorMappings(rcv)
         instrumenter().actorMappings(rcv) ! msg
-        
-      case NetworkPartition(part1, part2) =>
+
+      case uniq @ Unique(NetworkPartition(part1, part2), id) =>  
         val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
-        pendingEvents(SCHEDULER) = msgs += ((
-            Unique(NetworkPartition(part1, part2)), null, null))
-        
+        pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
+            
+      case NetworkPartition(part1, part2) => throw new Exception("internal error")
       case _ => throw new Exception("unsuported external event")
     }
     
