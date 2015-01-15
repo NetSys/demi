@@ -14,6 +14,9 @@ import scala.collection.mutable.HashSet
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
+// TODO(cs): PeekScheduler should really be parameterized to allow us to try
+// different scheduling strategies (FIFO, round-robin) during Peek.
+
 /**
  * Takes a sequence of ExternalEvents as input, and plays the execution
  * forward in the same way as FairScheduler. While playing forward,

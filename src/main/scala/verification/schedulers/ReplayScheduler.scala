@@ -38,6 +38,7 @@ class ReplayScheduler()
   private[this] var firstMessage = true
 
   // Current set of enabled events.
+  // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
   val pendingEvents = new HashMap[(String, String, Any), Queue[(ActorCell, Envelope)]]
 
   // A set of external messages to send. Messages sent between actors are
@@ -49,7 +50,9 @@ class ReplayScheduler()
   // is not perfect.
   private[this] val allSends = new HashMap[(String, String, Any), Int]
 
-  // Given an external event trace, see the events produced
+  // Given an event trace, try to replay it exactly. Return the events
+  // observed in *this* execution, which should in theory be the same as the
+  // original.
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
   def replay (_trace: Seq[Event]) : Queue[Event] = {
     event_orchestrator.set_trace(_trace)
@@ -161,7 +164,8 @@ class ReplayScheduler()
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    // First get us to kind of a good place
+    // First get us to kind of a good place: it should be the case after
+    // invoking advanceReplay() that the next event is a MsgEvent.
     advanceReplay()
     // Make sure to send any external messages that just got enqueued
     enqueue_external_messages(messagesToSend)

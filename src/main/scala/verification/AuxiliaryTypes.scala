@@ -23,6 +23,7 @@ case class Unique(
 
 abstract class Event
 
+// Message delivery -- (not the initial send)
 case class MsgEvent(
     sender: String, receiver: String, msg: Any) extends Event
 

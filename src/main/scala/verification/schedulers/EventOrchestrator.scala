@@ -40,7 +40,7 @@ class EventOrchestrator[E] {
   val actorToSpawnEvent = new HashMap[String, SpawnEvent]
 
   var trace: Seq[E] = List.empty[E]
-  private[this] var traceIdx: Int = 0
+  var traceIdx: Int = 0
   var events: Queue[Event] = new Queue[Event]()
 
   var fd : FDMessageOrchestrator = null
