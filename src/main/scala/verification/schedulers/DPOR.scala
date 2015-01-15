@@ -586,7 +586,12 @@ class DPOR extends Scheduler with LazyLogging {
             .drop(earlierI + 1)
             .take(laterI - earlierI)
             .toList :+ earlier
-                      
+          
+          logger.info(Console.CYAN +
+            "Found a race between " + earlier.id + " and " +
+            later.id + " with a common index " + branchI +
+            Console.RESET)
+            
           return Some((branchI, needToReplay))
           
         case (_: MsgEvent, _: MsgEvent) =>
