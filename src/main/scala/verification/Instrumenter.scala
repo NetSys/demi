@@ -134,13 +134,12 @@ class Instrumenter {
   
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell, msg: Any) {
-    println("beforeMessageReceive")
     if (scheduler.isSystemMessage(
         cell.sender.path.name, 
         cell.self.path.name,
         msg)) return
    
-    scheduler.before_receive(cell)
+    scheduler.before_receive(cell, msg)
     currentActor = cell.self.path.name
     inActor = true
   }
@@ -156,7 +155,6 @@ class Instrumenter {
   
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell, msg: Any) {
-    println("afterMessageReceive")
     if (scheduler.isSystemMessage(
         cell.sender.path.name, 
         cell.self.path.name,
@@ -166,7 +164,8 @@ class Instrumenter {
     
     inActor = false
     currentActor = ""
-    scheduler.after_receive(cell)          
+    scheduler.after_receive(cell) 
+    
     scheduler.schedule_new_message() match {
       case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
       case None =>
@@ -174,6 +173,7 @@ class Instrumenter {
         started.set(false)
         scheduler.notify_quiescence()
     }
+
 
   }
   
@@ -185,7 +185,6 @@ class Instrumenter {
 
   // Dispatch a message, i.e., deliver it to the intended recipient
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
-    println("dispatch_new_message")
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     
@@ -217,8 +216,7 @@ class Instrumenter {
     // actor doing it in which case we need to report it)
     if (allowedEvents contains value) {
       allowedEvents.remove(value) match {
-        case true => 
-          return true
+        case true => return true
         case false => throw new Exception("internal error")
       }
     }
@@ -230,7 +228,6 @@ class Instrumenter {
     // kick starting processing.
     scheduler.event_produced(cell, envelope)
     tellEnqueue.enqueue()
-    //println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
     return false
   }
   

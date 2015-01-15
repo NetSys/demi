@@ -74,6 +74,7 @@ class ExploredTacker {
 class DPOR extends Scheduler with LazyLogging {
   
   final val SCHEDULER = "__SCHEDULER__"
+  final val PRIORITY = "__PRIORITY__"
   
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
@@ -138,8 +139,8 @@ class DPOR extends Scheduler with LazyLogging {
 
   
   def ignoreMsg[T](t: T): Boolean = t match {
-    case msg : NodesUnreachable => return true
-    case _ => return false
+    //case msg : NodesUnreachable => return true
+    case _ =>  return false
   }
   
   
@@ -259,6 +260,16 @@ class DPOR extends Scheduler with LazyLogging {
         // trace or are running for the first time. Use any enabled transitions.
         case _ => None
       }
+
+    
+    
+    pendingEvents.get(PRIORITY) match {
+      case Some(queue) => if(!queue.isEmpty) {
+        val (_, cell, env) = queue.dequeue()
+        return Some((cell, env))
+      }
+      case None => None
+    }
     
     
     val result = getMatchingMessage() match {
@@ -310,7 +321,17 @@ class DPOR extends Scheduler with LazyLogging {
         // Important: no messages are allowed to be dispatched
         // as the result of NodesUnreachable being received.
         val internalMsgs = decomposePartitionEvent(par)
-        internalMsgs.map{ case (rcv, msg) => instrumenter().actorMappings(rcv) ! msg}
+
+        for((rcv, msg) <- internalMsgs) {
+          println("Sending the partition event " + rcv + " " + msg)
+          val act = instrumenter().actorMappings(rcv)
+          instrumenter().actorMappings("A-2") ! msg
+        }
+        
+        
+        instrumenter().tellEnqueue.await()
+        
+        
         currentTrace += nextEvent
         return schedule_new_message()
         
@@ -424,18 +445,27 @@ class DPOR extends Scheduler with LazyLogging {
   
   def event_produced(cell: ActorCell, envelope: Envelope) = {
 
-    val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
-    val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
-    pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
+    envelope.message match {
+      case par: NodesUnreachable =>
+        val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, ActorCell, Envelope)])
+        pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
+        
+      case _ =>
+        val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
+        val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
+        pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
+        
+        logger.trace(Console.BLUE + "New event: " +
+            "(" + msg.sender + " -> " + msg.receiver + ") " +
+            id + Console.RESET)
+        
+        depGraph.add(unique)
+        producedEvents.enqueue( msg )
     
-    logger.trace(Console.BLUE + "New event: " +
-        "(" + msg.sender + " -> " + msg.receiver + ") " +
-        id + Console.RESET)
+        depGraph.addEdge(unique, parentEvent)(DiEdge)
+    }
     
-    depGraph.add(unique)
-    producedEvents.enqueue( msg )
 
-    depGraph.addEdge(unique, parentEvent)(DiEdge)
 
   }
   
@@ -444,9 +474,19 @@ class DPOR extends Scheduler with LazyLogging {
   def before_receive(cell: ActorCell) {
   }
   
+  override def before_receive(cell: ActorCell, msg: Any) {
+  }
   
   // Called after receive is done being processed 
   def after_receive(cell: ActorCell) {
+  }
+  
+  override def continue_scheduling(cell: ActorCell, msg: Any) : Boolean = {
+    msg match {
+      case par: NodesUnreachable =>
+        return false
+      case _ => true
+    }
   }
   
 

@@ -33,6 +33,8 @@ trait Scheduler {
   def before_receive(cell: ActorCell) : Unit
   // Called after receive is done being processed 
   def after_receive(cell: ActorCell) : Unit
+  def continue_scheduling(cell: ActorCell, msg: Any) : Boolean =
+    return true
   
   def after_receive(cell: ActorCell, msg: Any) : Unit =
     after_receive(cell)
