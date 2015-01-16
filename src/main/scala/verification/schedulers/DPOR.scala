@@ -300,9 +300,8 @@ class DPOR extends Scheduler with LazyLogging {
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
 
         invariant.headOption match {
-          case Some(Unique(m : MsgEvent, invID)) if (nID == invID) =>
-            logger.trace( Console.RED + "Managed to replay the intended message: " +
-            "(" + snd + " -> " + rcv + ") " +  + nID + Console.RESET )
+          case Some(Unique(_, invID)) if (nID == invID) =>
+            logger.trace( Console.RED + "Managed to replay the intended message: "+ nID + Console.RESET )
             invariant.dequeue()
           case _ =>
         }
@@ -315,6 +314,14 @@ class DPOR extends Scheduler with LazyLogging {
         
         
       case Some((nextEvent @ Unique(par@ NetworkPartition(_, _), nID), _, _)) =>
+        
+        invariant.headOption match {
+          case Some(Unique(_, invID)) if (nID == invID) =>
+            logger.trace( Console.RED + "Managed to replay the intended message: "+ nID + Console.RESET )
+            invariant.dequeue()
+          case _ =>
+        }
+        
         // A NetworkPartition event is translated into multiple
         // NodesUnreachable messages which are atomically and
         // and invisibly consumed by all relevant parties.
@@ -326,7 +333,6 @@ class DPOR extends Scheduler with LazyLogging {
           val act = instrumenter().actorMappings(rcv)
           instrumenter().actorMappings(rcv) ! msg
         }
-        
         
         instrumenter().tellEnqueue.await()
         
@@ -591,7 +597,7 @@ class DPOR extends Scheduler with LazyLogging {
             "Found a race between " + earlier.id + " and " +
             later.id + " with a common index " + branchI +
             Console.RESET)
-
+            
           return Some((branchI, needToReplay))
           
         case (_: MsgEvent, _: MsgEvent) =>
@@ -634,11 +640,6 @@ class DPOR extends Scheduler with LazyLogging {
           // Since we're dealing with the vertices and not the
           // events, we need to extract the values.
           val needToReplayV = needToReplay.toList
-
-          // Since we're exploring an already executed trace, we can
-          // safely mark the interleaving of (earlier, later) as
-          // already explored.
-          exploredTacker.setExplored(branchI, (earlier, later))
 
           logger.info(Console.GREEN +
             "Found a race between " + earlier.id + " and " +
@@ -704,10 +705,14 @@ class DPOR extends Scheduler with LazyLogging {
         if ( isCoEnabeled(earlier, later)) {
           
           analyize_dep(earlierI, laterI, trace) match {
-            case Some((branchI, needToReplayV)) => 
-              val racingPair = ((later, earlier))
+            case Some((branchI, needToReplayV)) =>    
+              
+              // Since we're exploring an already executed trace, we can
+              // safely mark the interleaving of (earlier, later) as
+              // already explored.
+              exploredTacker.setExplored(branchI, (earlier, later))
               backTrack.getOrElseUpdate(branchI, new HashMap[(Unique, Unique), List[Unique]])
-              backTrack(branchI)(racingPair) = needToReplayV
+              backTrack(branchI)((later, earlier)) = needToReplayV
               
             case None => // Nothing
           }
