@@ -97,6 +97,12 @@ class Instrumenter {
     require(scheduler != null)
     _actorSystem = ActorSystem("new-system-" + counter)
     counter += 1
+    
+    actorMappings.clear()
+    seenActors.clear()
+    allowedEvents.clear()
+    dispatchers.clear()
+    
     println("Started a new actor system.")
     // This is safe, we have just started a new actor system (after killing all
     // the old ones we knew about), there should be no actors running and no 

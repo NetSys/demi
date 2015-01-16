@@ -42,11 +42,11 @@ object Util {
     
   
   
-  def traceStr(events : Queue[Unique]) : String = {
+  def traceStr(events : Seq[Unique]) : String = {
     var str = ""
     for (item <- events) {
       item match {
-        case Unique(m : MsgEvent, id) => str += id + " " 
+        case Unique(_, id) => str += id + " " 
         case _ =>
       }
     }

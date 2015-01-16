@@ -310,11 +310,11 @@ class DPOR extends Scheduler with LazyLogging {
         currentTrace += nextEvent
         (depGraph get nextEvent)
         parentEvent = nextEvent
+
         return Some((cell, env))
         
         
-      case Some((nextEvent @ Unique(par : NetworkPartition, nID), _, _)) =>
-        
+      case Some((nextEvent @ Unique(par@ NetworkPartition(_, _), nID), _, _)) =>
         // A NetworkPartition event is translated into multiple
         // NodesUnreachable messages which are atomically and
         // and invisibly consumed by all relevant parties.
@@ -323,14 +323,12 @@ class DPOR extends Scheduler with LazyLogging {
         val internalMsgs = decomposePartitionEvent(par)
 
         for((rcv, msg) <- internalMsgs) {
-          println("Sending the partition event " + rcv + " " + msg)
           val act = instrumenter().actorMappings(rcv)
-          instrumenter().actorMappings("A-2") ! msg
+          instrumenter().actorMappings(rcv) ! msg
         }
         
         
         instrumenter().tellEnqueue.await()
-        
         
         currentTrace += nextEvent
         return schedule_new_message()
@@ -411,6 +409,8 @@ class DPOR extends Scheduler with LazyLogging {
 
   def run(externalEvents: Seq[ExternalEvent]) = {
     externalEventList = externalEvents
+    
+    pendingEvents.clear()
     instrumenter().reinitialize_system(null, null)
   }
   
@@ -591,7 +591,7 @@ class DPOR extends Scheduler with LazyLogging {
             "Found a race between " + earlier.id + " and " +
             later.id + " with a common index " + branchI +
             Console.RESET)
-            
+
           return Some((branchI, needToReplay))
           
         case (_: MsgEvent, _: MsgEvent) =>
@@ -640,8 +640,6 @@ class DPOR extends Scheduler with LazyLogging {
           // already explored.
           exploredTacker.setExplored(branchI, (earlier, later))
 
-          logger.trace(Console.CYAN + "Replay:  " +
-            Util.traceStr(needToReplay) + Console.RESET)
           logger.info(Console.GREEN +
             "Found a race between " + earlier.id + " and " +
             later.id + " with a common index " + branchI +
