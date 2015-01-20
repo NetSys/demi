@@ -98,7 +98,6 @@ object Util {
   // Global logger instance.
   val logger = new VCLogger()
     
-  //HashMap[String, Queue[(Unique, ActorCell, Envelope)]] 
   def dequeueOne[T1, T2](outer : HashMap[T1, Queue[T2]]) : Option[T2] =
     
     outer.headOption match {

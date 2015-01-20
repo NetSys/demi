@@ -55,9 +55,11 @@ class Instrumenter {
     _actorSystem
   }
  
+  
   def await_enqueue() {
     tellEnqueue.await()
   }
+  
   
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
     if (!scheduler.isSystemCommunication(sender, receiver, msg)) {
@@ -147,6 +149,18 @@ class Instrumenter {
     Util.logger.reset
   }
   
+  
+    // Called before a message is received
+  def beforeMessageReceive(cell: ActorCell) {
+    throw new Exception("not implemented")
+  }
+  
+  // Called after the message receive is done.
+  def afterMessageReceive(cell: ActorCell) {
+    throw new Exception("not implemented")
+  }
+  
+  
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell, msg: Any) {
     if (scheduler.isSystemMessage(
@@ -158,14 +172,6 @@ class Instrumenter {
     currentActor = cell.self.path.name
     inActor = true
   }
-  
-  
-  // Called before a message is received
-  def beforeMessageReceive(cell: ActorCell) {
-    throw new Exception("not implemented")
-  }
-  
-  
   
   
   // Called after the message receive is done.
@@ -188,13 +194,6 @@ class Instrumenter {
         started.set(false)
         scheduler.notify_quiescence()
     }
-
-
-  }
-  
-  // Called after the message receive is done.
-  def afterMessageReceive(cell: ActorCell) {
-    throw new Exception("not implemented")
   }
 
 
