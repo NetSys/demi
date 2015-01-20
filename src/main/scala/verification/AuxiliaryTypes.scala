@@ -19,15 +19,19 @@ object IDGenerator {
 case class Unique(
   val event : Event,
   var id : Int = IDGenerator.get()
-)
+) extends ExternalEvent
 
-abstract class Event
+abstract trait Event
 
 case class MsgEvent(
     sender: String, receiver: String, msg: Any) extends Event
 
 case class SpawnEvent(
     parent: String, props: Props, name: String, actor: ActorRef) extends Event
+
+case class NetworkPartition(
+    first: Set[String], 
+    second: Set[String]) extends Event with ExternalEvent
 
 
 
@@ -38,7 +42,10 @@ abstract class FDMessage
 case class FailureDetectorOnline(fdNode: String) extends FDMessage
 
 // A node is unreachable, either due to node failure or partition.
-case class NodeUnreachable(actor: String) extends FDMessage
+case class NodeUnreachable(actor: String) extends FDMessage with Event
+
+case class NodesUnreachable(actors: Set[String]) extends FDMessage with Event
+
 
 // A new node is now reachable, either because a partition healed or an actor spawned.
 case class NodeReachable(actor: String) extends FDMessage

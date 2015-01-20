@@ -55,12 +55,14 @@ class Instrumenter {
     _actorSystem
   }
  
+  
   def await_enqueue() {
     tellEnqueue.await()
   }
   
+  
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
-    if (!scheduler.isSystemCommunication(sender, receiver)) {
+    if (!scheduler.isSystemCommunication(sender, receiver, msg)) {
       tellEnqueue.tell()
     }
   }
@@ -102,6 +104,12 @@ class Instrumenter {
     _actorSystem = ActorSystem("new-system-" + counter)
     shutdownCallback()
     counter += 1
+    
+    actorMappings.clear()
+    seenActors.clear()
+    allowedEvents.clear()
+    dispatchers.clear()
+    
     println("Started a new actor system.")
     // This is safe, we have just started a new actor system (after killing all
     // the old ones we knew about), there should be no actors running and no 
@@ -134,6 +142,7 @@ class Instrumenter {
         system.registerOnTermination(reinitialize_system(system, argQueue))
         system.scheduler.asInstanceOf[Closeable].close()
         system.shutdown()
+
         println("Shut down the actor system. " + argQueue.size)
     }
 
@@ -141,25 +150,43 @@ class Instrumenter {
   }
   
   
-  // Called before a message is received
+    // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
-    
-    if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
-    scheduler.before_receive(cell)
+    throw new Exception("not implemented")
+  }
+  
+  // Called after the message receive is done.
+  def afterMessageReceive(cell: ActorCell) {
+    throw new Exception("not implemented")
+  }
+  
+  
+  // Called before a message is received
+  def beforeMessageReceive(cell: ActorCell, msg: Any) {
+    if (scheduler.isSystemMessage(
+        cell.sender.path.name, 
+        cell.self.path.name,
+        msg)) return
+   
+    scheduler.before_receive(cell, msg)
     currentActor = cell.self.path.name
     inActor = true
   }
   
   
   // Called after the message receive is done.
-  def afterMessageReceive(cell: ActorCell) {
-    if (scheduler.isSystemMessage(cell.sender.path.name, cell.self.path.name)) return
+  def afterMessageReceive(cell: ActorCell, msg: Any) {
+    if (scheduler.isSystemMessage(
+        cell.sender.path.name, 
+        cell.self.path.name,
+        msg)) return
 
     tellEnqueue.await()
     
     inActor = false
     currentActor = ""
-    scheduler.after_receive(cell)          
+    scheduler.after_receive(cell) 
+    
     scheduler.schedule_new_message() match {
       case Some((new_cell, envelope)) => dispatch_new_message(new_cell, envelope)
       case None =>
@@ -167,8 +194,8 @@ class Instrumenter {
         started.set(false)
         scheduler.notify_quiescence()
     }
-
   }
+
 
   // Dispatch a message, i.e., deliver it to the intended recipient
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
@@ -197,15 +224,14 @@ class Instrumenter {
     val rcv = receiver.path.name
     
     // If this is a system message just let it through.
-    if (scheduler.isSystemMessage(snd, rcv)) { return true }
+    if (scheduler.isSystemMessage(snd, rcv, envelope.message)) { return true }
     
     // If this is not a system message then check if we have already recorded
     // this event. Recorded => we are injecting this event (as opposed to some 
     // actor doing it in which case we need to report it)
     if (allowedEvents contains value) {
       allowedEvents.remove(value) match {
-        case true => 
-          return true
+        case true => return true
         case false => throw new Exception("internal error")
       }
     }
@@ -217,7 +243,6 @@ class Instrumenter {
     // kick starting processing.
     scheduler.event_produced(cell, envelope)
     tellEnqueue.enqueue()
-    //println(Console.BLUE +  "enqueue: " + snd + " -> " + rcv + Console.RESET);
     return false
   }
   
