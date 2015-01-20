@@ -7,6 +7,7 @@ import akka.actor.Actor
 import akka.actor.PoisonPill
 import akka.actor.Props;
 import java.util.concurrent.atomic.AtomicBoolean
+import java.io.Closeable
 
 import akka.dispatch.Envelope
 import akka.dispatch.MessageQueue
@@ -24,6 +25,8 @@ import scala.util.control.Breaks
 
 
 class Instrumenter {
+  type ShutdownCallback = () => Unit
+
   var scheduler : Scheduler = new NullScheduler
   var tellEnqueue : TellEnqueue = new TellEnqueueSemaphore
   
@@ -39,6 +42,7 @@ class Instrumenter {
   var inActor = false
   var counter = 0   
   var started = new AtomicBoolean(false);
+  var shutdownCallback : ShutdownCallback = () => {}
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
@@ -65,7 +69,7 @@ class Instrumenter {
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
       props: Props, name: String, actor: ActorRef) : Unit = {
-    
+   
     val event = new SpawnEvent(currentActor, props, name, actor)
     scheduler.event_produced(event : SpawnEvent)
     scheduler.event_consumed(event)
@@ -96,6 +100,7 @@ class Instrumenter {
   def reinitialize_system(sys: ActorSystem, argQueue: Queue[Any]) {
     require(scheduler != null)
     _actorSystem = ActorSystem("new-system-" + counter)
+    shutdownCallback()
     counter += 1
     
     actorMappings.clear()
@@ -132,11 +137,16 @@ class Instrumenter {
     seenActors.clear()
     for ((system, argQueue) <- allSystems) {
         println("Shutting down the actor system. " + argQueue.size)
-        system.shutdown()
         system.registerOnTermination(reinitialize_system(system, argQueue))
+        system.scheduler.asInstanceOf[Closeable].close()
+        system.shutdown()
+
         println("Shut down the actor system. " + argQueue.size)
     }
+
+    Util.logger.reset
   }
+  
   
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell, msg: Any) {
@@ -180,19 +190,13 @@ class Instrumenter {
         scheduler.notify_quiescence()
     }
 
-
   }
-  
-  // Called after the message receive is done.
-  def afterMessageReceive(cell: ActorCell) {
-    throw new Exception("not implemented")
-  }
-
 
   // Dispatch a message, i.e., deliver it to the intended recipient
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
+    Util.logger.mergeVectorClocks(snd, rcv)
     
     allowedEvents += ((cell, envelope) : (ActorCell, Envelope))        
 
@@ -250,7 +254,16 @@ class Instrumenter {
     }
   }
 
+  // When akka.actor.schedulerOnce decides to schedule a message to be sent,
+  // we intercept it here.
+  def handleTick(receiver: ActorRef, msg: Any) {
+    println("handleTick " + receiver.path.name)
+    scheduler.enqueue_message(receiver.path.name, msg)
+  }
 
+  def registerShutdownCallback(callback: ShutdownCallback) {
+    shutdownCallback = callback
+  }
 }
 
 object Instrumenter {

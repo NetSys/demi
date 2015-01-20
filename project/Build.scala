@@ -12,6 +12,8 @@ object InterpositionBuild extends Build {
       version := "0.1",
       scalaVersion := "2.11.2",
       libraryDependencies += "com.typesafe.akka" %% "akka-actor" % "2.3.6",
+      libraryDependencies += "com.typesafe.akka" %% "akka-cluster" % "2.3.6",
+      libraryDependencies += "org.scala-lang.modules" %% "scala-parser-combinators" % "1.0.2",
       libraryDependencies += "com.assembla.scala-incubator" %% "graph-core" % "1.9.0",
       libraryDependencies += "com.assembla.scala-incubator" %% "graph-dot" % "1.9.0",
       libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging" % "3.1.0",
