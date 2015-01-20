@@ -19,7 +19,7 @@ import scala.collection.Iterator
 
 import scala.collection.generic.GenericTraversableTemplate
 
-// A basic scheduler
+// A basic scheduler. Schedules events in the order they arrive.
 class BasicScheduler extends Scheduler {
   
   var instrumenter = Instrumenter()
@@ -203,5 +203,12 @@ class BasicScheduler extends Scheduler {
   def notify_quiescence () {
   }
   
+  def enqueue_message(receiver: String, msg: Any) {
+    throw new Exception("NYI")
+  }
+
+  def shutdown() {
+    instrumenter.restart_system
+  }
 
 }

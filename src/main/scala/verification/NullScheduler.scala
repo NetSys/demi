@@ -19,9 +19,10 @@ import scala.collection.Iterator
 
 import scala.collection.generic.GenericTraversableTemplate
 
-// A basic scheduler
+// A scheduler that always forwards messages immediately.
 class NullScheduler extends Scheduler {
-  
+
+  // Mechanism to forward messages immediately: mark everything as a "system message".
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
     return true
   }
@@ -47,4 +48,9 @@ class NullScheduler extends Scheduler {
   def before_receive(cell: ActorCell) {}
   def after_receive(cell: ActorCell) {}
   def notify_quiescence () {}
+  def enqueue_message(receiver: String, msg: Any) {
+    throw new Exception("NYI")
+  }
+  def shutdown() {}
+
 }
