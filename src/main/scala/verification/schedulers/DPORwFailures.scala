@@ -33,7 +33,7 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Logger
 
        
-class ExploredTacker {
+class ExploredTackerwFailures {
   
   var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
 
@@ -92,7 +92,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
   var invariant : Queue[Unique] = Queue()
-  var exploredTacker = new ExploredTacker
+  var exploredTacker = new ExploredTackerwFailures
   
   val currentTrace = new Queue[Unique]
   val nextTrace = new Queue[Unique]
@@ -507,7 +507,13 @@ class DPORwFailures extends Scheduler with LazyLogging {
     instrumenter().restart_system()
   }
   
+  def enqueue_message(receiver: String,msg: Any): Unit = {
+    throw new Exception("internal error not a message")
+  }
   
+  def shutdown(): Unit = {
+    throw new Exception("internal error not a message")
+  }
   
   def getEvent(index: Integer, trace: Queue[Unique]) : Unique = {
     trace(index) match {
