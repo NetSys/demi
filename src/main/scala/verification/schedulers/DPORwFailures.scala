@@ -73,7 +73,7 @@ class ExploredTacker {
        
 
 // DPOR scheduler.
-class DPOR extends Scheduler with LazyLogging {
+class DPORwFailures extends Scheduler with LazyLogging {
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
