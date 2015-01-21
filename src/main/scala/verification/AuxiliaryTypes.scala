@@ -23,6 +23,7 @@ case class Unique(
 
 abstract trait Event
 
+// Message delivery -- (not the initial send)
 case class MsgEvent(
     sender: String, receiver: String, msg: Any) extends Event
 
@@ -55,6 +56,18 @@ case object QueryReachableGroup extends FDMessage
 
 // Response to failure detector queries.
 case class ReachableGroup(actors: Set[String]) extends FDMessage
+
+object MessageTypes {
+  // Messages that the failure detector sends to actors.
+  // Assumes that actors don't relay fd messages to eachother.
+  def fromFailureDetector(m: Any) : Boolean = {
+    m match {
+      case _: FailureDetectorOnline | _: NodeUnreachable | _: NodeReachable |
+           _: ReachableGroup => return true
+      case _ => return false
+    }
+  }
+}
 
 trait TellEnqueue {
   def tell()

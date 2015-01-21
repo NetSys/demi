@@ -77,8 +77,6 @@ class RandomizedHashSet[E] {
 class RandomScheduler(max_interleavings: Int)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
 
-  init_failure_detector(enqueue_message)
-
   var test_invariant : Invariant = null
 
   // Current set of enabled events.
@@ -88,10 +86,6 @@ class RandomScheduler(max_interleavings: Int)
   // Current set of externally injected events, to be delivered in the order
   // they arrive.
   var pendingExternalEvents = new Queue[(ActorCell, Envelope)]
-
-  // A set of external messages to send. Messages sent between actors are not
-  // queued here.
-  var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
 
   /**
    * Given an external event trace, randomly explore executions involving those
@@ -105,10 +99,11 @@ class RandomScheduler(max_interleavings: Int)
    *
    * Precondition: setInvariant has been invoked.
    */
-  def explore (_trace: Seq[ExternalEvent]) : Seq[Event] = {
+  def explore (_trace: Seq[ExternalEvent]) : Option[EventTrace] = {
     for (i <- 1 to max_interleavings) {
       println("Trying random interleaving " + i)
-      execute_trace(_trace)
+      event_orchestrator.events.setOriginalExternalEvents(_trace)
+      val event_trace = execute_trace(_trace)
 
       // Check the invariant at the end of the trace.
       if (test_invariant == null) {
@@ -117,7 +112,7 @@ class RandomScheduler(max_interleavings: Int)
       val passes = test_invariant(_trace)
       if (!passes) {
         println("Found failing execution")
-        return event_orchestrator.events
+        return Some(event_trace)
       } else if (i != max_interleavings) {
         // 'Tis a lesson you should heed: Try, try, try again.
         // If at first you don't succeed: Try, try, try again
@@ -125,7 +120,7 @@ class RandomScheduler(max_interleavings: Int)
       }
     }
     // No bug found...
-    return null
+    return None
   }
 
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
@@ -138,6 +133,8 @@ class RandomScheduler(max_interleavings: Int)
         }
       }
       case ExternalMessage => {
+        // We assume that the failure detector and the outside world always
+        // have connectivity with all actors, i.e. no failure detector partitions.
         pendingExternalEvents += ((cell, envelope))
       }
       case SystemMessage => None
@@ -161,7 +158,7 @@ class RandomScheduler(max_interleavings: Int)
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    enqueue_external_messages(messagesToSend)
+    send_external_messages()
     // Always prioritize external events.
     if (!pendingExternalEvents.isEmpty) {
       return Some(pendingExternalEvents.dequeue())
@@ -197,20 +194,6 @@ class RandomScheduler(max_interleavings: Int)
     handle_after_receive(cell)
   }
 
-  // Enqueue an external message for future delivery
-  override def enqueue_message(receiver: String, msg: Any) {
-    if (event_orchestrator.actorToActorRef contains receiver) {
-      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
-    } else {
-      throw new IllegalArgumentException("Unknown receiver " + receiver)
-    }
-  }
-
-  def enqueue_message(actor: ActorRef, msg: Any) {
-    handle_enqueue_message(actor, msg)
-    messagesToSend += ((actor, msg))
-  }
-
   def setInvariant(invariant: Invariant) {
     test_invariant = invariant
   }
@@ -223,7 +206,6 @@ class RandomScheduler(max_interleavings: Int)
     super.reset_all_state
     pendingInternalEvents = new RandomizedHashSet[(ActorCell, Envelope)]
     pendingExternalEvents = new Queue[(ActorCell, Envelope)]
-    messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
   }
 
   def test(events: Seq[ExternalEvent]) : Boolean = {
@@ -231,6 +213,6 @@ class RandomScheduler(max_interleavings: Int)
     val execution = explore(events)
     reset_all_state
     // test passes if we were unable to find a failure.
-    return execution == null
+    return execution == None
   }
 }
