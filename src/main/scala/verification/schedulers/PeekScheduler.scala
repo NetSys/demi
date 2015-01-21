@@ -17,6 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 // TODO(cs): PeekScheduler should really be parameterized to allow us to try
 // different scheduling strategies (FIFO, round-robin) during Peek.
 
+// TODO(cs): PeekScheduler does not necessarily guarentee that external
+// messages are delivered in FIFO order, as assumed by EventTrace... Rather,
+// they're delivered in round-robin order along with regular internal
+// messages.
+
 /**
  * Takes a sequence of ExternalEvents as input, and plays the execution
  * forward in the same way as FairScheduler. While playing forward,
@@ -27,15 +32,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PeekScheduler()
     extends FairScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
 
-  init_failure_detector(enqueue_message)
-
-  // A set of external messages to send. Messages sent between actors are not
-  // queued here.
-  var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
-
   var test_invariant : Invariant = null
 
-  def peek (_trace: Seq[ExternalEvent]) : Queue[Event]  = {
+  def peek (_trace: Seq[ExternalEvent]) : EventTrace = {
+    event_orchestrator.events.setOriginalExternalEvents(_trace)
     return execute_trace(_trace)
   }
 
@@ -70,7 +70,7 @@ class PeekScheduler()
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    enqueue_external_messages(messagesToSend)
+    send_external_messages
     // FairScheduler gives us round-robin message dispatches.
     return super.schedule_new_message()
   }
@@ -98,22 +98,12 @@ class PeekScheduler()
     handle_before_receive(cell)
   }
 
-  // Enqueue an external message for future delivery
-  override def enqueue_message(receiver: String, msg: Any) {
-    if (event_orchestrator.actorToActorRef contains receiver) {
-      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
-    } else {
-      throw new IllegalArgumentException("Unknown receiver " + receiver)
-    }
-  }
-
-  def enqueue_message(actor: ActorRef, msg: Any) {
-    handle_enqueue_message(actor, msg)
-    messagesToSend += ((actor, msg))
-  }
-
   def setInvariant(invariant: Invariant) {
     test_invariant = invariant
+  }
+
+  override def enqueue_message(receiver: String, msg: Any) = {
+    super[ExternalEventInjector].enqueue_message(receiver, msg)
   }
 
   def test(events: Seq[ExternalEvent]) : Boolean = {

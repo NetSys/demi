@@ -10,6 +10,7 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.immutable.Set
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.ArrayBuffer
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -39,16 +40,20 @@ class EventOrchestrator[E] {
   val actorToActorRef = new HashMap[String, ActorRef]
   val actorToSpawnEvent = new HashMap[String, SpawnEvent]
 
-  var trace: Seq[E] = List.empty[E]
+  var trace: ArrayBuffer[E] = new ArrayBuffer[E]
   var traceIdx: Int = 0
-  var events: Queue[Event] = new Queue[Event]()
+  var events = new EventTrace
 
   var fd : FDMessageOrchestrator = null
 
   def set_trace(_trace: Seq[E]) {
-    trace = _trace
-    events = new Queue[Event]()
+    trace = new ArrayBuffer() ++ _trace
+    events = new EventTrace(events.original_externals)
     traceIdx = 0
+  }
+
+  def prepend(prefix: Seq[E]) {
+    trace.++=:(prefix)
   }
 
   def trace_advanced() = {
@@ -59,6 +64,7 @@ class EventOrchestrator[E] {
     return traceIdx >= trace.size
   }
 
+  // A bit of a misnomer: current *trace* event, not current recorded event.
   def current_event() : E = {
     trace(traceIdx)
   }
@@ -73,6 +79,8 @@ class EventOrchestrator[E] {
   /**
    * Injects ExternalEvents in trace until Quiescence it's time for the
    * scheduler to wait for quiescence.
+   *
+   * Should not be invoked if E != ExternalEvent.
    */
   def inject_until_quiescence(enqueue_message: EnqueueMessage) = {
     var loop = true
@@ -89,6 +97,7 @@ class EventOrchestrator[E] {
         case UnPartition (a, b) =>
           trigger_unpartition(a,b)
         case WaitQuiescence =>
+          events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence
       }
       trace_advanced()

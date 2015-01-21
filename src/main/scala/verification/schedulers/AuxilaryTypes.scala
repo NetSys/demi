@@ -1,8 +1,5 @@
 package akka.dispatch.verification
 
-import scala.collection.immutable.Set
-import scala.collection.mutable.HashSet
-
 import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{Envelope}
 
@@ -37,12 +34,23 @@ final case class MsgSend (sender: String,
 final case class KillEvent (actor: String) extends Event 
 final case class PartitionEvent (endpoints: (String, String)) extends Event
 final case class UnPartitionEvent (endpoints: (String, String)) extends Event
-final case object Quiescence extends Event 
+// Marks when WaitQuiescence was first processed.
+final case object BeginWaitQuiescence extends Event
+// Marks when Quiescence was actually reached.
+final case object Quiescence extends Event
 final case class ChangeContext (actor: String) extends Event
 
 object EventTypes {
   // Internal events that correspond to ExternalEvents.
-  // : Set[java.lang.Class[Event]]
-  val externalEventTypes  = new HashSet[java.lang.Class[Event]]() ++
-      List(KillEvent, SpawnEvent, PartitionEvent, UnPartitionEvent)
+  def isExternal(e: Event) : Boolean = {
+    return e match {
+      case _: KillEvent | _: SpawnEvent | _: PartitionEvent | _: UnPartitionEvent =>
+        return true
+      case MsgEvent(snd, _, _) =>
+        return snd == "deadLetters"
+      case MsgSend(snd, _, _) =>
+        return snd == "deadLetters"
+      case _ => return false
+    }
+  }
 }
