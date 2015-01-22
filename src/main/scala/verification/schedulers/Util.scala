@@ -1,6 +1,5 @@
 package akka.dispatch.verification
 
-// TODO(cs): move the failure detector to this file.
 
 import akka.actor.ActorCell,
        akka.actor.ActorSystem,
@@ -93,12 +92,38 @@ class VCLogger () {
   }
 }
 
-
 object Util {
-    
+
   
   // Global logger instance.
   val logger = new VCLogger()
+    
+  def dequeueOne[T1, T2](outer : HashMap[T1, Queue[T2]]) : Option[T2] =
+    
+    outer.headOption match {
+        case Some((receiver, queue)) =>
+
+          if (queue.isEmpty == true) {
+            
+            outer.remove(receiver) match {
+              case Some(key) => dequeueOne(outer)
+              case None => throw new Exception("internal error")
+            }
+
+          } else { 
+            return Some(queue.dequeue())
+          }
+          
+       case None => None
+  }
+
+  def getElement[T1](
+      container: Option[Queue[T1]],
+      condition: T1 => Boolean) : Option[T1] =
+    container match {
+      case Some(queue) => queue.dequeueFirst(condition)
+      case None =>  None
+    }
 
   def queueStr(queue: Queue[(Unique, ActorCell, Envelope)]) : String = {
     var str = "Queue content: "
@@ -112,11 +137,11 @@ object Util {
     
   
   
-  def traceStr(events : Queue[Unique]) : String = {
+  def traceStr(events : Seq[Unique]) : String = {
     var str = ""
     for (item <- events) {
       item match {
-        case Unique(m : MsgEvent, id) => str += id + " " 
+        case Unique(_, id) => str += id + " " 
         case _ =>
       }
     }

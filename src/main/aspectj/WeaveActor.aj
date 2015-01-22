@@ -43,13 +43,13 @@ privileged public aspect WeaveActor {
   before(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
-	inst.beforeMessageReceive(me);
+	inst.beforeMessageReceive(me, msg);
   }
   
   after(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
-	inst.afterMessageReceive(me);
+	inst.afterMessageReceive(me, msg);
   }
 
 
