@@ -100,6 +100,9 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   val reachabilityMap = new HashMap[String, Set[String]]
   
+  var post: (Queue[Unique]) => Unit = nullFun
+  def nullFun(trace: Queue[Unique]) : Unit = {}
+  
   
   def getRootEvent() : Unique = {
     var root = Unique(MsgEvent("null", "null", null), 0)
@@ -381,7 +384,8 @@ class DPORwFailures extends Scheduler with LazyLogging {
   }
         
 
-  def run(externalEvents: Seq[ExternalEvent]) = {
+  def run(externalEvents: Seq[ExternalEvent],
+          f: (Queue[Unique]) => Unit = nullFun) = {
     // Transform the original list of external events,
     // and assign a unique ID to all network events.
     // This is necessary since network events are not
@@ -391,6 +395,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
       case other => other
     } }
     
+    post = f
     pendingEvents.clear()
     
     // In the end, reinitialize_system call start_trace.

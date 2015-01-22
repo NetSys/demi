@@ -140,7 +140,7 @@ class Instrumenter {
     for ((system, argQueue) <- allSystems) {
         println("Shutting down the actor system. " + argQueue.size)
         system.registerOnTermination(reinitialize_system(system, argQueue))
-        system.scheduler.asInstanceOf[Closeable].close()
+        //system.scheduler.asInstanceOf[Closeable].close()
         system.shutdown()
 
         println("Shut down the actor system. " + argQueue.size)
