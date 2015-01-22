@@ -6,6 +6,7 @@ import akka.actor.ActorRef
 import akka.actor.Actor
 import akka.actor.PoisonPill
 import akka.actor.Props;
+import akka.actor.Cancellable
 import java.util.concurrent.atomic.AtomicBoolean
 import java.io.Closeable
 
@@ -43,6 +44,7 @@ class Instrumenter {
   var counter = 0   
   var started = new AtomicBoolean(false);
   var shutdownCallback : ShutdownCallback = () => {}
+  var registeredCancellableTasks = new Queue[Cancellable]
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
@@ -132,7 +134,10 @@ class Instrumenter {
     for ((system, argQueue) <- allSystems) {
         println("Shutting down the actor system. " + argQueue.size)
         system.registerOnTermination(reinitialize_system(system, argQueue))
-        system.scheduler.asInstanceOf[Closeable].close()
+        for (task <- registeredCancellableTasks) {
+          task.cancel()
+        }
+        registeredCancellableTasks.clear
         system.shutdown()
         println("Shut down the actor system. " + argQueue.size)
     }
@@ -232,6 +237,12 @@ class Instrumenter {
         started.set(false)
         scheduler.notify_quiescence()
     }
+  }
+
+  // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
+  // record the returned Cancellable object here, so that we can cancel it later.
+  def registerCancellable(c: Cancellable) {
+    registeredCancellableTasks += c
   }
 
   // When akka.actor.schedulerOnce decides to schedule a message to be sent,
