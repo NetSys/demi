@@ -35,7 +35,8 @@ class ReplayScheduler()
 
   // Current set of enabled events.
   // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
-  val pendingEvents = new HashMap[(String, String, Any), Queue[(ActorCell, Envelope)]]
+  val pendingEvents = new HashMap[(String, String, Any),
+                                  Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Just do a cheap test to ensure that no new unexpected messages are sent. This
   // is not perfect.
@@ -130,12 +131,14 @@ class ReplayScheduler()
       throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
     }
     allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
-    event_orchestrator.events += MsgSend(snd, rcv, envelope.message)
+
+    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     // Drop any messages that crosses a partition.
     if (!event_orchestrator.crosses_partition(snd, rcv)) {
       val msgs = pendingEvents.getOrElse((snd, rcv, msg),
-                          new Queue[(ActorCell, Envelope)])
-      pendingEvents((snd, rcv, msg)) = msgs += ((cell, envelope))
+                          new Queue[Uniq[(ActorCell, Envelope)]])
+      pendingEvents((snd, rcv, msg)) = msgs += uniq
     }
   }
 
@@ -202,19 +205,14 @@ class ReplayScheduler()
           None
       }
 
-      // N.B. it is an error if nextMessage is None, since it means that a
-      // message we expected to occur did not show up. If this occurs, we are
-      // going to crash, but not quite yet. After this method returns,
-      // notify_quiescence will be immediately called, and we will crash there
-      // since since we are not yet at the end of the trace.
       nextMessage match {
         case None =>
-          println("Error: expected event " + key)
-        case _ => None
+          throw new RuntimeException("Expected event " + key)
+        case Some(uniq) => None
+          event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+          schedSemaphore.release
+          return Some(uniq.element)
       }
-
-      schedSemaphore.release
-      nextMessage
     }
   }
 

@@ -10,6 +10,7 @@ final case class Start (prop: Props, name: String) extends ExternalEvent
 final case class Kill (name: String) extends ExternalEvent {}
 final case class Send (name: String, message: Any) extends ExternalEvent
 final case object WaitQuiescence extends ExternalEvent
+// Bidirectional partitions.
 final case class Partition (a: String, b: String) extends ExternalEvent
 final case class UnPartition (a: String, b: String) extends ExternalEvent
 
