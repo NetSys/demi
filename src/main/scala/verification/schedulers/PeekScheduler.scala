@@ -17,10 +17,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 // TODO(cs): PeekScheduler should really be parameterized to allow us to try
 // different scheduling strategies (FIFO, round-robin) during Peek.
 
-// TODO(cs): PeekScheduler does not necessarily guarentee that external
-// messages are delivered in FIFO order, as assumed by EventTrace... Rather,
-// they're delivered in round-robin order along with regular internal
-// messages.
+// TODO(cs): PeekScheduler does not invoke EventTrace.appendMsgSend nor
+// EventTrace.appendMsgEvent, and therefore does not provide a mapping between
+// Send's and their corresponding delivery events. This prevents some
+// optimizations, e.g. EventTrace.filterKnownAbsentInternals.
 
 /**
  * Takes a sequence of ExternalEvents as input, and plays the execution

@@ -81,11 +81,13 @@ class RandomScheduler(max_interleavings: Int)
 
   // Current set of enabled events.
   // First element of tuple is the receiver
-  var pendingInternalEvents = new RandomizedHashSet[(ActorCell, Envelope)]
+  var pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell,Envelope)]]
 
   // Current set of externally injected events, to be delivered in the order
   // they arrive.
-  var pendingExternalEvents = new Queue[(ActorCell, Envelope)]
+  var pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
+
+  // TODO(cs): probably not thread-safe without a semaphore.
 
   /**
    * Given an external event trace, randomly explore executions involving those
@@ -126,16 +128,20 @@ class RandomScheduler(max_interleavings: Int)
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
+    val msg = envelope.message
+    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+
     handle_event_produced(snd, rcv, envelope) match {
       case InternalMessage => {
         if (!crosses_partition(snd, rcv)) {
-          pendingInternalEvents.insert((cell, envelope))
+          pendingInternalEvents.insert(uniq)
         }
       }
       case ExternalMessage => {
         // We assume that the failure detector and the outside world always
         // have connectivity with all actors, i.e. no failure detector partitions.
-        pendingExternalEvents += ((cell, envelope))
+        pendingExternalEvents += uniq
       }
       case SystemMessage => None
     }
@@ -161,14 +167,19 @@ class RandomScheduler(max_interleavings: Int)
     send_external_messages()
     // Always prioritize external events.
     if (!pendingExternalEvents.isEmpty) {
-      return Some(pendingExternalEvents.dequeue())
+      val uniq = pendingExternalEvents.dequeue()
+      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+      return Some(uniq.element)
     }
 
     // Do we have some pending events
     if (pendingInternalEvents.isEmpty) {
       return None
     }
-    return Some(pendingInternalEvents.removeRandomElement())
+
+    val uniq = pendingInternalEvents.removeRandomElement()
+    event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+    return Some(uniq.element)
   }
 
   override def notify_quiescence () {
@@ -204,8 +215,8 @@ class RandomScheduler(max_interleavings: Int)
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
-    pendingInternalEvents = new RandomizedHashSet[(ActorCell, Envelope)]
-    pendingExternalEvents = new Queue[(ActorCell, Envelope)]
+    pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell, Envelope)]]
+    pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
   }
 
   def test(events: Seq[ExternalEvent]) : Boolean = {

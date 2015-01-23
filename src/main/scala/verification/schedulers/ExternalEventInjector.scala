@@ -150,7 +150,6 @@ trait ExternalEventInjector[E] {
    * towards an actor, else `System` if it is not destined towards an actor.
    */
   def handle_event_produced(snd: String, rcv: String, envelope: Envelope) : MessageType = {
-    event_orchestrator.events += MsgSend(snd, rcv, envelope.message)
     // Intercept any messages sent towards the failure detector
     if (rcv == FailureDetector.fdName) {
       fd.handle_fd_message(envelope.message, snd)
@@ -179,15 +178,13 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_event_consumed(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (enqueuedExternalMessages.contains(msg)) {
       enqueuedExternalMessages.remove(msg)
     }
     assert(started.get)
-    event_orchestrator.events += ChangeContext(cell.self.path.name)
-    event_orchestrator.events += MsgEvent(snd, rcv, msg)
+    event_orchestrator.events += ChangeContext(rcv)
   }
 
   def handle_quiescence () {

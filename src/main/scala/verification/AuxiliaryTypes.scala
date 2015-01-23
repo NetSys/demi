@@ -21,6 +21,11 @@ case class Unique(
   var id : Int = IDGenerator.get()
 ) extends ExternalEvent
 
+case class Uniq[E](
+  val element : E,
+  var id : Int = IDGenerator.get()
+)
+
 abstract trait Event
 
 // Message delivery -- (not the initial send)

@@ -72,13 +72,14 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
   // Current set of enabled events. Includes external messages, but not
   // failure detector messages, which are always sent in FIFO order.
   // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
-  val pendingEvents = new HashMap[(String, String, Any), Queue[(ActorCell, Envelope)]]
+  val pendingEvents = new HashMap[(String, String, Any),
+                                  Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Current set of failure detector messages destined for actors, to be delivered
   // in the order they arrive. Always prioritized over internal messages.
-  var pendingFDMessages = new Queue[(ActorCell, Envelope)]
+  var pendingFDMessages = new Queue[Uniq[(ActorCell, Envelope)]]
 
-  // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
+  // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent]) : Boolean = {
     assume(!subseq.isEmpty)
@@ -205,25 +206,27 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
       case ExternalMessage => {
         // We assume that the failure detector and the outside world always
         // have connectivity with all actors, i.e. no failure detector partitions.
         if (MessageTypes.fromFailureDetector(msg)) {
-          pendingFDMessages += ((cell, envelope))
+          pendingFDMessages += uniq
         } else {
           val msgs = pendingEvents.getOrElse((snd, rcv, msg),
-                              new Queue[(ActorCell, Envelope)])
-          pendingEvents((snd, rcv, msg)) = msgs += ((cell, envelope))
+                              new Queue[Uniq[(ActorCell, Envelope)]])
+          pendingEvents((snd, rcv, msg)) = msgs += uniq
         }
       }
       case InternalMessage => {
         // Drop any messages that crosses a partition.
         if (!event_orchestrator.crosses_partition(snd, rcv)) {
           val msgs = pendingEvents.getOrElse((snd, rcv, msg),
-                              new Queue[(ActorCell, Envelope)])
-          pendingEvents((snd, rcv, msg)) = msgs += ((cell, envelope))
+                              new Queue[Uniq[(ActorCell, Envelope)]])
+          pendingEvents((snd, rcv, msg)) = msgs += uniq
         }
       }
     }
@@ -263,7 +266,9 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
     // Flush detector messages before proceeding with other messages.
     send_external_messages()
     if (!pendingFDMessages.isEmpty) {
-      return Some(pendingFDMessages.dequeue())
+      val uniq = pendingFDMessages.dequeue()
+      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+      return Some(uniq.element)
     }
 
     // OK, now we first need to get to a good place: it should be the case after
@@ -321,15 +326,15 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
     // It is a fatal error if expectedMessage is None; advanceReplay should
     // have inferred that the next expected message is going to be enabled.
     expectedMessage match {
-      case Some(msgEvent) =>
+      case Some(uniq) =>
         // We have found the message we expect!
+        event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
         event_orchestrator.trace_advanced
+        schedSemaphore.release
+        return Some(uniq.element)
       case None =>
         throw new RuntimeException("We expected " + key + " to be enabled..")
     }
-
-    schedSemaphore.release
-    return expectedMessage
   }
 
   override def notify_quiescence () {

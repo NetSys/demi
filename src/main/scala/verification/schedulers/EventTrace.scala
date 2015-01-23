@@ -1,10 +1,19 @@
 package akka.dispatch.verification
 
+import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
+import akka.dispatch.Envelope
+
+
 import scala.collection.mutable.ListBuffer
 import scala.collection.generic.Growable
 import scala.collection.mutable.Queue
 import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
+
+// Internal api
+case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
+case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 
 class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new Queue[Event], null)
@@ -18,12 +27,34 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
   }
 
   def getEvents() : Seq[Event] = {
-    return events
+    return events.map(e =>
+      e match {
+        case UniqueMsgSend(m, id) => m
+        case UniqueMsgEvent(m, id) => m
+        case i: Event => i
+      }
+    )
   }
 
+  // This method should not be used to append MsgSends or MsgEvents
   override def +=(event: Event) : EventTrace.this.type = {
     events += event
     return this
+  }
+
+  def appendMsgSend(snd: String, rcv: String, msg: Any, id: Int) = {
+    val m = UniqueMsgSend(MsgSend(snd, rcv, msg), id)
+    this.+=(m)
+  }
+
+  def appendMsgEvent(pair: (ActorCell, Envelope), id: Int) = {
+    val cell = pair._1
+    val envelope = pair._2
+    val snd = envelope.sender.path.name
+    val rcv = cell.self.path.name
+    val msg = envelope.message
+    val event = UniqueMsgEvent(MsgEvent(snd, rcv, msg), id)
+    this.+=(event)
   }
 
   override def clear() : Unit = {
@@ -31,7 +62,7 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
   }
 
   override def iterator() : Iterator[Event] = {
-    return events.iterator
+    return getEvents().iterator
   }
 
   // Ensure that all failure detector messages are pruned from the original trace,
@@ -47,16 +78,18 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
     }
 
     return new EventTrace(events.filterNot(e => e match {
-        case MsgEvent(snd, rcv, msg) =>
-          fromFD(snd, msg) || rcv == FailureDetector.fdName
-        case MsgSend(snd, rcv, msg) =>
-          fromFD(snd, msg) || rcv == FailureDetector.fdName
+        case UniqueMsgEvent(m, _) =>
+          fromFD(m.sender, m.msg) || m.receiver == FailureDetector.fdName
+        case UniqueMsgSend(m, _) =>
+          fromFD(m.sender, m.msg) || m.receiver == FailureDetector.fdName
         case _ => false
       }
     ), original_externals)
   }
 
   // Filter all external events in original_trace that aren't in subseq.
+  // As an optimization, also filter out some internal events that we know a priori
+  // aren't going to occur in the subsequence execution.
   def subsequenceIntersection(subseq: Seq[ExternalEvent]) : EventTrace = {
     // Walk through all events in original_trace. As we walk through, check if
     // the current event corresponds to an external event at the head of subseq. If it does, we
@@ -64,9 +97,9 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
     // pruned and should not be included. All internal events are included in
     // result.
     var remaining = ListBuffer[ExternalEvent]() ++ subseq
-    var result = ArrayBuffer[Event]()
+    var result = new Queue[Event]()
 
-    // N.B. we deal with external events separately after this for loop,
+    // N.B. we deal with external messages separately after this for loop,
     // since they're a bit trickier.
     // N.B. it'd be nicer to use a filter() here, but it isn't guarenteed to
     // iterate left to right.
@@ -128,11 +161,10 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
     return new EventTrace(filterSends(result, subseq), original_externals)
   }
 
-  private[this] def filterSends(events: ArrayBuffer[Event],
+  private[this] def filterSends(events: Queue[Event],
                                 subseq: Seq[ExternalEvent]) : Queue[Event] = {
-    // We assume that external messages are dispatched in FIFO order, so that
-    // the zero-th MsgSend from deadLetters and the zero-th MsgEvent from
-    // deadLetters both correspond to the zero-th Send event.
+    // We assume that Send messages are sent in FIFO order, i.e. so that the
+    // the zero-th MsgSend event from deadLetters corresponds to the zero-th Send event.
 
     // Our first task is to infer which Send events have been pruned.
     // We need original_externals to disambiguate which events have actually
@@ -163,38 +195,121 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
       }
     )
 
-    // Now filter out all external MsgSend/MsgEvents whose indix is part of missing_indices
+    // Now filter out all external MsgSend/MsgEvents whose index is part of missing_indices
     var msg_send_idx = -1
-    var msg_event_idx = -1
+    val pruned_msg_ids = new HashSet[Int]
 
     // N.B. it'd be nicer to use a filter() here, but it isn't guarenteed to
     // iterate left to right according to the spec.
     var remaining = new Queue[Event]()
 
-    for (e <- events) {
+    for ((e, i) <- events.zipWithIndex) {
       e match {
-        case MsgSend(snd, _, _) =>
-          if (snd == "deadLetters") {
+        case UniqueMsgSend(m, id) =>
+          if (m.sender == "deadLetters") {
             msg_send_idx += 1
             if (!(missing_indices contains msg_send_idx)) {
               remaining += e
+            } else {
+              // We prune this event, and we need to later prune its corresponding
+              // MsgEvent, if such an event exists.
+              pruned_msg_ids += id
+              println("pruning " + m)
             }
           } else {
             remaining += e
           }
-        case MsgEvent(snd, _, _) =>
-          if (snd == "deadLetters") {
-            msg_event_idx += 1
-            if (!(missing_indices contains msg_event_idx)) {
-              remaining += e
-            }
-          } else {
+        case UniqueMsgEvent(m, id) =>
+          if (!pruned_msg_ids.contains(id)) {
             remaining += e
+          } else {
+            println("pruning " + m)
           }
         case _ => remaining += e
       } // end match
     } // end for
 
-    return remaining
+    return filterKnownAbsentInternals(remaining, subseq)
+  }
+
+  // Remove internal events that we know a priori aren't going to occur for
+  // this subsequence. In particular, if we pruned a "Start" event for a given
+  // actor, we know that all messages destined to or coming from that actor
+  // will not occur in the subsequence execution.
+  private[this] def filterKnownAbsentInternals(events: Queue[Event],
+                                               subseq: Seq[ExternalEvent]) : Queue[Event] = {
+    var result = new Queue[Event]()
+
+    // { actor name -> is the actor currently alive? }
+    var actorToAlive = new HashMap[String, Boolean] {
+      // If we haven't seen a Start event, that means it's non-existant.
+      override def default(key:String) = false
+    }
+    actorToAlive("deadLetters") = true
+
+    // { (sender, receiver) -> can the actors send messages between eachother? }
+    var actorsToPartitioned = new HashMap[(String, String), Boolean]() {
+      // Somewhat confusing: if we haven't seen a Partition event, that means
+      // it's reachable (so long as it's alive).
+      // N.B. because we never partition the external world ("deadLetters")
+      // from any actors, we always return false if either snd or rcv is
+      // "deadLetters"
+      override def default(key:(String, String)) = false
+    }
+    // IDs of message sends that we have pruned. Use case: if a message send
+    // has been pruned, obviously its later message delivery won't ever occur.
+    var prunedMessageSends = new HashSet[Int]
+
+    def messageSendable(snd: String, rcv: String) : Boolean = {
+      // println("actorToAlive(" + snd + ") " + actorToAlive(snd))
+      if (!actorToAlive(snd)) {
+        return false
+      }
+      //println("actorsToPartitioned" + (snd, rcv) + ") " + actorsToPartitioned((snd, rcv)))
+      return !actorsToPartitioned((snd, rcv))
+    }
+
+    // TODO(cs): could probably be even more aggressive in pruning than we
+    // currently are. For example, if we decide that a MsgEvent isn't going to
+    // be delivered, then we could also prune its prior MsgSend, since it's a
+    // no-op.
+    def messageDeliverable(snd: String, rcv: String, id: Int) : Boolean = {
+      if (!actorToAlive(rcv)) {
+        return false
+      }
+      return !actorsToPartitioned((snd, rcv)) && !prunedMessageSends.contains(id)
+    }
+
+    for (event <- events) {
+      event match {
+        case UniqueMsgSend(m, id) =>
+          // println("messageEvent: " + m)
+          if (messageSendable(m.sender, m.receiver)) {
+            result += event
+          } else {
+            prunedMessageSends += id
+          }
+        case UniqueMsgEvent(m, id) =>
+          // println("messageEvent: " + m)
+          if (messageDeliverable(m.sender, m.receiver, id)) {
+            result += event
+          }
+        case SpawnEvent(_, _, name, _) =>
+          actorToAlive(name) = true
+          result += event
+        case KillEvent(name) =>
+          actorToAlive(name) = false
+          result += event
+        case PartitionEvent((a,b)) =>
+          actorsToPartitioned((a,b)) = false
+          result += event
+        case UnPartitionEvent((a,b)) =>
+          actorsToPartitioned((a,b)) = true
+          result += event
+        case _ =>
+          result += event
+      }
+    }
+    return result
   }
 }
