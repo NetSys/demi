@@ -203,7 +203,7 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
     // iterate left to right according to the spec.
     var remaining = new Queue[Event]()
 
-    for ((e, i) <- events.zipWithIndex) {
+    for (e <- events) {
       e match {
         case UniqueMsgSend(m, id) =>
           if (m.sender == "deadLetters") {
@@ -214,7 +214,6 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
               // We prune this event, and we need to later prune its corresponding
               // MsgEvent, if such an event exists.
               pruned_msg_ids += id
-              println("pruning " + m)
             }
           } else {
             remaining += e
@@ -222,8 +221,6 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
         case UniqueMsgEvent(m, id) =>
           if (!pruned_msg_ids.contains(id)) {
             remaining += e
-          } else {
-            println("pruning " + m)
           }
         case _ => remaining += e
       } // end match
@@ -261,11 +258,9 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
     var prunedMessageSends = new HashSet[Int]
 
     def messageSendable(snd: String, rcv: String) : Boolean = {
-      // println("actorToAlive(" + snd + ") " + actorToAlive(snd))
       if (!actorToAlive(snd)) {
         return false
       }
-      //println("actorsToPartitioned" + (snd, rcv) + ") " + actorsToPartitioned((snd, rcv)))
       return !actorsToPartitioned((snd, rcv))
     }
 
@@ -283,14 +278,12 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
     for (event <- events) {
       event match {
         case UniqueMsgSend(m, id) =>
-          // println("messageEvent: " + m)
           if (messageSendable(m.sender, m.receiver)) {
             result += event
           } else {
             prunedMessageSends += id
           }
         case UniqueMsgEvent(m, id) =>
-          // println("messageEvent: " + m)
           if (messageDeliverable(m.sender, m.receiver, id)) {
             result += event
           }
