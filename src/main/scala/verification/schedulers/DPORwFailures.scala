@@ -102,8 +102,11 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   val reachabilityMap = new HashMap[String, Set[String]]
   
-  var post: (Queue[Unique]) => Unit = nullFun
-  def nullFun(trace: Queue[Unique]) : Unit = {}
+  var post: (Queue[Unique]) => Unit = nullFunPost
+  var done: (Scheduler) => Unit = nullFunDone
+  
+  def nullFunPost(trace: Queue[Unique]) : Unit = {}
+  def nullFunDone(s :Scheduler) : Unit = {}
   
   
   def getRootEvent() : Unique = {
@@ -387,17 +390,23 @@ class DPORwFailures extends Scheduler with LazyLogging {
         
 
   def run(externalEvents: Seq[ExternalEvent],
-          f: (Queue[Unique]) => Unit = nullFun) = {
+          f1: (Queue[Unique]) => Unit = nullFunPost,
+          f2: (Scheduler) => Unit = nullFunDone) = {
     // Transform the original list of external events,
     // and assign a unique ID to all network events.
     // This is necessary since network events are not
     // part of the dependency graph.
     externalEventList = externalEvents.map { e => e match {
-      case par: NetworkPartition => Unique(par)
+      case par: NetworkPartition => 
+        val unique = Unique(par)
+        depGraph.add(unique)
+        unique
       case other => other
     } }
     
-    post = f
+    post = f1
+    done = f2
+    
     pendingEvents.clear()
     
     // In the end, reinitialize_system call start_trace.
@@ -507,20 +516,26 @@ class DPORwFailures extends Scheduler with LazyLogging {
     
     parentEvent = getRootEvent
 
+    post(currentTrace)
+    
     pendingEvents.clear()
     currentTrace.clear
 
+    
     instrumenter().await_enqueue()
     instrumenter().restart_system()
   }
+  
   
   def enqueue_message(receiver: String,msg: Any): Unit = {
     throw new Exception("internal error not a message")
   }
   
+  
   def shutdown(): Unit = {
     throw new Exception("internal error not a message")
   }
+  
   
   def getEvent(index: Integer, trace: Queue[Unique]) : Unique = {
     trace(index) match {
@@ -715,6 +730,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
             // If the backtrack set is empty, this means we're done.
       if (backTrack.isEmpty) {
         logger.info("Tutto finito!")
+        done(this)
         System.exit(0);
       }
   
