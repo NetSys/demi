@@ -81,12 +81,18 @@ trait ExternalEventInjector[E] {
     messagesToSend += ((actor, msg))
   }
 
+  def send_external_messages() {
+    send_external_messages(true)
+  }
+
   // Initiates message sends for all messages in messagesToSend. Note that
   // delivery does not occur immediately! These messages will subsequently show
   // up in event_produced as messages to be scheduled by schedule_new_message.
-  def send_external_messages() {
+  def send_external_messages(acquireSemaphore: Boolean) {
     // Ensure that only one thread is accessing shared scheduler structures
-    schedSemaphore.acquire
+    if (acquireSemaphore) {
+      schedSemaphore.acquire
+    }
     assert(started.get)
 
     // Send all pending fd responses
@@ -101,8 +107,11 @@ trait ExternalEventInjector[E] {
     Instrumenter().await_enqueue()
 
     // schedule_new_message is reenterant, hence release before calling.
-    schedSemaphore.release
+    if (acquireSemaphore) {
+      schedSemaphore.release
+    }
   }
+
 
   // Given an external event trace, see the events produced
   def execute_trace (_trace: Seq[E]) : EventTrace = {
@@ -205,7 +214,6 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_shutdown () {
-    println("restarting system")
     Instrumenter().restart_system
     shutdownSem.acquire
   }

@@ -61,12 +61,12 @@ class MultiSet[E] {
 // Used by applications to log messages to the console. Transparently attaches vector
 // clocks to log messages.
 class VCLogger () {
-  var actor2vc : Map[String, VectorClock] = Map()
+  var actor2vc = new HashMap[String, VectorClock]
 
   // TODO(cs): is there a way to specify default values for Maps in scala?
   def ensureKeyExists(key: String) : VectorClock = {
     if (!actor2vc.contains(key)) {
-      actor2vc = actor2vc + (key -> new VectorClock())
+      actor2vc(key) = new VectorClock()
     }
     return actor2vc(key)
   }
@@ -77,18 +77,18 @@ class VCLogger () {
     vc = vc :+ src
     // Then print it, along with the message.
     println(JSONObject(vc.versions).toString() + " " + src + ": " + msg)
-    actor2vc = actor2vc + (src -> vc)
+    actor2vc(src) = vc
   }
 
   def mergeVectorClocks(src: String, dst: String) {
     val srcVC = ensureKeyExists(src)
     var dstVC = ensureKeyExists(dst)
     dstVC = dstVC.merge(srcVC)
-    actor2vc = actor2vc + (dst -> dstVC)
+    actor2vc(dst) = dstVC
   }
 
   def reset() {
-    actor2vc = Map()
+    actor2vc = new HashMap[String, VectorClock]
   }
 }
 
