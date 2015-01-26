@@ -14,8 +14,6 @@ import scala.collection.JavaConversions._
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.ConcurrentHashMap
-import java.util.Collections
 
 import scala.util.control.Breaks._
 
@@ -32,27 +30,24 @@ import scala.util.control.Breaks._
 class ReplayScheduler()
     extends AbstractScheduler with ExternalEventInjector[Event] {
 
-  init_failure_detector(enqueue_message)
-
   // Have we started off the execution yet?
   private[this] var firstMessage = true
 
   // Current set of enabled events.
-  val pendingEvents = new HashMap[(String, String, Any), Queue[(ActorCell, Envelope)]]
-
-  // A set of external messages to send. Messages sent between actors are
-  // not queued here.
-  var messagesToSend = Collections.newSetFromMap(new
-          ConcurrentHashMap[(ActorRef, Any),java.lang.Boolean])
+  // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
+  val pendingEvents = new HashMap[(String, String, Any),
+                                  Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Just do a cheap test to ensure that no new unexpected messages are sent. This
   // is not perfect.
   private[this] val allSends = new HashMap[(String, String, Any), Int]
 
-  // Given an external event trace, see the events produced
+  // Given an event trace, try to replay it exactly. Return the events
+  // observed in *this* execution, which should in theory be the same as the
+  // original.
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
-  def replay (_trace: Seq[Event]) : Queue[Event] = {
-    event_orchestrator.set_trace(_trace)
+  def replay (_trace: EventTrace) : EventTrace = {
+    event_orchestrator.set_trace(_trace.getEvents)
     fd.startFD(instrumenter.actorSystem)
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
@@ -101,6 +96,9 @@ class ReplayScheduler()
             }
           case MsgEvent(snd, rcv, msg) =>
             break
+          case BeginWaitQuiescence =>
+             // This is just a nop. Do nothing
+            event_orchestrator.events += BeginWaitQuiescence
           case Quiescence =>
             // This is just a nop. Do nothing
             event_orchestrator.events += Quiescence
@@ -133,12 +131,14 @@ class ReplayScheduler()
       throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
     }
     allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
-    event_orchestrator.events += MsgSend(snd, rcv, envelope.message)
+
+    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     // Drop any messages that crosses a partition.
     if (!event_orchestrator.crosses_partition(snd, rcv)) {
       val msgs = pendingEvents.getOrElse((snd, rcv, msg),
-                          new Queue[(ActorCell, Envelope)])
-      pendingEvents((snd, rcv, msg)) = msgs += ((cell, envelope))
+                          new Queue[Uniq[(ActorCell, Envelope)]])
+      pendingEvents((snd, rcv, msg)) = msgs += uniq
     }
   }
 
@@ -161,10 +161,11 @@ class ReplayScheduler()
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    // First get us to kind of a good place
+    // First get us to kind of a good place: it should be the case after
+    // invoking advanceReplay() that the next event is a MsgEvent.
     advanceReplay()
     // Make sure to send any external messages that just got enqueued
-    enqueue_external_messages(messagesToSend)
+    send_external_messages()
 
     if (event_orchestrator.trace_finished) {
       // We are done, let us wait for notify_quiescence to notice this
@@ -204,19 +205,14 @@ class ReplayScheduler()
           None
       }
 
-      // N.B. it is an error if nextMessage is None, since it means that a
-      // message we expected to occur did not show up. If this occurs, we are
-      // going to crash, but not quite yet. After this method returns,
-      // notify_quiescence will be immediately called, and we will crash there
-      // since since we are not yet at the end of the trace.
       nextMessage match {
         case None =>
-          println("Error: expected event " + key)
-        case _ => None
+          throw new RuntimeException("Expected event " + key)
+        case Some(uniq) => None
+          event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+          schedSemaphore.release
+          return Some(uniq.element)
       }
-
-      schedSemaphore.release
-      nextMessage
     }
   }
 
@@ -256,19 +252,5 @@ class ReplayScheduler()
   // Called after receive is done being processed
   override def after_receive(cell: ActorCell) {
     handle_after_receive(cell)
-  }
-
-  // Enqueue an external message for future delivery
-  override def enqueue_message(receiver: String, msg: Any) {
-    if (event_orchestrator.actorToActorRef contains receiver) {
-      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
-    } else {
-      throw new IllegalArgumentException("Unknown receiver " + receiver)
-    }
-  }
-
-  def enqueue_message(actor: ActorRef, msg: Any) {
-    handle_enqueue_message(actor, msg)
-    messagesToSend += ((actor, msg))
   }
 }
