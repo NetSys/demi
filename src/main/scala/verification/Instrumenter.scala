@@ -178,7 +178,7 @@ class Instrumenter {
     inActor = true
   }
   
-  
+
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell, msg: Any) {
     if (scheduler.isSystemMessage(
