@@ -44,7 +44,8 @@ class Instrumenter {
   var counter = 0   
   var started = new AtomicBoolean(false);
   var shutdownCallback : ShutdownCallback = () => {}
-
+  var registeredCancellableTasks = new Queue[Cancellable]
+  
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
   private[this] var _actorSystem : ActorSystem = null 
@@ -177,12 +178,6 @@ class Instrumenter {
     inActor = true
   }
   
-  
-  // Called before a message is received
-  def beforeMessageReceive(cell: ActorCell) {
-    throw new Exception("not implemented")
-  }
- 
   
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell, msg: Any) {
