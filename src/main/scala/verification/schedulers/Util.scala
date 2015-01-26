@@ -151,7 +151,7 @@ object Util {
   
   
     
-  def getDot(g: Graph[Unique, DiEdge]) : String = {
+  def get_dot(g: Graph[Unique, DiEdge]) {
     
     val root = DotRootGraph(
         directed = true,
@@ -159,11 +159,11 @@ object Util {
 
     def nodeStr(event: Unique) : String = {
       event.value match {
-        case Unique(msg : MsgEvent, id) => id.toString()
-        case Unique(spawn : SpawnEvent, id) => id.toString()
+        case Unique(msg : MsgEvent, id) => msg.receiver + " (" + id + ")" 
+        case Unique(spawn : SpawnEvent, id) => spawn.name + " (" + id + ")" 
       }
     }
-        
+    
     def nodeTransformer(
         innerNode: scalax.collection.Graph[Unique, DiEdge]#NodeT):
         Option[(DotGraph, DotNodeStmt)] = {
@@ -188,7 +188,11 @@ object Util {
     }
     
     
-    return g.toDot(root, edgeTransformer, cNodeTransformer = Some(nodeTransformer))
+    val str = g.toDot(root, edgeTransformer, cNodeTransformer = Some(nodeTransformer))
+    
+    val pw = new PrintWriter(new File("dot.dot" ))
+    pw.write(str)
+    pw.close
   }
 
   
@@ -208,5 +212,5 @@ object Util {
     case _ => urlses(cl.getParent)
   }
   
-
+    
 }
