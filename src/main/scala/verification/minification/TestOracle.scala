@@ -44,6 +44,8 @@ class StatelessTestOracle(oracle_ctor: StatelessTestOracle.OracleConstructor) ex
       case e: Exception => println("oracle not a scheduler?")
     }
     oracle.setInvariant(invariant)
-    return oracle.test(events)
+    val result = oracle.test(events)
+    Instrumenter().restart_system
+    return result
   }
 }

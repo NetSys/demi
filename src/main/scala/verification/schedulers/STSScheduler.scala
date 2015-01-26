@@ -19,10 +19,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
-// TODO(cs): if a Start event is pruned, we should prune all MsgSend and
-// MsgEvents for that actor, at least for the "Start"/"Kill" interval.
-
 // TODO(cs): implement fingerprints for MsgEvent.message (domain-specific) types.
+
+// TODO(cs): we invoke advanceReplay one to many times when peek is enabled. I
+// believe two threads are waiting on schedSemaphore, and both call into
+// advanceReplay. For now it looks like the redundant calls into advanceReplay are a no-op,
+// but it's possible that this might trigger a bug.
 
 object STSScheduler {
   // The maximum number of unexpected messages to try in a Peek() run before
@@ -60,9 +62,11 @@ object STSScheduler {
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
-class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
+class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
   assume(!original_trace.isEmpty)
+
+  def this(original_trace: EventTrace) = this(original_trace, false)
 
   var test_invariant : Invariant = null
 
@@ -78,6 +82,9 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
   // Current set of failure detector messages destined for actors, to be delivered
   // in the order they arrive. Always prioritized over internal messages.
   var pendingFDMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+
+  // Are we currently pausing the ActorSystem in order to invoke Peek()
+  var pausing = new AtomicBoolean(false)
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
@@ -117,17 +124,47 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
     return invariant_holds
   }
 
-  /*
-   * peek() schedules a fixed number of unexpected messages in FIFO order
-   * to guess whether a particular message event m is going to become enabled or not.
-   *
-   * If msg does become enabled, return a prefix of messages that lead up to its being enabled.
-   *
-   * Otherwise, return None.
-   */
-  def peek(m: MsgEvent, expected: Seq[Event]) : Option[Seq[MsgEvent]] = {
-    // TODO(cs): going to need to pull this into a separate Scheduler class.
-    return None
+  // Should only ever be invoked by notify_quiescence, after we have paused
+  // the message dispatch loop.
+  def peek() : Unit = {
+    val m : MsgEvent = event_orchestrator.current_event.asInstanceOf[MsgEvent]
+
+    val expected = new MultiSet[MsgEvent]
+    expected ++= STSScheduler.getNextInterval(
+      event_orchestrator.trace.slice(event_orchestrator.traceIdx,
+                                     event_orchestrator.trace.length)).flatMap {
+      case m: MsgEvent => Some(m)
+      case _ => None
+    }
+
+    // Optimization: if no unexpected events to schedule, give up early.
+    val unexpected = IntervalPeekScheduler.unexpected(
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
+
+    if (unexpected.isEmpty) {
+      println("No unexpected messages. Ignoring message" + m)
+      event_orchestrator.trace_advanced
+      return
+    }
+
+    val peeker = new IntervalPeekScheduler(expected, m)
+    Instrumenter().scheduler = peeker
+    val checkpoint = Instrumenter().checkpoint()
+    println("Peek()'ing")
+    val prefix = peeker.peek(event_orchestrator.events)
+    peeker.shutdown
+    println("Restoring checkpoint")
+    Instrumenter().scheduler = this
+    Instrumenter().restoreCheckpoint(checkpoint)
+    prefix match {
+      case Some(lst) =>
+        // Prepend the prefix onto expected events so that
+        // schedule_new_message() correctly schedules the prefix.
+        event_orchestrator.prepend(lst)
+      case None =>
+        println("Ignoring message" + m)
+        event_orchestrator.trace_advanced
+    }
   }
 
   def advanceReplay() {
@@ -157,31 +194,32 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
           // MsgEvent is the delivery
           case m: MsgEvent =>
             // Check if the event is expected to occur
-            // Avoid deadlock, since messagePending needs schedSemaphore
-            schedSemaphore.release()
+            def messagePending(m: MsgEvent) : Boolean = {
+              // Make sure to send any external messages that recently got enqueued
+              send_external_messages(false)
+              val key = (m.sender, m.receiver, m.msg)
+              return pendingEvents.get(key) match {
+                case Some(queue) =>
+                  !queue.isEmpty
+                case None =>
+                  false
+              }
+            }
+
             val enabled = messagePending(m)
-            schedSemaphore.acquire()
             if (enabled) {
               // Yay, it's already enabled.
               break
             }
-            // If it isn't enabled yet, let's try Peek()'ing for it.
-            // TODO(cs): save a checkpoint.
-            val expected = STSScheduler.getNextInterval(
-              event_orchestrator.trace.slice(event_orchestrator.traceIdx, event_orchestrator.trace.length))
-            val prefix = peek(m, expected)
-            // TODO(cs): restore a checkpoint.
-            prefix match {
-              case Some(lst) =>
-                // Prepend the prefix onto expected events so that
-                // schedule_new_message() correctly schedules the prefix.
-                event_orchestrator.prepend(lst)
-                break
-              case None =>
-                // Otherwise, ignore this message! (by not break'ing)
-                println("Ignoring expected message " + m)
-                None
+            if (allowPeek) {
+              // If it isn't enabled yet, let's try Peek()'ing for it.
+              // First, we need to pause the ActorSystem.
+              println("Pausing")
+              pausing.set(true)
+              break
             }
+            // if (!allowPeek) we skip over this event
+            println("Ignoring message " + m)
           case Quiescence =>
             // This is just a nop. Do nothing
             event_orchestrator.events += Quiescence
@@ -208,6 +246,7 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
     val msg = envelope.message
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
       case ExternalMessage => {
@@ -248,21 +287,14 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
     handle_event_consumed(cell, envelope)
   }
 
-  def messagePending(m: MsgEvent) : Boolean = {
-    // Make sure to send any external messages that recently got enqueued
-    send_external_messages()
-    val key = (m.sender, m.receiver, m.msg)
-    return pendingEvents.get(key) match {
-      case Some(queue) =>
-        !queue.isEmpty
-      case None =>
-        false
-    }
-  }
-
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+    if (pausing.get) {
+      // Return None to stop dispatching.
+      return None
+    }
+
     // Flush detector messages before proceeding with other messages.
     send_external_messages()
     if (!pendingFDMessages.isEmpty) {
@@ -276,6 +308,12 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
     // internal message that we observed in both the original execution and
     // the Peek() run.
     advanceReplay()
+
+    if (pausing.get) {
+      // Return None to stop dispatching.
+      return None
+    }
+
     // Make sure to send any external messages that just got enqueued
     send_external_messages()
 
@@ -286,7 +324,7 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
       return None
     }
 
-    // Otherwise, we're chasing message we (advanceReplay) knows to be enabled.
+    // Otherwise, we're chasing a message we (advanceReplay) knows to be enabled.
     // Ensure that only one thread is accessing shared scheduler structures
     schedSemaphore.acquire
 
@@ -338,6 +376,15 @@ class STSScheduler(var original_trace: EventTrace) extends AbstractScheduler
   }
 
   override def notify_quiescence () {
+    if (pausing.get) {
+      // We've now paused the ActorSystem. Go ahead with peek()
+      peek()
+      // Get us moving again.
+      pausing.set(false)
+      firstMessage = true
+      advanceReplay()
+      return
+    }
     assert(started.get)
     started.set(false)
     if (!event_orchestrator.trace_finished) {

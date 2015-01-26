@@ -22,10 +22,9 @@ import scala.util.control.Breaks._
  * return value of PeekScheduler.peek()), and attempts to replay that schedule
  * exactly.
  *
- * Deals with non-determinism as follows:
- *  - If the application sends unexpected messages, this scheduler does not allow them through.
- *  - If the application does not send a message that was previously sent,
- *    die.
+ * In the case of non-determinism we die. In particular:
+ *  - If the application sends unexpected messages
+ *  - If the application does not send a message that was previously sent
  */
 class ReplayScheduler()
     extends AbstractScheduler with ExternalEventInjector[Event] {
@@ -49,6 +48,9 @@ class ReplayScheduler()
   def replay (_trace: EventTrace) : EventTrace = {
     event_orchestrator.set_trace(_trace.getEvents)
     fd.startFD(instrumenter.actorSystem)
+    // We don't actually want to allow the failure detector to send messages,
+    // since all the failure detector messages are recorded in _trace.
+    event_orchestrator.set_failure_detector(null)
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- event_orchestrator.trace) {
@@ -135,7 +137,7 @@ class ReplayScheduler()
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     // Drop any messages that crosses a partition.
-    if (!event_orchestrator.crosses_partition(snd, rcv)) {
+    if (!event_orchestrator.crosses_partition(snd, rcv) && rcv != FailureDetector.fdName) {
       val msgs = pendingEvents.getOrElse((snd, rcv, msg),
                           new Queue[Uniq[(ActorCell, Envelope)]])
       pendingEvents((snd, rcv, msg)) = msgs += uniq

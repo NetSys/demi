@@ -432,7 +432,7 @@ class DPOR extends Scheduler with LazyLogging {
     // Check if it's an external event.
     if (enqueuedExternalMessages.contains(envelope.message)) {
       pendingExternalEvents += ((cell, envelope))
-      enqueuedExternalMessages.remove(envelope.message)
+      enqueuedExternalMessages -= envelope.message
       return
     }
 
@@ -730,7 +730,7 @@ class DPOR extends Scheduler with LazyLogging {
   }
 
   private[this] def enqueue_message(actor: ActorRef, msg: Any) {
-    enqueuedExternalMessages.add(msg)
+    enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
   }
 
