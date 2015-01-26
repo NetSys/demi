@@ -14,7 +14,8 @@ import akka.dispatch.Envelope,
        
 import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.Queue,
-       scala.collection.mutable.HashMap
+       scala.collection.mutable.HashMap,
+       scala.collection.mutable.Set
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphPredef._, 
@@ -32,22 +33,23 @@ import akka.cluster.VectorClock
 import scala.util.parsing.json.JSONObject
 
 // Provides O(1) lookup, but allows multiple distinct elements
-class MultiSet[E] {
+class MultiSet[E] extends Set[E] {
   var m = new HashMap[E, List[E]]
-
-  def add(e: E) = {
-    if (m.contains(e)) {
-      m(e) = e :: m(e)
-    } else {
-      m(e) = List(e)
-    }
-  }
 
   def contains(e: E) : Boolean = {
     return m.contains(e)
   }
 
-  def remove(e: E) = {
+  def +=(e: E) : this.type  = {
+    if (m.contains(e)) {
+      m(e) = e :: m(e)
+    } else {
+      m(e) = List(e)
+    }
+    return this
+  }
+
+  def -=(e: E) : this.type = {
     if (!m.contains(e)) {
       throw new IllegalArgumentException("No such element " + e)
     }
@@ -55,6 +57,11 @@ class MultiSet[E] {
     if (m(e).isEmpty) {
       m -= e
     }
+    return this
+  }
+
+  def iterator: Iterator[E] = {
+    return m.values.flatten.iterator
   }
 }
 

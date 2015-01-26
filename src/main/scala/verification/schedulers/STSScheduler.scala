@@ -19,10 +19,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
-// TODO(cs): if a Start event is pruned, we should prune all MsgSend and
-// MsgEvents for that actor, at least for the "Start"/"Kill" interval.
-
 // TODO(cs): implement fingerprints for MsgEvent.message (domain-specific) types.
+
+// TODO(cs): we invoke advanceReplay one to many times when peek is enabled. I
+// believe two threads are waiting on schedSemaphore, and both call into
+// advanceReplay. For now it looks like the redundant calls into advanceReplay are a no-op,
+// but it's possible that this might trigger a bug.
 
 object STSScheduler {
   // The maximum number of unexpected messages to try in a Peek() run before
@@ -122,18 +124,34 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
     return invariant_holds
   }
 
-  def peek() = {
-    // TODO(cs): add an optimization here: if no unexpected events to
-    // scheduler, give up early.
+  // Should only ever be invoked by notify_quiescence, after we have paused
+  // the message dispatch loop.
+  def peek() : Unit = {
     val m : MsgEvent = event_orchestrator.current_event.asInstanceOf[MsgEvent]
-    // If it isn't enabled yet, let's try Peek()'ing for it.
-    val expected = STSScheduler.getNextInterval(
-      event_orchestrator.trace.slice(event_orchestrator.traceIdx, event_orchestrator.trace.length))
-    val peeker = new IntervalPeekScheduler()
+
+    val expected = new MultiSet[MsgEvent]
+    expected ++= STSScheduler.getNextInterval(
+      event_orchestrator.trace.slice(event_orchestrator.traceIdx,
+                                     event_orchestrator.trace.length)).flatMap {
+      case m: MsgEvent => Some(m)
+      case _ => None
+    }
+
+    // Optimization: if no unexpected events to schedule, give up early.
+    val unexpected = IntervalPeekScheduler.unexpected(
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
+
+    if (unexpected.isEmpty) {
+      println("No unexpected messages. Ignoring message" + m)
+      event_orchestrator.trace_advanced
+      return
+    }
+
+    val peeker = new IntervalPeekScheduler(expected, m)
     Instrumenter().scheduler = peeker
     val checkpoint = Instrumenter().checkpoint()
     println("Peek()'ing")
-    val prefix = peeker.peek(event_orchestrator.events, m, expected)
+    val prefix = peeker.peek(event_orchestrator.events)
     peeker.shutdown
     println("Restoring checkpoint")
     Instrumenter().scheduler = this
@@ -147,11 +165,6 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
         println("Ignoring message" + m)
         event_orchestrator.trace_advanced
     }
-
-    pausing.set(false)
-    // Get us moving again.
-    firstMessage = true
-    advanceReplay()
   }
 
   def advanceReplay() {
@@ -199,8 +212,9 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
               break
             }
             if (allowPeek) {
-              // Try peek()'ing for it. First, we need to pause the
-              // ActorSystem.
+              // If it isn't enabled yet, let's try Peek()'ing for it.
+              // First, we need to pause the ActorSystem.
+              println("Pausing")
               pausing.set(true)
               break
             }
@@ -232,6 +246,7 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
     val msg = envelope.message
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
       case ExternalMessage => {
@@ -364,6 +379,10 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
     if (pausing.get) {
       // We've now paused the ActorSystem. Go ahead with peek()
       peek()
+      // Get us moving again.
+      pausing.set(false)
+      firstMessage = true
+      advanceReplay()
       return
     }
     assert(started.get)

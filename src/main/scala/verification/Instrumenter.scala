@@ -126,6 +126,7 @@ class Instrumenter {
     dispatchers.clear()
     
     println("Started a new actor system.")
+
     // This is safe, we have just started a new actor system (after killing all
     // the old ones we knew about), there should be no actors running and no 
     // dispatch calls outstanding. That said, it is really important that we not
@@ -140,10 +141,7 @@ class Instrumenter {
   }
   
   
-  // Signal to the instrumenter that the scheduler wants to restart the system
-  def restart_system() = {
-    
-    println("Restarting system")
+  def shutdown_system(alsoRestart: Boolean) = {
     shutdownCallback()
 
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
@@ -156,7 +154,9 @@ class Instrumenter {
     seenActors.clear()
     for ((system, argQueue) <- allSystems) {
       println("Shutting down the actor system. " + argQueue.size)
-      system.registerOnTermination(reinitialize_system(system, argQueue))
+      if (alsoRestart) {
+        system.registerOnTermination(reinitialize_system(system, argQueue))
+      }
       for (task <- registeredCancellableTasks) {
         task.cancel()
       }
@@ -167,6 +167,12 @@ class Instrumenter {
     }
 
     Util.logger.reset
+  }
+
+  // Signal to the instrumenter that the scheduler wants to restart the system
+  def restart_system() = {
+    println("Restarting system")
+    shutdown_system(true)
   }
   
   

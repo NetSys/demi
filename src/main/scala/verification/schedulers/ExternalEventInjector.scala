@@ -77,7 +77,7 @@ trait ExternalEventInjector[E] {
   }
 
   def enqueue_message(actor: ActorRef, msg: Any) {
-    enqueuedExternalMessages.add(msg)
+    enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
   }
 
@@ -190,7 +190,7 @@ trait ExternalEventInjector[E] {
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (enqueuedExternalMessages.contains(msg)) {
-      enqueuedExternalMessages.remove(msg)
+      enqueuedExternalMessages -= msg
     }
     assert(started.get)
     event_orchestrator.events += ChangeContext(rcv)
