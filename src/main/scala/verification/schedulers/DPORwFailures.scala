@@ -400,6 +400,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
       case par: NetworkPartition => 
         val unique = Unique(par)
         depGraph.add(unique)
+        depGraph.addEdge(unique, getRootEvent())(DiEdge)
         unique
       case other => other
     } }
@@ -514,7 +515,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
     logger.debug(Console.BLUE + "Next trace:  " + 
         Util.traceStr(nextTrace) + Console.RESET)
     
-    parentEvent = getRootEvent
+    parentEvent = getRootEvent()
 
     post(currentTrace)
     

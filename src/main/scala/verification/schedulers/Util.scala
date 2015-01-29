@@ -159,8 +159,7 @@ object Util {
 
     def nodeStr(event: Unique) : String = {
       event.value match {
-        case Unique(msg : MsgEvent, id) => id.toString()
-        case Unique(spawn : SpawnEvent, id) => id.toString()
+        case Unique(_, id) => id.toString()
       }
     }
         
@@ -168,8 +167,8 @@ object Util {
         innerNode: scalax.collection.Graph[Unique, DiEdge]#NodeT):
         Option[(DotGraph, DotNodeStmt)] = {
       val descr = innerNode.value match {
-        case u @ Unique(msg : MsgEvent, id) => DotNodeStmt( nodeStr(u), Seq.empty[DotAttr])
         case u @ Unique(spawn : SpawnEvent, id) => DotNodeStmt( nodeStr(u), Seq(DotAttr("color", "red")))
+        case u @ Unique(_, id) => DotNodeStmt( nodeStr(u), Seq.empty[DotAttr])
       }
 
       Some(root, descr)
@@ -208,5 +207,5 @@ object Util {
     case _ => urlses(cl.getParent)
   }
   
-    
+
 }
