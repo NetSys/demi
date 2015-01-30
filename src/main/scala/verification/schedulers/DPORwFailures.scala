@@ -64,11 +64,8 @@ class ExploredTackerwFailures {
 
   
   def printExplored() = {
-    for ((index, set) <- exploredStack.toList.sortBy(t => (t._1))) {
+    for ((index, set) <- exploredStack.toList.sortBy(t => (t._1)))
       println(index + ": " + set.size)
-      //val content = set.map(x => (x._1.id, x._2.id))
-      //println(index + ": " + set.size + ": " +  content))
-    }
   }
 
 }
@@ -101,6 +98,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   var parentEvent = getRootEvent
   
   val reachabilityMap = new HashMap[String, Set[String]]
+  
   
   var post: (Queue[Unique]) => Unit = nullFunPost
   var done: (Scheduler) => Unit = nullFunDone
