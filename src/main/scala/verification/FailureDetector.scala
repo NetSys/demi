@@ -41,7 +41,7 @@ object FDMessageOrchestrator {
   type EnqueueMessage = (String, Any) => Unit
 }
 
-class FDMessageOrchestrator (enqueue_message: FDMessageOrchestrator.EnqueueMessage) {
+class FDMessageOrchestrator (var enqueue_message: FDMessageOrchestrator.EnqueueMessage) {
 
   // Failure detector information
   // For each actor, track the set of other actors who are reachable.

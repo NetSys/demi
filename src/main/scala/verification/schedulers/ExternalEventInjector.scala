@@ -116,6 +116,7 @@ trait ExternalEventInjector[E] {
   // Given an external event trace, see the events produced
   def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)
+    event_orchestrator.reset_events
     fd.startFD(Instrumenter().actorSystem)
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,

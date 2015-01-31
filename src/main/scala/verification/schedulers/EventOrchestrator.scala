@@ -48,8 +48,15 @@ class EventOrchestrator[E] {
 
   def set_trace(_trace: Seq[E]) {
     trace = new ArrayBuffer() ++ _trace
-    events = new EventTrace(events.original_externals)
     traceIdx = 0
+  }
+
+  def reset_events() {
+    events = new EventTrace(events.original_externals)
+  }
+
+  def getRemainingTrace() : Seq[E] = {
+    return trace.slice(traceIdx, trace.length)
   }
 
   def prepend(prefix: Seq[E]) {
