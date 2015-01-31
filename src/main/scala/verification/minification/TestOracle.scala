@@ -2,13 +2,15 @@ package akka.dispatch.verification
 
 
 trait TestOracle {
+  // An predicate that returns true if the safety condition is not violated,
+  // i.e. the execution is correct. Otherwise, returns false.
   type Invariant = (Seq[ExternalEvent]) => Boolean
 
   def setInvariant(invariant: Invariant)
 
   /**
-   * Return whether there exists any execution containing the given external
-   * events that triggers the given invariant.
+   * Returns false if there exists any execution containing the given external
+   * events that causes the invariant to return false. Otherwise, returns true.
    *
    * At the end of the invocation, it is the responsibility of the TestOracle
    * to ensure that the ActorSystem is returned to a clean initial state.
