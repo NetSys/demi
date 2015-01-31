@@ -47,10 +47,13 @@ class ReplayScheduler()
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
   def replay (_trace: EventTrace) : EventTrace = {
     event_orchestrator.set_trace(_trace.getEvents)
-    fd.startFD(instrumenter.actorSystem)
+    event_orchestrator.reset_events
     // We don't actually want to allow the failure detector to send messages,
-    // since all the failure detector messages are recorded in _trace.
-    event_orchestrator.set_failure_detector(null)
+    // since all the failure detector messages are recorded in _trace. So we
+    // give it a no-op enqueue_message parameter.
+    fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
+    event_orchestrator.set_failure_detector(fd)
+    fd.startFD(instrumenter.actorSystem)
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- event_orchestrator.trace) {

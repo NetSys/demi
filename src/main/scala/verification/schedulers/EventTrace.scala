@@ -15,15 +15,27 @@ import scala.collection.mutable.HashSet
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 
-class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
+class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new Queue[Event], null)
   def this(events: Queue[Event]) = this(events, null)
   def this(original_externals: Seq[ExternalEvent]) = this(new Queue[Event], original_externals)
+
+  override def hashCode = this.events.hashCode
+  override def equals(other: Any) : Boolean = other match {
+    case that: EventTrace => this.events == that.events
+    case _ => false
+  }
 
   // Optional: if you have the original external events, that helps us with
   // filtering.
   def setOriginalExternalEvents(_original_externals: Seq[ExternalEvent]) = {
     original_externals = _original_externals
+  }
+
+  def copy() : EventTrace = {
+    assume(original_externals != null)
+    return new EventTrace(new Queue[Event] ++ events,
+                          new Queue[ExternalEvent] ++ original_externals)
   }
 
   def getEvents() : Seq[Event] = {
