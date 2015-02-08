@@ -21,15 +21,25 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.util.control.Breaks._
 
 // TODO(cs): make EventTrace immutable so that copying is far more efficient.
+// TODO(cs): I'm fairly sure this code is full of race conditions. Example
+// stack traces:
+//   - java.lang.RuntimeException: Expected event (deadLetters,bcast0,NodeReachable(bcast3))
+//       at  akka.dispatch.verification.ReplayScheduler.schedule_new_message(ReplayScheduler.scala:215)
+//   - assume(pendingFDMessages.isEmpty) does not hold.
+// TODO(cs): would be nice force GreedyED to favor deletions rather than
+// unexpecteds, since DFS terminates whereas BFS does not necessarily.
+// TODO(cs): at some point, GreedyED slows down dramatically. Figure out why.
 
 /**
  * Scheduler that takes greedily tries to minimize edit distance from the
  * original execution.
  */
-class GreedyED(var original_trace: EventTrace) extends AbstractScheduler
+class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
   assume(!original_trace.isEmpty)
   assume(original_trace.original_externals != null)
+
+  def this(original_trace: EventTrace) = this(original_trace, -1)
 
   var test_invariant : Invariant = null
 
@@ -128,7 +138,8 @@ class GreedyED(var original_trace: EventTrace) extends AbstractScheduler
     traceSem.acquire
     currentlyInjecting.set(false)
     shutdown()
-    return foundViolation.get
+    // Somewhat confusing: test passes if we failed to find a violation.
+    return !foundViolation.get
   }
 
   private[this] def getUnexpected() : Seq[MsgEvent] = {
@@ -428,13 +439,19 @@ class GreedyED(var original_trace: EventTrace) extends AbstractScheduler
     } else {
       if (currentlyInjecting.get) {
         // Check if we found the violation.
-        val violationFound = test_invariant(subseq)
+        val violationFound = !test_invariant(subseq)
+        execution_bound -= 1
         if (violationFound) {
           // Tell the calling thread we are done
           println("Violation found!")
           foundViolation.set(true)
           traceSem.release
         } else if (priorityQueue.isEmpty) {
+          println("No more executions to try")
+          // Alas, no violation found.
+          traceSem.release
+        } else if (execution_bound == 0) {
+          println("Execution bound exceeded")
           // Alas, no violation found.
           traceSem.release
         } else {

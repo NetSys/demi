@@ -34,6 +34,8 @@ class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalE
 
   def copy() : EventTrace = {
     assume(original_externals != null)
+    assume(!events.isEmpty)
+    assume(!original_externals.isEmpty)
     return new EventTrace(new Queue[Event] ++ events,
                           new Queue[ExternalEvent] ++ original_externals)
   }
