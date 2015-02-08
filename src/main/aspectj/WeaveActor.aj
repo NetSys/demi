@@ -133,8 +133,9 @@ privileged public aspect WeaveActor {
         i.handleTick(rcv, m);
       }
     }
-    inst.registerCancellable(me.scheduleOnce(delay, new MyRunnable(receiver, msg, inst), exc));
-	  return null;
+    Cancellable c = me.scheduleOnce(delay, new MyRunnable(receiver, msg, inst), exc);
+    inst.registerCancellable(c);
+	  return c;
   }
 
   // Override akka.actor.Scheduler.scheduler
@@ -164,7 +165,8 @@ privileged public aspect WeaveActor {
         i.handleTick(rcv, m);
       }
     }
-    inst.registerCancellable(me.schedule(delay, interval, new MyRunnable(receiver, msg, inst), exc));
-	  return null;
+    Cancellable c = me.schedule(delay, interval, new MyRunnable(receiver, msg, inst), exc);
+    inst.registerCancellable(c);
+	  return c;
   }
 }
