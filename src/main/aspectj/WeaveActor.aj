@@ -119,6 +119,7 @@ privileged public aspect WeaveActor {
       ActorRef rcv;
       Object m;
       Instrumenter i;
+      Cancellable c;
 
       public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst) {
         rcv = receiver;
@@ -126,15 +127,21 @@ privileged public aspect WeaveActor {
         i = inst;
       }
 
+      public void setCancellable(Cancellable cancellable) {
+        c = cancellable;
+      }
+
       public void run() {
         // Use essentially the same scheduleOnce implementation, but don't use !
         // See:
         //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
-        i.handleTick(rcv, m);
+        i.handleTick(rcv, m, c);
       }
     }
-    Cancellable c = me.scheduleOnce(delay, new MyRunnable(receiver, msg, inst), exc);
-    inst.registerCancellable(c);
+    MyRunnable runnable = new MyRunnable(receiver, msg, inst);
+    Cancellable c = me.scheduleOnce(delay, runnable, exc);
+    runnable.setCancellable(c);
+    inst.registerCancellable(c, false);
 	  return c;
   }
 
@@ -151,6 +158,7 @@ privileged public aspect WeaveActor {
       ActorRef rcv;
       Object m;
       Instrumenter i;
+      Cancellable c;
 
       public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst) {
         rcv = receiver;
@@ -158,15 +166,21 @@ privileged public aspect WeaveActor {
         i = inst;
       }
 
+      public void setCancellable(Cancellable cancellable) {
+        c = cancellable;
+      }
+
       public void run() {
         // Use essentially the same scheduleOnce implementation, but don't use !
         // See:
         //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
-        i.handleTick(rcv, m);
+        i.handleTick(rcv, m, c);
       }
     }
-    Cancellable c = me.schedule(delay, interval, new MyRunnable(receiver, msg, inst), exc);
-    inst.registerCancellable(c);
+    MyRunnable runnable = new MyRunnable(receiver, msg, inst);
+    Cancellable c = me.schedule(delay, interval, runnable, exc);
+    runnable.setCancellable(c);
+    inst.registerCancellable(c, true);
 	  return c;
   }
 }

@@ -15,6 +15,7 @@ import scala.collection.generic.Clearable
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 abstract class MessageType()
 final case object ExternalMessage extends MessageType
@@ -32,6 +33,12 @@ trait ExternalEventInjector[E] {
   // Handler for FailureDetector messages
   var fd : FDMessageOrchestrator = new FDMessageOrchestrator(enqueue_message)
   event_orchestrator.set_failure_detector(fd)
+  var _disableFailureDetector = false
+
+  def disableFailureDetector() {
+    _disableFailureDetector = true
+    event_orchestrator.set_failure_detector(null)
+  }
 
   // Semaphore to wait for trace replay to be done. We initialize the
   // semaphore to 0 rather than 1, so that the main thread blocks upon
@@ -66,6 +73,11 @@ trait ExternalEventInjector[E] {
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
   var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
+
+  // Whenever we inject a "Continue" external event, this tracks how many
+  // events we have left to scheduled until we return to scheduling more
+  // external events.
+  var numWaitingFor = new AtomicInteger(0)
 
   // Enqueue an external message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
@@ -112,20 +124,21 @@ trait ExternalEventInjector[E] {
     }
   }
 
-
   // Given an external event trace, see the events produced
   def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
-    fd.startFD(Instrumenter().actorSystem)
+    if (!_disableFailureDetector) {
+      fd.startFD(Instrumenter().actorSystem)
+    }
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
     for (t <- event_orchestrator.trace) {
       t match {
-        case Start (prop, name) =>
+        case Start (propCtor, name) =>
           // Just start and isolate all actors we might eventually care about [top-level actors]
-          Instrumenter().actorSystem.actorOf(prop, name)
+          Instrumenter().actorSystem.actorOf(propCtor(), name)
           event_orchestrator.isolate_node(name)
         case _ =>
           None
@@ -148,6 +161,10 @@ trait ExternalEventInjector[E] {
     schedSemaphore.acquire
     started.set(true)
     event_orchestrator.inject_until_quiescence(enqueue_message)
+    event_orchestrator.current_event match {
+      case Continue(n) => numWaitingFor.set(n)
+      case _ => None
+    }
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
@@ -162,7 +179,9 @@ trait ExternalEventInjector[E] {
   def handle_event_produced(snd: String, rcv: String, envelope: Envelope) : MessageType = {
     // Intercept any messages sent towards the failure detector
     if (rcv == FailureDetector.fdName) {
-      fd.handle_fd_message(envelope.message, snd)
+      if (!_disableFailureDetector) {
+        fd.handle_fd_message(envelope.message, snd)
+      }
       return SystemMessage
     } else if (enqueuedExternalMessages.contains(envelope.message)) {
       return ExternalMessage
@@ -188,6 +207,7 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_event_consumed(cell: ActorCell, envelope: Envelope) = {
+    numWaitingFor.decrementAndGet()
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (enqueuedExternalMessages.contains(msg)) {
@@ -201,7 +221,11 @@ trait ExternalEventInjector[E] {
     assert(started.get)
     started.set(false)
     event_orchestrator.events += Quiescence
-    if (!event_orchestrator.trace_finished) {
+    if (numWaitingFor.get() > 0) {
+      Instrumenter().await_timers(1)
+      started.set(true)
+      Instrumenter().start_dispatch()
+    } else if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       advanceTrace()
     } else {
@@ -239,7 +263,9 @@ trait ExternalEventInjector[E] {
     handle_shutdown()
     event_orchestrator = new EventOrchestrator[E]()
     fd = new FDMessageOrchestrator(enqueue_message)
-    event_orchestrator.set_failure_detector(fd)
+    if (!_disableFailureDetector) {
+      event_orchestrator.set_failure_detector(fd)
+    }
     traceSem = new Semaphore(0)
     currentlyInjecting.set(false)
     shutdownSem = new Semaphore(0)

@@ -74,10 +74,15 @@ class RandomizedHashSet[E] {
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_interleavings: Int)
+class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
+  def this(max_interleavings: Int) = this(max_interleavings, true)
 
   var test_invariant : Invariant = null
+
+  if (!enableFailureDetector) {
+    disableFailureDetector()
+  }
 
   // Current set of enabled events.
   // First element of tuple is the receiver
@@ -160,6 +165,8 @@ class RandomScheduler(max_interleavings: Int)
 
   // Record a message send event
   override def event_consumed(cell: ActorCell, envelope: Envelope) = {
+    val snd = envelope.sender.path.name
+    val rcv = cell.self.path.name
     handle_event_consumed(cell, envelope)
   }
 
