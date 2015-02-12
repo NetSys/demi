@@ -16,55 +16,6 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Random
 
-// Provides O(1) insert and removeRandomElement
-class RandomizedHashSet[E] {
-  // We store a counter along with each element E to ensure uniqueness
-  var arr = new ArrayBuffer[(E,Int)]
-  // Value is index into array
-  var hash = new HashMap[(E,Int),Int]
-  val rand = new Random(System.currentTimeMillis());
-
-  def insert(value: E) = {
-    var uniqueness_counter = 0
-    while (hash.contains((value, uniqueness_counter))) {
-      uniqueness_counter += 1
-    }
-    val tuple : (E,Int) = (value,uniqueness_counter)
-    val i = arr.length
-    hash(tuple) = i
-    arr += tuple
-  }
-
-  private[this] def remove(value: (E,Int)) = {
-    // We are going to replace the cell that contains value in A with the last
-    // element in A. let d be the last element in the array A at index m. let
-    // i be H[value], the index in the array of the value to be removed. Set
-    // A[i]=d, H[d]=i, decrease the size of the array by one, and remove value
-    // from H.
-    if (!hash.contains(value)) {
-      throw new IllegalArgumentException("Value " + value + " does not exist")
-    }
-    val i = hash(value)
-    val m = arr.length - 1
-    val d = arr(m)
-    arr(i) = d
-    hash(d) = i
-    arr = arr.dropRight(1)
-    hash -= value
-  }
-
-  def removeRandomElement () : E = {
-    val random_idx = rand.nextInt(arr.length)
-    val v = arr(random_idx)
-    remove(v)
-    return v._1
-  }
-
-  def isEmpty () : Boolean = {
-    return arr.isEmpty
-  }
-}
-
 
 /**
  * Takes a list of ExternalEvents as input, and explores random interleavings
