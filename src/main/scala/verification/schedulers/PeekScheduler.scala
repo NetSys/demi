@@ -35,6 +35,8 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
   var test_invariant : Invariant = null
 
+  enableCheckpointing()
+
   if (!enableFailureDetector) {
     disableFailureDetector()
   }
@@ -50,6 +52,7 @@ class PeekScheduler(enableFailureDetector: Boolean)
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
+      case CheckpointMessage => None
       case _ => {
         if (!crosses_partition(snd, rcv)) {
           pendingEvents(rcv) = msgs += ((cell, envelope))
@@ -117,7 +120,8 @@ class PeekScheduler(enableFailureDetector: Boolean)
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
-    val passes = test_invariant(events)
+    val checkpoint = takeCheckpoint()
+    val passes = test_invariant(events, checkpoint)
     shutdown()
     return passes
   }

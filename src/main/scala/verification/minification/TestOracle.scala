@@ -1,10 +1,11 @@
 package akka.dispatch.verification
 
+import scala.collection.mutable.HashMap
 
 trait TestOracle {
   // An predicate that returns true if the safety condition is not violated,
   // i.e. the execution is correct. Otherwise, returns false.
-  type Invariant = (Seq[ExternalEvent]) => Boolean
+  type Invariant = (Seq[ExternalEvent], HashMap[String,CheckpointReply]) => Boolean
 
   def setInvariant(invariant: Invariant)
 
