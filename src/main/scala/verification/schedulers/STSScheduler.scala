@@ -68,6 +68,8 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
 
   def this(original_trace: EventTrace) = this(original_trace, false)
 
+  enableCheckpointing()
+
   var test_invariant : Invariant = null
 
   // Have we started off the execution yet?
@@ -120,7 +122,8 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
-    val invariant_holds = test_invariant(subseq)
+    val checkpoint = takeCheckpoint()
+    val invariant_holds = test_invariant(subseq, checkpoint)
     shutdown()
     return invariant_holds
   }
@@ -250,7 +253,6 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
 
     handle_event_produced(snd, rcv, envelope) match {
-      case SystemMessage => None
       case ExternalMessage => {
         // We assume that the failure detector and the outside world always
         // have connectivity with all actors, i.e. no failure detector partitions.
@@ -270,6 +272,7 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
           pendingEvents((snd, rcv, msg)) = msgs += uniq
         }
       }
+      case _ => None
     }
   }
 

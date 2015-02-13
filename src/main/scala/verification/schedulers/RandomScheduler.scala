@@ -43,6 +43,8 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
   // they arrive.
   var pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
 
+  enableCheckpointing()
+
   // TODO(cs): probably not thread-safe without a semaphore.
 
   /**
@@ -67,7 +69,8 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
       if (test_invariant == null) {
         throw new IllegalArgumentException("Must invoke setInvariant before test()")
       }
-      val passes = test_invariant(_trace)
+      val checkpoint = takeCheckpoint()
+      val passes = test_invariant(_trace, checkpoint)
       if (!passes) {
         println("Found failing execution")
         return Some(event_trace)
@@ -100,6 +103,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
         pendingExternalEvents += uniq
       }
       case SystemMessage => None
+      case CheckpointMessage => None
     }
   }
 

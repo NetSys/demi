@@ -73,6 +73,9 @@ class EventOrchestrator[E] {
 
   // A bit of a misnomer: current *trace* event, not current recorded event.
   def current_event() : E = {
+    if (traceIdx >= trace.length) {
+      throw new IllegalStateException("No current event..")
+    }
     trace(traceIdx)
   }
 

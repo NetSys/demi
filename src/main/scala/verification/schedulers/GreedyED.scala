@@ -41,6 +41,8 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
 
   def this(original_trace: EventTrace) = this(original_trace, -1)
 
+  enableCheckpointing()
+
   var test_invariant : Invariant = null
 
   // Have we started off the execution yet?
@@ -296,7 +298,6 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
 
     handle_event_produced(snd, rcv, envelope) match {
-      case SystemMessage => None
       case ExternalMessage => {
         // We assume that the failure detector and the outside world always
         // have connectivity with all actors, i.e. no failure detector partitions.
@@ -316,6 +317,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
           pendingEvents((snd, rcv, msg)) = msgs += uniq
         }
       }
+      case _ => None
     }
   }
 
@@ -439,7 +441,10 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
     } else {
       if (currentlyInjecting.get) {
         // Check if we found the violation.
-        val violationFound = !test_invariant(subseq)
+        // TODO(cs): is it OK to invoke takeCheckpoint from within an actor
+        // thread?
+        val checkpoint = takeCheckpoint()
+        val violationFound = !test_invariant(subseq, checkpoint)
         execution_bound -= 1
         if (violationFound) {
           // Tell the calling thread we are done

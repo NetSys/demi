@@ -21,6 +21,7 @@ abstract class MessageType()
 final case object ExternalMessage extends MessageType
 final case object InternalMessage extends MessageType
 final case object SystemMessage extends MessageType
+final case object CheckpointMessage extends MessageType
 
 /**
  * A mix-in for schedulers that take external events as input, and generate
@@ -40,6 +41,14 @@ trait ExternalEventInjector[E] {
     event_orchestrator.set_failure_detector(null)
   }
 
+  // Handler for Checkpoint responses
+  var checkpointer : CheckpointCollector = null
+  var _enableCheckpointing = false
+  def enableCheckpointing() {
+    _enableCheckpointing = true
+    checkpointer = new CheckpointCollector
+  }
+
   // Semaphore to wait for trace replay to be done. We initialize the
   // semaphore to 0 rather than 1, so that the main thread blocks upon
   // invoking acquire() until another thread release()'s it.
@@ -53,6 +62,14 @@ trait ExternalEventInjector[E] {
   // semaphore to 0 rather than 1, so that the main thread blocks upon
   // invoking acquire() until another thread release()'s it.
   var shutdownSem = new Semaphore(0)
+
+  // Semaphore to use when taking a checkpooint. We initialize the
+  // semaphore to 0 rather than 1, so that the main thread blocks upon
+  // invoking acquire() until another thread release()'s it.
+  var checkpointSem = new Semaphore(0)
+
+  // Whether we are currently collecting a checkpoint from the application.
+  var currentlyCheckpointing = new AtomicBoolean(false)
 
   // Are we expecting message receives
   val started = new AtomicBoolean(false)
@@ -131,6 +148,9 @@ trait ExternalEventInjector[E] {
     if (!_disableFailureDetector) {
       fd.startFD(Instrumenter().actorSystem)
     }
+    if (_enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
+    }
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
@@ -161,14 +181,36 @@ trait ExternalEventInjector[E] {
     schedSemaphore.acquire
     started.set(true)
     event_orchestrator.inject_until_quiescence(enqueue_message)
-    event_orchestrator.current_event match {
-      case Continue(n) => numWaitingFor.set(n)
-      case _ => None
+    if (!event_orchestrator.trace_finished) {
+      event_orchestrator.current_event match {
+        case Continue(n) => numWaitingFor.set(n)
+        case _ => None
+      }
     }
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
     Instrumenter().start_dispatch()
+  }
+
+  // Pre: we are currently quiescent.
+  def takeCheckpoint() : HashMap[String, CheckpointReply] = {
+    println("Initiating checkpoint")
+    if (!_enableCheckpointing) {
+      throw new IllegalStateException("Must invoke enableCheckpointing() first")
+    }
+    currentlyCheckpointing.set(true)
+    started.set(true)
+    val actors = event_orchestrator.actorToActorRef.keys.filter(name =>
+        name != FailureDetector.fdName && name != CheckpointSink.name)
+    for (actor <- actors) {
+      enqueue_message(actor, CheckpointRequest)
+    }
+    Instrumenter().start_dispatch()
+    checkpointSem.acquire()
+    currentlyCheckpointing.set(false)
+    started.set(false)
+    return checkpointer.checkpoints
   }
 
   /**
@@ -183,6 +225,11 @@ trait ExternalEventInjector[E] {
         fd.handle_fd_message(envelope.message, snd)
       }
       return SystemMessage
+    } else if (rcv == CheckpointSink.name) {
+      if (_enableCheckpointing) {
+        checkpointer.handleCheckpointResponse(envelope.message, snd)
+      }
+      return CheckpointMessage
     } else if (enqueuedExternalMessages.contains(envelope.message)) {
       return ExternalMessage
     } else {
@@ -225,6 +272,8 @@ trait ExternalEventInjector[E] {
       Instrumenter().await_timers(1)
       started.set(true)
       Instrumenter().start_dispatch()
+    } else if (currentlyCheckpointing.get()) {
+      checkpointSem.release()
     } else if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       advanceTrace()
@@ -265,6 +314,9 @@ trait ExternalEventInjector[E] {
     fd = new FDMessageOrchestrator(enqueue_message)
     if (!_disableFailureDetector) {
       event_orchestrator.set_failure_detector(fd)
+    }
+    if (_enableCheckpointing) {
+      checkpointer = new CheckpointCollector
     }
     traceSem = new Semaphore(0)
     currentlyInjecting.set(false)
