@@ -145,12 +145,9 @@ trait ExternalEventInjector[E] {
   def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
-    if (!_disableFailureDetector) {
-      fd.startFD(Instrumenter().actorSystem)
-    }
-    if (_enableCheckpointing) {
-      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
-    }
+    // TODO(cs): assumes that we never actually kill actors, only
+    // (permanently) isolate them.
+    val uniqueActors = new HashSet[String]
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
@@ -160,10 +157,19 @@ trait ExternalEventInjector[E] {
           // Just start and isolate all actors we might eventually care about [top-level actors]
           Instrumenter().actorSystem.actorOf(propCtor(), name)
           event_orchestrator.isolate_node(name)
+          uniqueActors += name
         case _ =>
           None
       }
     }
+    if (!_disableFailureDetector) {
+      fd.startFD(Instrumenter().actorSystem)
+    }
+    if (_enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem,
+                                            uniqueActors.size)
+    }
+
     currentlyInjecting.set(true)
     // Start playing back trace
     advanceTrace()
@@ -193,23 +199,37 @@ trait ExternalEventInjector[E] {
     Instrumenter().start_dispatch()
   }
 
-  // Pre: we are currently quiescent.
   def takeCheckpoint() : HashMap[String, CheckpointReply] = {
     println("Initiating checkpoint")
     if (!_enableCheckpointing) {
       throw new IllegalStateException("Must invoke enableCheckpointing() first")
     }
     currentlyCheckpointing.set(true)
-    started.set(true)
-    val actors = event_orchestrator.actorToActorRef.keys.filter(name =>
-        name != FailureDetector.fdName && name != CheckpointSink.name)
+    checkpointer.checkpoints.clear()
+    val actors = event_orchestrator.actorToActorRef.keys.
+                                    filterNot(ActorTypes.systemActor)
+    // Put our requests at the front of the queue, and any existing requests
+    // at the end of the queue.
+    val existingExternals = new Queue[(ActorRef, Any)] ++ messagesToSend
+    messagesToSend.clear
     for (actor <- actors) {
       enqueue_message(actor, CheckpointRequest)
     }
-    Instrumenter().start_dispatch()
+    messagesToSend ++= existingExternals
+    val wasQuiescent = !started.get
+    if (wasQuiescent) {
+      started.set(true)
+      Instrumenter().start_dispatch()
+    }
     checkpointSem.acquire()
+    if (wasQuiescent) {
+      // Block again! We got all of our checkpoint replies, but we
+      // need to wait for quiescence to return ourselves to
+      // the original state. This time, notify_quiescence will call release()
+      checkpointSem.acquire()
+      started.set(false)
+    }
     currentlyCheckpointing.set(false)
-    started.set(false)
     return checkpointer.checkpoints
   }
 
@@ -228,6 +248,9 @@ trait ExternalEventInjector[E] {
     } else if (rcv == CheckpointSink.name) {
       if (_enableCheckpointing) {
         checkpointer.handleCheckpointResponse(envelope.message, snd)
+        if (checkpointer.done) {
+          checkpointSem.release()
+        }
       }
       return CheckpointMessage
     } else if (enqueuedExternalMessages.contains(envelope.message)) {
@@ -318,6 +341,8 @@ trait ExternalEventInjector[E] {
     if (_enableCheckpointing) {
       checkpointer = new CheckpointCollector
     }
+    currentlyCheckpointing = new AtomicBoolean(false)
+    checkpointSem = new Semaphore(0)
     traceSem = new Semaphore(0)
     currentlyInjecting.set(false)
     shutdownSem = new Semaphore(0)

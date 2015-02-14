@@ -23,9 +23,15 @@ class CheckpointSink() extends Actor {
 
 class CheckpointCollector {
   var checkpoints = new HashMap[String, CheckpointReply]
+  var totalActors = 0
 
-  def startCheckpointCollector(actorSystem: ActorSystem) {
+  def done() : Boolean = {
+    return checkpoints.size == totalActors
+  }
+
+  def startCheckpointCollector(actorSystem: ActorSystem, _totalActors: Integer) {
     actorSystem.actorOf(Props[CheckpointSink], CheckpointSink.name)
+    totalActors = _totalActors
   }
 
   def handleCheckpointResponse(checkpoint: Any, snd: String) {
