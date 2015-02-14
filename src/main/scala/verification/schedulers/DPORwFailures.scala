@@ -150,7 +150,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   // Is this message a system message
   override def isSystemMessage(sender: String, receiver: String, msg: Any): Boolean = {
-    return !isValidActor(sender, receiver)
+    return !isValidActor(sender, receiver) || receiver == "deadLetters"
   }
   
   

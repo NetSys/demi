@@ -148,7 +148,7 @@ class DPOR extends Scheduler with LazyLogging {
   def isSystemMessage(sender: String, receiver: String): Boolean = {
     ((actorNames contains sender) || (actorNames contains receiver)) match
     {
-      case true => return false
+      case true => return receiver == "deadLetters"
       case _ => return true
     }
   }
