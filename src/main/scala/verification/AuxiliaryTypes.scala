@@ -74,6 +74,12 @@ object MessageTypes {
   }
 }
 
+object ActorTypes {
+  def systemActor(name: String) : Boolean = {
+    return name == FailureDetector.fdName || name == CheckpointSink.name
+  }
+}
+
 trait TellEnqueue {
   def tell()
   def enqueue()
