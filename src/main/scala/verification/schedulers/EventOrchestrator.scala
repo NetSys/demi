@@ -95,6 +95,7 @@ class EventOrchestrator[E] {
   def inject_until_quiescence(enqueue_message: EnqueueMessage) = {
     var loop = true
     while (loop && !trace_finished) {
+      println("Injecting " + current_event)
       current_event.asInstanceOf[ExternalEvent] match {
         case Start (_, name) =>
           trigger_start(name)
