@@ -62,7 +62,8 @@ object STSScheduler {
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
-class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends AbstractScheduler
+class STSScheduler(var original_trace: EventTrace,
+                   allowPeek: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
   assume(!original_trace.isEmpty)
 
@@ -90,7 +91,7 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
-  def test (subseq: Seq[ExternalEvent]) : Boolean = {
+  def test (subseq: Seq[ExternalEvent], violationFingerprint: ViolationFingerprint) : Boolean = {
     assume(!subseq.isEmpty)
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
@@ -123,9 +124,15 @@ class STSScheduler(var original_trace: EventTrace, allowPeek: Boolean) extends A
     traceSem.acquire
     currentlyInjecting.set(false)
     val checkpoint = takeCheckpoint()
-    val invariant_holds = test_invariant(subseq, checkpoint)
+    val violation = test_invariant(subseq, checkpoint)
+    var violationFound = false
+    violation match {
+      case Some(fingerprint) =>
+        violationFound = fingerprint.matches(violationFingerprint)
+      case _ => None
+    }
     shutdown()
-    return invariant_holds
+    return !violationFound
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused

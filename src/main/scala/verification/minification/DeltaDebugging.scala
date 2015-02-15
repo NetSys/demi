@@ -2,16 +2,20 @@ package akka.dispatch.verification
 // TODO(cs): put me in a different package?
 
 class DDMin (oracle: TestOracle) extends Minimizer {
+  var violation_fingerprint : ViolationFingerprint = null
+
   // Taken from the 1999 version of delta debugging:
   //   https://www.st.cs.uni-saarland.de/publications/files/zeller-esec-1999.pdf
   // Section 4.
   //
   // Note that this differs from the 2001 version:
   //   https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf
-  def minimize(events: Seq[ExternalEvent]) : Seq[ExternalEvent] = {
+  def minimize(events: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
+    violation_fingerprint = _violation_fingerprint
+
     // First check if the initial trace violates the exception
     println("Checking if unmodified trace triggers violation...")
-    if (oracle.test(events)) {
+    if (oracle.test(events, violation_fingerprint)) {
       throw new IllegalArgumentException("Unmodified trace does not trigger violation")
     }
 
@@ -20,7 +24,7 @@ class DDMin (oracle: TestOracle) extends Minimizer {
     return ddmin2(dag, remainder).get_all_events
   }
 
-  def ddmin2(dag: EventDag, remainder: EventDag) : EventDag = {
+  def ddmin2(dag: EventDag, remainder: EventDag): EventDag = {
     if (dag.get_atomic_events.length <= 1) {
       println("base case")
       return dag
@@ -38,7 +42,7 @@ class DDMin (oracle: TestOracle) extends Minimizer {
     for (split <- splits) {
       val union = split.union(remainder)
       println("Checking split")
-      val passes = oracle.test(union.get_all_events)
+      val passes = oracle.test(union.get_all_events, violation_fingerprint)
       if (!passes) {
         println("Split fails. Recursing")
         return ddmin2(split, remainder)

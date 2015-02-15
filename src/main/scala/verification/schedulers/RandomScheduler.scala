@@ -51,30 +51,52 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
    * Given an external event trace, randomly explore executions involving those
    * external events.
    *
-   * Returns a trace of the internal and external events observed if a failing execution was found,
-   * otherwise returns null if no failure was triggered within max_interleavings.
+   * Returns a trace of the internal and external events observed if a failing
+   * execution was found, along with a `fingerprint` of the safety violation.
+   * otherwise returns None if no failure was triggered within max_interleavings.
    *
    * Callers should call shutdown() sometime after this method returns if they
    * want to invoke any other methods.
    *
    * Precondition: setInvariant has been invoked.
    */
-  def explore (_trace: Seq[ExternalEvent]) : Option[EventTrace] = {
+  def explore (_trace: Seq[ExternalEvent]) : Option[(EventTrace, ViolationFingerprint)] = {
+    return explore(_trace, None)
+  }
+
+  /**
+   * if looking_for is not None, only look for an invariant violation that
+   * matches looking_for
+   */
+  def explore (_trace: Seq[ExternalEvent], looking_for: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
+    // Check the invariant at the end of the trace.
+    if (test_invariant == null) {
+      throw new IllegalArgumentException("Must invoke setInvariant before test()")
+    }
+
     for (i <- 1 to max_interleavings) {
       println("Trying random interleaving " + i)
       event_orchestrator.events.setOriginalExternalEvents(_trace)
       val event_trace = execute_trace(_trace)
 
-      // Check the invariant at the end of the trace.
-      if (test_invariant == null) {
-        throw new IllegalArgumentException("Must invoke setInvariant before test()")
-      }
       val checkpoint = takeCheckpoint()
-      val passes = test_invariant(_trace, checkpoint)
-      if (!passes) {
-        println("Found failing execution")
-        return Some(event_trace)
-      } else if (i != max_interleavings) {
+      val violation = test_invariant(_trace, checkpoint)
+      violation match {
+        case None => None
+        case Some(fingerprint) =>
+          looking_for match {
+            case None =>
+              println("Found failing execution")
+              return Some((event_trace, fingerprint))
+            case Some(original_fingerprint) =>
+              if (original_fingerprint.matches(fingerprint)) {
+                println("Found failing execution")
+                return Some((event_trace, fingerprint))
+              }
+          }
+      }
+
+      if (i != max_interleavings) {
         // 'Tis a lesson you should heed: Try, try, try again.
         // If at first you don't succeed: Try, try, try again
         reset_all_state
@@ -181,11 +203,11 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
     pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
   }
 
-  def test(events: Seq[ExternalEvent]) : Boolean = {
+  def test(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Boolean = {
     Instrumenter().scheduler = this
-    val execution = explore(events)
+    val tuple_option = explore(events, Some(violation_fingerprint))
     reset_all_state
     // test passes if we were unable to find a failure.
-    return execution == None
+    return tuple_option == None
   }
 }

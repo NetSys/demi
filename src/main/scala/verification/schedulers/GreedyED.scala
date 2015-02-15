@@ -85,6 +85,9 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
   // halting the system.
   var foundViolation = new AtomicBoolean(false)
 
+  // The violation fingerprint we're looking for
+  var violationFingerprint : ViolationFingerprint = null
+
   // We can't shutdown() within an actor's thread -- we need a thread outside
   // the actor system to do it for us. This is our signal from the actor
   // system to that thread that a shutdown is required. We initialize the
@@ -105,9 +108,11 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
-  def test (_subseq: Seq[ExternalEvent]) : Boolean = {
+  def test (_subseq: Seq[ExternalEvent],
+            _violationFingerprint: ViolationFingerprint) : Boolean = {
     assume(!_subseq.isEmpty)
     subseq = _subseq
+    violationFingerprint = _violationFingerprint
     event_orchestrator.events.setOriginalExternalEvents(
         original_trace.original_externals)
     if (test_invariant == null) {
@@ -444,7 +449,13 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
         // TODO(cs): is it OK to invoke takeCheckpoint from within an actor
         // thread?
         val checkpoint = takeCheckpoint()
-        val violationFound = !test_invariant(subseq, checkpoint)
+        val violation = test_invariant(subseq, checkpoint)
+        var violationFound = false
+        violation match {
+          case Some(fingerprint) =>
+            violationFound = violationFingerprint.matches(fingerprint)
+          case _  =>  None
+        }
         execution_bound -= 1
         if (violationFound) {
           // Tell the calling thread we are done

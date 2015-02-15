@@ -114,15 +114,21 @@ class PeekScheduler(enableFailureDetector: Boolean)
     super[ExternalEventInjector].enqueue_message(receiver, msg)
   }
 
-  def test(events: Seq[ExternalEvent]) : Boolean = {
+  def test(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Boolean = {
     Instrumenter().scheduler = this
     peek(events)
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
     val checkpoint = takeCheckpoint()
-    val passes = test_invariant(events, checkpoint)
+    val violation = test_invariant(events, checkpoint)
+    var violation_found = false
+    violation match {
+      case Some(fingerprint) =>
+        violation_found = fingerprint.matches(violation_fingerprint)
+      case None => None
+    }
     shutdown()
-    return passes
+    return !violation_found
   }
 }
