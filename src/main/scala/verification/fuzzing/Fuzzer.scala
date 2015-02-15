@@ -139,10 +139,30 @@ class Fuzzer(num_events: Integer,
 
   def generateFuzzTest() : Seq[ExternalEvent] = {
     val fuzzTest = new ListBuffer[ExternalEvent] ++ prefix
+    // Ensure that we don't inject two WaitQuiescense's in a row.
+    var justInjectedWaitQuiescence = false
+
+    def okToInject(event: Option[ExternalEvent]) : Boolean = {
+      event match {
+        case Some(WaitQuiescence) => return !justInjectedWaitQuiescence
+        case _ => return true
+      }
+    }
+
     for (_ <- (1 to num_events)) {
-      val nextEvent = generateNextEvent()
+      var nextEvent = generateNextEvent()
+      while (!okToInject(nextEvent)) {
+        nextEvent = generateNextEvent()
+      }
       nextEvent match {
-        case Some(event) => fuzzTest += event
+        case Some(event) =>
+          event match {
+            case WaitQuiescence =>
+              justInjectedWaitQuiescence = true
+            case _ => None
+              justInjectedWaitQuiescence = false
+          }
+          fuzzTest += event
         case None => return fuzzTest
       }
     }
