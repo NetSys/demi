@@ -52,7 +52,7 @@ class PeekScheduler(enableFailureDetector: Boolean)
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
-      case CheckpointMessage => None
+      case CheckpointReplyMessage => None
       case _ => {
         if (!crosses_partition(snd, rcv)) {
           pendingEvents(rcv) = msgs += ((cell, envelope))

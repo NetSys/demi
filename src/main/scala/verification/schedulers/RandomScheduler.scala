@@ -22,12 +22,17 @@ import java.util.Random
  * of internal messages until either a maximum number of interleavings is
  * reached, or a given invariant is violated.
  *
+ * If invariant_check_interval is <=0, only checks the invariant at the end of
+ * the execution. Otherwise, checks the invariant every
+ * invariant_check_interval message deliveries.
+ *
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
+class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, invariant_check_interval: Int)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_interleavings: Int) = this(max_interleavings, true)
+  def this(max_interleavings: Int) = this(max_interleavings, true, 0)
+  def this(max_interleavings: Int, enableFailureDetector: Boolean) = this(max_interleavings, enableFailureDetector, 0)
 
   var test_invariant : Invariant = null
 
@@ -43,9 +48,49 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
   // they arrive.
   var pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
 
+  // The violation we're looking for, if not None.
+  var lookingFor : Option[ViolationFingerprint] = None
+
+  // If we're looking for a specific violation, this is just used a boolean
+  // flag: if not None, then we've found what we're looking for.
+  // Otherwise, it will contain the first safety violation we found.
+  var violationFound : Option[ViolationFingerprint] = None
+
+  // The trace we're exploring
+  var trace : Seq[ExternalEvent] = null
+
   enableCheckpointing()
 
-  // TODO(cs): probably not thread-safe without a semaphore.
+  // how many non-checkpoint messages we've scheduled so far.
+  var messagesScheduledSoFar = 0
+
+  // what was the last value of messagesScheduledSoFar we took a checkpoint at.
+  var lastCheckpoint = 0
+
+  /**
+   * If we're looking for a specific violation, return None if the given
+   * violation doesn't match, or Some(violation) if it does.
+   *
+   * If we're not looking for a specific violation, return the given
+   * violation.
+   */
+  private[this] def violationMatches(violation: Option[ViolationFingerprint]) : Option[ViolationFingerprint] = {
+    lookingFor match {
+      case None =>
+        return violation
+      case Some(original_fingerprint) =>
+        violation match {
+          case None =>
+            return None
+          case Some(fingerprint) =>
+            if (original_fingerprint.matches(fingerprint)) {
+              return lookingFor
+            } else {
+              return None
+            }
+        }
+    }
+  }
 
   /**
    * Given an external event trace, randomly explore executions involving those
@@ -68,8 +113,10 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
    * if looking_for is not None, only look for an invariant violation that
    * matches looking_for
    */
-  def explore (_trace: Seq[ExternalEvent], looking_for: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
-    // Check the invariant at the end of the trace.
+  def explore (_trace: Seq[ExternalEvent], _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
+    trace = _trace
+    lookingFor = _lookingFor
+
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
@@ -79,20 +126,19 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
       event_orchestrator.events.setOriginalExternalEvents(_trace)
       val event_trace = execute_trace(_trace)
 
-      val checkpoint = takeCheckpoint()
-      val violation = test_invariant(_trace, checkpoint)
-      violation match {
-        case None => None
+      // If the violation has already been found, return.
+      violationFound match {
         case Some(fingerprint) =>
-          looking_for match {
-            case None =>
-              println("Found failing execution")
+          return Some((event_trace, fingerprint))
+        // Else, check the invariant condition one last time.
+        case None =>
+          val checkpoint = takeCheckpoint()
+          val violation = test_invariant(_trace, checkpoint)
+          violationFound = violationMatches(violation)
+          violationFound match {
+            case Some(fingerprint) =>
               return Some((event_trace, fingerprint))
-            case Some(original_fingerprint) =>
-              if (original_fingerprint.matches(fingerprint)) {
-                println("Found failing execution")
-                return Some((event_trace, fingerprint))
-              }
+            case None => None
           }
       }
 
@@ -125,7 +171,12 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
         pendingExternalEvents += uniq
       }
       case SystemMessage => None
-      case CheckpointMessage => None
+      case CheckpointReplyMessage =>
+        if (checkpointer.done && !blockedOnCheckpoint.get) {
+          val violation = test_invariant(trace, checkpointer.checkpoints)
+          require(violationFound == None)
+          violationFound = violationMatches(violation)
+        }
     }
   }
 
@@ -142,17 +193,45 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
 
   // Record a message send event
   override def event_consumed(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
-    val rcv = cell.self.path.name
     handle_event_consumed(cell, envelope)
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+    // First, check if we've found the violation. If so, stop.
+    violationFound match {
+      case Some(fingerprint) =>
+        return None
+      case None =>
+        None
+    }
+
+    // Otherwise, see if it's time to check the invariant violation.
+    if (invariant_check_interval > 0 &&
+        (messagesScheduledSoFar % invariant_check_interval) == 0 &&
+        !blockedOnCheckpoint.get() &&
+        lastCheckpoint != messagesScheduledSoFar) {
+      // N.B. we check the invariant once we have received all
+      // CheckpointReplies.
+      println("Checking invariant")
+      lastCheckpoint = messagesScheduledSoFar
+      // TODO(cs): remove any elements in pendingExternalEvents, and move them
+      // to the end of pendingExternalEvents once the CheckpointRequests have
+      // been queued. Not strictly necessary for correctness, just currently means that
+      // we sometimes collect the checkpoint a bit later than we want to.
+      prepareCheckpoint()
+    }
+
+    // Proceed normally.
     send_external_messages()
     // Always prioritize external events.
     if (!pendingExternalEvents.isEmpty) {
       val uniq = pendingExternalEvents.dequeue()
       event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+      uniq.element._2.message match {
+        case CheckpointRequest => None
+        case _ =>
+          messagesScheduledSoFar += 1
+      }
       return Some(uniq.element)
     }
 
@@ -161,13 +240,22 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
       return None
     }
 
+    messagesScheduledSoFar += 1
     val uniq = pendingInternalEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
     return Some(uniq.element)
   }
 
   override def notify_quiescence () {
-    handle_quiescence
+    violationFound match {
+      case None => handle_quiescence
+      case Some(fingerprint) =>
+        // Wake up the main thread early; no need to continue with the rest of
+        // the trace.
+        println("Violation found early. Halting")
+        started.set(false)
+        traceSem.release()
+    }
   }
 
   // Shutdown the scheduler, this ensures that the instrumenter is returned to its
@@ -201,6 +289,11 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean)
     super.reset_all_state
     pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell, Envelope)]]
     pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
+    lookingFor = None
+    violationFound = None
+    trace = null
+    messagesScheduledSoFar = 0
+    lastCheckpoint = 0
   }
 
   def test(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Boolean = {
