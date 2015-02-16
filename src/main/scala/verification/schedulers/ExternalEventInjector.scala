@@ -21,7 +21,7 @@ abstract class MessageType()
 final case object ExternalMessage extends MessageType
 final case object InternalMessage extends MessageType
 final case object SystemMessage extends MessageType
-final case object CheckpointMessage extends MessageType
+final case object CheckpointReplyMessage extends MessageType
 
 /**
  * A mix-in for schedulers that take external events as input, and generate
@@ -63,13 +63,13 @@ trait ExternalEventInjector[E] {
   // invoking acquire() until another thread release()'s it.
   var shutdownSem = new Semaphore(0)
 
-  // Semaphore to use when taking a checkpooint. We initialize the
+  // Semaphore to use when taking a checkpoint. We initialize the
   // semaphore to 0 rather than 1, so that the main thread blocks upon
   // invoking acquire() until another thread release()'s it.
   var checkpointSem = new Semaphore(0)
 
-  // Whether we are currently collecting a checkpoint from the application.
-  var currentlyCheckpointing = new AtomicBoolean(false)
+  // Whether a thread is blocked waiting for a checkpoint.
+  var blockedOnCheckpoint = new AtomicBoolean(false)
 
   // Are we expecting message receives
   val started = new AtomicBoolean(false)
@@ -199,12 +199,31 @@ trait ExternalEventInjector[E] {
     Instrumenter().start_dispatch()
   }
 
+  /**
+   * It is the responsibility of the caller to schedule CheckpointRequest
+   * messages in schedule_new_message() and return to quiescence once all
+   * CheckpointRequests have been sent.
+   *
+   * N.B. this method blocks. The system must be quiescent before
+   * you invoke this. (See RandomScheduler.scala for an example of how to take
+   * checkpoints mid-execution without blocking.)
+   */
   def takeCheckpoint() : HashMap[String, CheckpointReply] = {
     println("Initiating checkpoint")
     if (!_enableCheckpointing) {
       throw new IllegalStateException("Must invoke enableCheckpointing() first")
     }
-    currentlyCheckpointing.set(true)
+    blockedOnCheckpoint.set(true)
+    prepareCheckpoint()
+    require(!started.get)
+    started.set(true)
+    Instrumenter().start_dispatch()
+    checkpointSem.acquire()
+    blockedOnCheckpoint.set(false)
+    return checkpointer.checkpoints
+  }
+
+  def prepareCheckpoint() = {
     checkpointer.checkpoints.clear()
     val actors = event_orchestrator.actorToActorRef.keys.
                                     filterNot(ActorTypes.systemActor)
@@ -216,21 +235,6 @@ trait ExternalEventInjector[E] {
       enqueue_message(actor, CheckpointRequest)
     }
     messagesToSend ++= existingExternals
-    val wasQuiescent = !started.get
-    if (wasQuiescent) {
-      started.set(true)
-      Instrumenter().start_dispatch()
-    }
-    checkpointSem.acquire()
-    if (wasQuiescent) {
-      // Block again! We got all of our checkpoint replies, but we
-      // need to wait for quiescence to return ourselves to
-      // the original state. This time, notify_quiescence will call release()
-      checkpointSem.acquire()
-      started.set(false)
-    }
-    currentlyCheckpointing.set(false)
-    return checkpointer.checkpoints
   }
 
   /**
@@ -248,11 +252,8 @@ trait ExternalEventInjector[E] {
     } else if (rcv == CheckpointSink.name) {
       if (_enableCheckpointing) {
         checkpointer.handleCheckpointResponse(envelope.message, snd)
-        if (checkpointer.done) {
-          checkpointSem.release()
-        }
       }
-      return CheckpointMessage
+      return CheckpointReplyMessage
     } else if (enqueuedExternalMessages.contains(envelope.message)) {
       return ExternalMessage
     } else {
@@ -295,7 +296,7 @@ trait ExternalEventInjector[E] {
       Instrumenter().await_timers(1)
       started.set(true)
       Instrumenter().start_dispatch()
-    } else if (currentlyCheckpointing.get()) {
+    } else if (blockedOnCheckpoint.get()) {
       checkpointSem.release()
     } else if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
@@ -341,7 +342,7 @@ trait ExternalEventInjector[E] {
     if (_enableCheckpointing) {
       checkpointer = new CheckpointCollector
     }
-    currentlyCheckpointing = new AtomicBoolean(false)
+    blockedOnCheckpoint = new AtomicBoolean(false)
     checkpointSem = new Semaphore(0)
     traceSem = new Semaphore(0)
     currentlyInjecting.set(false)
@@ -350,6 +351,7 @@ trait ExternalEventInjector[E] {
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
     messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
+    numWaitingFor = new AtomicInteger(0)
     println("state reset.")
   }
 }

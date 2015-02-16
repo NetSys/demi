@@ -6,7 +6,7 @@ import scala.util.Random
 
 // Needs to be implemented by the application.
 trait MessageGenerator {
-  def generateMessage() : Any
+  def generateMessage(aliveActors: RandomizedHashSet[String]) : Send
 }
 
 object StableClasses {
@@ -106,8 +106,8 @@ class Fuzzer(num_events: Integer,
             return Some(Kill(nextVictim))
 
           case StableClasses.ClassOfSend =>
-            val message = message_gen.generateMessage()
-            return Some(Send(currentlyAlive.getRandomElement(), () => message))
+            val send = message_gen.generateMessage(currentlyAlive)
+            return Some(send)
 
           case StableClasses.ClassOfWaitTimers =>
             return Some(WaitTimers(1))
@@ -131,7 +131,7 @@ class Fuzzer(num_events: Integer,
             return Some(UnPartition(pair._1, pair._2))
 
           case StableClasses.ClassOfContinue =>
-            return Some(Continue(rand.nextInt(maxContinueSteps)))
+            return Some(Continue(rand.nextInt(maxContinueSteps) + 1))
         }
     }
     throw new IllegalStateException("Shouldn't get here")
@@ -139,10 +139,30 @@ class Fuzzer(num_events: Integer,
 
   def generateFuzzTest() : Seq[ExternalEvent] = {
     val fuzzTest = new ListBuffer[ExternalEvent] ++ prefix
+    // Ensure that we don't inject two WaitQuiescense's in a row.
+    var justInjectedWaitQuiescence = false
+
+    def okToInject(event: Option[ExternalEvent]) : Boolean = {
+      event match {
+        case Some(WaitQuiescence) => return !justInjectedWaitQuiescence
+        case _ => return true
+      }
+    }
+
     for (_ <- (1 to num_events)) {
-      val nextEvent = generateNextEvent()
+      var nextEvent = generateNextEvent()
+      while (!okToInject(nextEvent)) {
+        nextEvent = generateNextEvent()
+      }
       nextEvent match {
-        case Some(event) => fuzzTest += event
+        case Some(event) =>
+          event match {
+            case WaitQuiescence =>
+              justInjectedWaitQuiescence = true
+            case _ => None
+              justInjectedWaitQuiescence = false
+          }
+          fuzzTest += event
         case None => return fuzzTest
       }
     }
