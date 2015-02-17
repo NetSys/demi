@@ -22,21 +22,36 @@ class CheckpointSink() extends Actor {
 }
 
 class CheckpointCollector {
-  var checkpoints = new HashMap[String, CheckpointReply]
-  var totalActors = 0
+  // If a node is crashed, the value will be None rather than
+  // Some(CheckpointReply)
+  var checkpoints = new HashMap[String, Option[CheckpointReply]]
+  var expectedResponses = 0
 
-  def done() : Boolean = {
-    return checkpoints.size == totalActors
+  def startCheckpointCollector(actorSystem: ActorSystem) {
+    actorSystem.actorOf(Props[CheckpointSink], CheckpointSink.name)
   }
 
-  def startCheckpointCollector(actorSystem: ActorSystem, _totalActors: Integer) {
-    actorSystem.actorOf(Props[CheckpointSink], CheckpointSink.name)
-    totalActors = _totalActors
+  // Pre: prepareRequests was recently invoked.
+  def done() : Boolean = {
+    return checkpoints.size == expectedResponses
+  }
+
+  def prepareRequests(actorRefs: Seq[ActorRef]) : Seq[(String, Any)] = {
+    checkpoints.clear()
+    // TODO(cs): I assume that crashed == ref.isTerminated... double check
+    // this!
+    val crashedActors = actorRefs.filter(ref => ref.isTerminated)
+    for (crashed <- crashedActors) {
+      checkpoints(crashed.path.name) = None
+    }
+    expectedResponses = actorRefs.length - crashedActors.length
+    return actorRefs.filterNot(ref => ref.isTerminated).
+                     map(ref => ((ref.path.name, CheckpointRequest)))
   }
 
   def handleCheckpointResponse(checkpoint: Any, snd: String) {
     checkpoint match {
-      case CheckpointReply(_) => checkpoints(snd) = checkpoint.asInstanceOf[CheckpointReply]
+      case CheckpointReply(_) => checkpoints(snd) = Some(checkpoint.asInstanceOf[CheckpointReply])
       case _ => throw new IllegalArgumentException("not a CheckpointReply: " + checkpoint)
     }
   }

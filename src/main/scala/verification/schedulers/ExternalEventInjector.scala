@@ -145,9 +145,6 @@ trait ExternalEventInjector[E] {
   def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
-    // TODO(cs): assumes that we never actually kill actors, only
-    // (permanently) isolate them.
-    val uniqueActors = new HashSet[String]
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
@@ -157,7 +154,6 @@ trait ExternalEventInjector[E] {
           // Just start and isolate all actors we might eventually care about [top-level actors]
           Instrumenter().actorSystem.actorOf(propCtor(), name)
           event_orchestrator.isolate_node(name)
-          uniqueActors += name
         case _ =>
           None
       }
@@ -166,8 +162,7 @@ trait ExternalEventInjector[E] {
       fd.startFD(Instrumenter().actorSystem)
     }
     if (_enableCheckpointing) {
-      checkpointer.startCheckpointCollector(Instrumenter().actorSystem,
-                                            uniqueActors.size)
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
     currentlyInjecting.set(true)
@@ -208,7 +203,7 @@ trait ExternalEventInjector[E] {
    * you invoke this. (See RandomScheduler.scala for an example of how to take
    * checkpoints mid-execution without blocking.)
    */
-  def takeCheckpoint() : HashMap[String, CheckpointReply] = {
+  def takeCheckpoint() : HashMap[String, Option[CheckpointReply]] = {
     println("Initiating checkpoint")
     if (!_enableCheckpointing) {
       throw new IllegalStateException("Must invoke enableCheckpointing() first")
@@ -224,15 +219,17 @@ trait ExternalEventInjector[E] {
   }
 
   def prepareCheckpoint() = {
-    checkpointer.checkpoints.clear()
-    val actors = event_orchestrator.actorToActorRef.keys.
-                                    filterNot(ActorTypes.systemActor)
+    val actorRefs = event_orchestrator.
+                      actorToActorRef.
+                      filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                      values.toSeq
+    val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.
     val existingExternals = new Queue[(ActorRef, Any)] ++ messagesToSend
     messagesToSend.clear
-    for (actor <- actors) {
-      enqueue_message(actor, CheckpointRequest)
+    for ((actor, request) <- checkpointRequests) {
+      enqueue_message(actor, request)
     }
     messagesToSend ++= existingExternals
   }
