@@ -14,7 +14,10 @@ trait TestOracle {
   // An predicate that returns None if the safety condition is not violated,
   // i.e. the execution is correct. Otherwise, returns a
   // `fingerprint` that identifies how the safety violation manifests itself..
-  type Invariant = (Seq[ExternalEvent], HashMap[String,CheckpointReply]) => Option[ViolationFingerprint]
+  // The first argument is the current external event sequence, and the second
+  // argument is a checkpoint map from actor -> Some(checkpointReply), or
+  // actor -> None if the actor has crashed.
+  type Invariant = (Seq[ExternalEvent], HashMap[String,Option[CheckpointReply]]) => Option[ViolationFingerprint]
 
   def setInvariant(invariant: Invariant)
 
