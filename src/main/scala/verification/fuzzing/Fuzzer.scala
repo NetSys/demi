@@ -23,6 +23,7 @@ object StableClasses {
 
 // Weights should be between 0 and 1.0.
 // At least one weight should be greater than 0.
+// TODO(cs): make these name optional parameters. Much easier to code.
 class FuzzerWeights(
   kill: Double,
   send: Double,
