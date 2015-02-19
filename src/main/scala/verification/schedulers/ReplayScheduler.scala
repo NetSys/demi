@@ -26,8 +26,13 @@ import scala.util.control.Breaks._
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler()
+class ReplayScheduler(enableFailureDetector:Boolean)
     extends AbstractScheduler with ExternalEventInjector[Event] {
+  def this() = this(false)
+
+  if (!enableFailureDetector) {
+    disableFailureDetector()
+  }
 
   // Have we started off the execution yet?
   private[this] var firstMessage = true
@@ -51,9 +56,11 @@ class ReplayScheduler()
     // We don't actually want to allow the failure detector to send messages,
     // since all the failure detector messages are recorded in _trace. So we
     // give it a no-op enqueue_message parameter.
-    fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
-    event_orchestrator.set_failure_detector(fd)
-    fd.startFD(instrumenter.actorSystem)
+    if (enableFailureDetector) {
+      fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
+      event_orchestrator.set_failure_detector(fd)
+      fd.startFD(instrumenter.actorSystem)
+    }
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- event_orchestrator.trace) {
