@@ -1,6 +1,8 @@
 package akka.dispatch.verification
 
 import scala.collection.mutable.HashMap
+import scala.pickling.io.TextFileOutput
+
 
 /**
  * User-defined fingerprint for uniquely describing how one or more safety
@@ -8,6 +10,7 @@ import scala.collection.mutable.HashMap
  */
 trait ViolationFingerprint {
   def matches(other: ViolationFingerprint) : Boolean
+  def serializeToFile(file: TextFileOutput)
 }
 
 trait TestOracle {

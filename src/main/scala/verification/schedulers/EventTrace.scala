@@ -3,7 +3,6 @@ package akka.dispatch.verification
 import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.Envelope
 
-
 import scala.collection.mutable.ListBuffer
 import scala.collection.generic.Growable
 import scala.collection.mutable.Queue
@@ -11,11 +10,23 @@ import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
+import scala.pickling.io.TextFileOutput
+import scala.pickling.Defaults._
+import scala.pickling._
+import json._
+
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 
-class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
+object EventTrace {
+  def deserialize(data: pickling.json.pickleFormat.PickleType) : EventTrace = {
+    val tuple = data.unpickle[Tuple2[Queue[Event], Seq[ExternalEvent]]]
+    return new EventTrace(tuple._1, tuple._2)
+  }
+}
+
+case class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new Queue[Event], null)
   def this(events: Queue[Event]) = this(events, null)
   def this(original_externals: Seq[ExternalEvent]) = this(new Queue[Event], original_externals)
@@ -38,6 +49,10 @@ class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalE
     assume(!original_externals.isEmpty)
     return new EventTrace(new Queue[Event] ++ events,
                           new Queue[ExternalEvent] ++ original_externals)
+  }
+
+  def serializeToFile(file: TextFileOutput) {
+    (events, original_externals).pickleTo(file)
   }
 
   def getEvents() : Seq[Event] = {
