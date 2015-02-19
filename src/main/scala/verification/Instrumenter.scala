@@ -22,6 +22,8 @@ import scala.collection.mutable.Queue
 import scala.collection.mutable.Stack
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
+
+import scala.util.Random
 import scala.util.control.Breaks
 
 class InstrumenterCheckpoint(
@@ -31,6 +33,7 @@ class InstrumenterCheckpoint(
   val dispatchers : HashMap[ActorRef, MessageDispatcher],
   val vectorClocks : HashMap[String, VectorClock],
   val sys: ActorSystem,
+  // TODO(cs): add the random associated with this actor system
   val applicationCheckpoint: Any
 ) {}
 
@@ -74,14 +77,23 @@ class Instrumenter {
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
-  private[this] var _actorSystem : ActorSystem = null 
+  private[this] var _actorSystem : ActorSystem = null
   def actorSystem () : ActorSystem = {
     if (_actorSystem == null) {
       _actorSystem = ActorSystem("new-system-" + counter)
+      _randoms(_actorSystem) = new Random(0)
       counter += 1
     }
     _actorSystem
   }
+
+  private[this] var _randoms = new HashMap[ActorSystem, Random]
+  def seededRandom() : Random = {
+    return _randoms(actorSystem())
+  }
+
+  // TODO(cs):
+  // def seededRandomForActorSystem
  
   
   def await_enqueue() {
@@ -130,6 +142,7 @@ class Instrumenter {
   def reinitialize_system(sys: ActorSystem, argQueue: Queue[Any]) {
     require(scheduler != null)
     _actorSystem = ActorSystem("new-system-" + counter)
+    _randoms(_actorSystem) = new Random(0)
     counter += 1
     
     actorMappings.clear()
