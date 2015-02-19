@@ -116,6 +116,16 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     ), original_externals)
   }
 
+  def filterCheckpointMessages(): EventTrace = {
+    return new EventTrace(events flatMap {
+      case UniqueMsgEvent(MsgEvent(_, _, CheckpointRequest), _) => None
+      case UniqueMsgEvent(MsgEvent(_, _, CheckpointReply(_)), _) => None
+      case UniqueMsgSend(MsgSend(_, _, CheckpointRequest), _) => None
+      case UniqueMsgSend(MsgSend(_, _, CheckpointReply(_)), _) => None
+      case e => Some(e)
+    }, original_externals)
+  }
+
   // Filter all external events in original_trace that aren't in subseq.
   // As an optimization, also filter out some internal events that we know a priori
   // aren't going to occur in the subsequence execution.
