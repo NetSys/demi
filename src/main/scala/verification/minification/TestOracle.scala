@@ -1,7 +1,6 @@
 package akka.dispatch.verification
 
 import scala.collection.mutable.HashMap
-import scala.pickling.io.TextFileOutput
 
 
 /**
@@ -10,7 +9,7 @@ import scala.pickling.io.TextFileOutput
  */
 trait ViolationFingerprint {
   def matches(other: ViolationFingerprint) : Boolean
-  def serializeToFile(file: TextFileOutput)
+  def serialize()
 }
 
 trait TestOracle {

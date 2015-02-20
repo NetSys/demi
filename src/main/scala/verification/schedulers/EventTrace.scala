@@ -10,17 +10,14 @@ import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
-import scala.pickling.io.TextFileOutput
-//import scala.pickling.Defaults._
-//import scala.pickling.json
-//import json._
+import com.lambdaworks.jacks.JacksMapper
 
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 
 object EventTrace {
-  def deserialize(data: pickling.json.pickleFormat.PickleType) : EventTrace = {
+  def deserialize() : EventTrace = {
     // val tuple = data.unpickle[Tuple2[Queue[Event], Seq[ExternalEvent]]]
     // return new EventTrace(tuple._1, tuple._2)
     return null
@@ -52,8 +49,10 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
                           new Queue[ExternalEvent] ++ original_externals)
   }
 
-  def serializeToFile(file: TextFileOutput) {
-    // (events, original_externals).pickleTo(file)
+  def serialize() : String = {
+    val t = JacksMapper.writeValueAsString[Tuple2[Seq[Event],Seq[ExternalEvent]]]((events, original_externals))
+    val r = JacksMapper.readValue[Tuple2[Seq[Event],Seq[ExternalEvent]]](t)
+    return t
   }
 
   def getEvents() : Seq[Event] = {
