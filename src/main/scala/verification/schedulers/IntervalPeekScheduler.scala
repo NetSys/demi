@@ -94,6 +94,9 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
    * Otherwise, return None.
    */
   def peek(prefix: EventTrace) : Option[Seq[MsgEvent]] = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     doneReplayingPrefix.set(false)
     replay(prefix)
     println("Done replaying prefix. Proceeding with peek")

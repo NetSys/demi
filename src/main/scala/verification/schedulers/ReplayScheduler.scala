@@ -51,6 +51,9 @@ class ReplayScheduler(enableFailureDetector:Boolean)
   // original.
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
   def replay (_trace: EventTrace) : EventTrace = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     event_orchestrator.set_trace(_trace.getEvents)
     event_orchestrator.reset_events
     // We don't actually want to allow the failure detector to send messages,
@@ -61,6 +64,7 @@ class ReplayScheduler(enableFailureDetector:Boolean)
       event_orchestrator.set_failure_detector(fd)
       fd.startFD(instrumenter.actorSystem)
     }
+
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- event_orchestrator.trace) {

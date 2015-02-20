@@ -29,15 +29,22 @@ import java.util.Random
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, invariant_check_interval: Int)
+class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, invariant_check_interval: Int, disableCheckpointing: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_interleavings: Int) = this(max_interleavings, true, 0)
-  def this(max_interleavings: Int, enableFailureDetector: Boolean) = this(max_interleavings, enableFailureDetector, 0)
+  def this(max_interleavings: Int) = this(max_interleavings, true, 0, false)
+  def this(max_interleavings: Int, enableFailureDetector: Boolean) =
+      this(max_interleavings, enableFailureDetector, 0, false)
 
   var test_invariant : Invariant = null
 
+  // TODO(cs): separate enableFailureDetector and disableCheckpointing out
+  // into a config object, passed in to all schedulers..
   if (!enableFailureDetector) {
     disableFailureDetector()
+  }
+
+  if (!disableCheckpointing) {
+     enableCheckpointing()
   }
 
   // Current set of enabled events.
@@ -114,6 +121,9 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
    * matches looking_for
    */
   def explore (_trace: Seq[ExternalEvent], _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     trace = _trace
     lookingFor = _lookingFor
 
@@ -132,7 +142,10 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
           return Some((event_trace, fingerprint))
         // Else, check the invariant condition one last time.
         case None =>
-          val checkpoint = takeCheckpoint()
+          var checkpoint : HashMap[String, Option[CheckpointReply]] = null
+          if (!disableCheckpointing) {
+            checkpoint = takeCheckpoint()
+          }
           val violation = test_invariant(_trace, checkpoint)
           violationFound = violationMatches(violation)
           violationFound match {

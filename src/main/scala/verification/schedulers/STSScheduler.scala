@@ -92,6 +92,9 @@ class STSScheduler(var original_trace: EventTrace,
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent], violationFingerprint: ViolationFingerprint) : Boolean = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     assume(!subseq.isEmpty)
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")

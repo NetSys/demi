@@ -145,6 +145,13 @@ trait ExternalEventInjector[E] {
   def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
+
+    if (!_disableFailureDetector) {
+      fd.startFD(Instrumenter().actorSystem)
+    }
+    if (_enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
+    }
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
@@ -157,12 +164,6 @@ trait ExternalEventInjector[E] {
         case _ =>
           None
       }
-    }
-    if (!_disableFailureDetector) {
-      fd.startFD(Instrumenter().actorSystem)
-    }
-    if (_enableCheckpointing) {
-      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
     currentlyInjecting.set(true)

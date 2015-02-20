@@ -42,6 +42,9 @@ class PeekScheduler(enableFailureDetector: Boolean)
   }
 
   def peek (_trace: Seq[ExternalEvent]) : EventTrace = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     event_orchestrator.events.setOriginalExternalEvents(_trace)
     return execute_trace(_trace)
   }

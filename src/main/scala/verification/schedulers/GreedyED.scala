@@ -110,6 +110,9 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
   // Pre: subseq is not empty.
   def test (_subseq: Seq[ExternalEvent],
             _violationFingerprint: ViolationFingerprint) : Boolean = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     assume(!_subseq.isEmpty)
     subseq = _subseq
     violationFingerprint = _violationFingerprint
