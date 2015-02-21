@@ -23,19 +23,19 @@ object StableClasses {
 
 // Weights should be between 0 and 1.0.
 // At least one weight should be greater than 0.
-class FuzzerWeights(
-  kill: Double,
-  send: Double,
-  wait_quiescence: Double,
-  wait_timers: Double,
-  partition: Double,
-  unpartition: Double,
-  continue: Double) {
+case class FuzzerWeights(
+  kill: Double = 0.01,
+  send: Double = 0.3,
+  wait_quiescence: Double = 0.1,
+  wait_timers: Double = 0.3,
+  partition: Double = 0.1,
+  unpartition: Double = 0.1,
+  continue: Double = 0.3) {
 
   val allWeights = List(kill, send, wait_timers, partition,
                         unpartition, continue)
 
-  var totalMass = allWeights.sum + wait_quiescence
+  val totalMass = allWeights.sum + wait_quiescence
 
   val eventTypes = List(StableClasses.ClassOfKill, StableClasses.ClassOfSend,
                         StableClasses.ClassOfWaitTimers, StableClasses.ClassOfPartition,
@@ -63,6 +63,7 @@ class FuzzerWeights(
   }
 }
 
+// prefix must at least contain start events
 class Fuzzer(num_events: Integer,
              weights: FuzzerWeights,
              message_gen: MessageGenerator,

@@ -2,18 +2,20 @@ package akka.dispatch.verification
 
 import scala.collection.mutable.HashMap
 
+
 /**
  * User-defined fingerprint for uniquely describing how one or more safety
  * violations manifests.
  */
 trait ViolationFingerprint {
   def matches(other: ViolationFingerprint) : Boolean
+  def serialize()
 }
 
 trait TestOracle {
   // An predicate that returns None if the safety condition is not violated,
   // i.e. the execution is correct. Otherwise, returns a
-  // `fingerprint` that identifies how the safety violation manifests itself..
+  // `fingerprint` that identifies how the safety violation manifests itself.
   // The first argument is the current external event sequence, and the second
   // argument is a checkpoint map from actor -> Some(checkpointReply), or
   // actor -> None if the actor has crashed.
@@ -30,6 +32,8 @@ trait TestOracle {
    * to ensure that the ActorSystem is returned to a clean initial state.
    * Throws an IllegalArgumentException if setInvariant has not been invoked.
    */
+  // Note that return value of this function is the opposite of what we
+  // describe in the paper...
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint) : Boolean
 }

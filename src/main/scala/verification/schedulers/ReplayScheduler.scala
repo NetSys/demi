@@ -26,34 +26,45 @@ import scala.util.control.Breaks._
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler()
+class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureDetector:Boolean, strictChecking:Boolean)
     extends AbstractScheduler with ExternalEventInjector[Event] {
+  def this() = this(new BasicFingerprinter, false, false)
+
+  if (!enableFailureDetector) {
+    disableFailureDetector()
+  }
 
   // Have we started off the execution yet?
   private[this] var firstMessage = true
 
   // Current set of enabled events.
-  // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
-  val pendingEvents = new HashMap[(String, String, Any),
+  // (snd, rcv, msg fingerprint) => Queue(rcv's cell, envelope of message)
+  val pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Just do a cheap test to ensure that no new unexpected messages are sent. This
   // is not perfect.
-  private[this] val allSends = new HashMap[(String, String, Any), Int]
+  private[this] val allSends = new HashMap[(String, String, MessageFingerprint), Int]
 
   // Given an event trace, try to replay it exactly. Return the events
   // observed in *this* execution, which should in theory be the same as the
   // original.
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
   def replay (_trace: EventTrace) : EventTrace = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     event_orchestrator.set_trace(_trace.getEvents)
     event_orchestrator.reset_events
     // We don't actually want to allow the failure detector to send messages,
     // since all the failure detector messages are recorded in _trace. So we
     // give it a no-op enqueue_message parameter.
-    fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
-    event_orchestrator.set_failure_detector(fd)
-    fd.startFD(instrumenter.actorSystem)
+    if (enableFailureDetector) {
+      fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
+      event_orchestrator.set_failure_detector(fd)
+      fd.startFD(instrumenter.actorSystem)
+    }
+
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- event_orchestrator.trace) {
@@ -64,7 +75,8 @@ class ReplayScheduler()
           event_orchestrator.isolate_node(name)
         case MsgSend (snd, rcv, msg) =>
           // Track all messages we expect.
-          allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) + 1
+          val fingerprint = messageFingerprinter.fingerprint(msg)
+          allSends((snd, rcv, fingerprint)) = allSends.getOrElse((snd, rcv, fingerprint), 0) + 1
         case _ =>
           None
       }
@@ -125,25 +137,28 @@ class ReplayScheduler()
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    val fingerprint = messageFingerprinter.fingerprint(msg)
     // N.B. we do not actually route messages destined for the
     // FailureDetector, we simply take note of them. This is because all
     // responses from the FailureDetector (from the previous execution)
     // are already recorded as external
     // messages, and will be injected by advanceReplay().
 
-    if (!allSends.contains((snd, rcv, msg)) ||
-         allSends((snd, rcv, msg)) <= 0) {
-      throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
+    if (strictChecking) {
+      if (!allSends.contains((snd, rcv, fingerprint)) ||
+           allSends((snd, rcv, fingerprint)) <= 0) {
+        throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
+      }
+      allSends((snd, rcv, fingerprint)) = allSends.getOrElse((snd, rcv, fingerprint), 0) - 1
     }
-    allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
 
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     // Drop any messages that crosses a partition.
     if (!event_orchestrator.crosses_partition(snd, rcv) && rcv != FailureDetector.fdName) {
-      val msgs = pendingEvents.getOrElse((snd, rcv, msg),
+      val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                           new Queue[Uniq[(ActorCell, Envelope)]])
-      pendingEvents((snd, rcv, msg)) = msgs += uniq
+      pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
     }
   }
 
@@ -184,7 +199,7 @@ class ReplayScheduler()
       // unless something else went wrong.
       val key = event_orchestrator.current_event match {
         case MsgEvent(snd, rcv, msg) =>
-          (snd, rcv, msg)
+          (snd, rcv, messageFingerprinter.fingerprint(msg))
         case _ =>
          throw new Exception("Replay error")
       }
