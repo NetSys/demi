@@ -26,9 +26,9 @@ import scala.util.control.Breaks._
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler(enableFailureDetector:Boolean)
+class ReplayScheduler(enableFailureDetector:Boolean, strictChecking:Boolean)
     extends AbstractScheduler with ExternalEventInjector[Event] {
-  def this() = this(false)
+  def this() = this(false, false)
 
   if (!enableFailureDetector) {
     disableFailureDetector()
@@ -142,11 +142,13 @@ class ReplayScheduler(enableFailureDetector:Boolean)
     // are already recorded as external
     // messages, and will be injected by advanceReplay().
 
-    if (!allSends.contains((snd, rcv, msg)) ||
-         allSends((snd, rcv, msg)) <= 0) {
-      throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
+    if (strictChecking) {
+      if (!allSends.contains((snd, rcv, msg)) ||
+           allSends((snd, rcv, msg)) <= 0) {
+        throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
+      }
+      allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
     }
-    allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
 
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
