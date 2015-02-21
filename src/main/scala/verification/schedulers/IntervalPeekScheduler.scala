@@ -31,10 +31,10 @@ object IntervalPeekScheduler {
 
   // Flatten all enabled events into a sorted list.
   def flattenedEnabled(pendingEvents: HashMap[
-      (String, String, Any), Queue[Uniq[(ActorCell, Envelope)]]]) : Seq[MsgEvent] = {
+      (String, String, MessageFingerprint), Queue[Uniq[(ActorCell, Envelope)]]]) : Seq[MsgEvent] = {
     // Last element of queue's tuple is the unique id, which is assumed to be
     // monotonically increasing by time of arrival.
-    val unsorted = new Queue[(String, String, Any, Int)]
+    val unsorted = new Queue[(String, String, MessageFingerprint, Int)]
     pendingEvents.foreach {
       case (key, queue) =>
         for (uniq <- queue) {
@@ -64,8 +64,10 @@ object IntervalPeekScheduler {
  *   to its being enabled. Otherwise, return null.
  */
 class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
-                            max_peek_messages: Int) extends ReplayScheduler {
-  def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) = this(expected, lookingFor, 10)
+                            max_peek_messages: Int,
+                            messageFingerprinter: MessageFingerprinter) extends ReplayScheduler {
+  def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) =
+      this(expected, lookingFor, 10, new BasicFingerprinter)
 
   // Whether we are currently restoring the checkpoint (by replaying a prefix
   // of events), or have moved on to peeking.
@@ -108,7 +110,8 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     val unexpected = IntervalPeekScheduler.unexpected(
         IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
     for (msgEvent <- unexpected) {
-      val key = (msgEvent.sender, msgEvent.receiver, msgEvent.msg)
+      val key = (msgEvent.sender, msgEvent.receiver,
+                 messageFingerprinter.fingerprint(msgEvent.msg))
       val nextMessage = pendingEvents.get(key) match {
         case Some(queue) =>
           val willRet = queue.dequeue()

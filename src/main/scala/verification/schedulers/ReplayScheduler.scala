@@ -26,9 +26,9 @@ import scala.util.control.Breaks._
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler(enableFailureDetector:Boolean, strictChecking:Boolean)
+class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureDetector:Boolean, strictChecking:Boolean)
     extends AbstractScheduler with ExternalEventInjector[Event] {
-  def this() = this(false, false)
+  def this() = this(new BasicFingerprinter, false, false)
 
   if (!enableFailureDetector) {
     disableFailureDetector()
@@ -38,13 +38,13 @@ class ReplayScheduler(enableFailureDetector:Boolean, strictChecking:Boolean)
   private[this] var firstMessage = true
 
   // Current set of enabled events.
-  // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
-  val pendingEvents = new HashMap[(String, String, Any),
+  // (snd, rcv, msg fingerprint) => Queue(rcv's cell, envelope of message)
+  val pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Just do a cheap test to ensure that no new unexpected messages are sent. This
   // is not perfect.
-  private[this] val allSends = new HashMap[(String, String, Any), Int]
+  private[this] val allSends = new HashMap[(String, String, MessageFingerprint), Int]
 
   // Given an event trace, try to replay it exactly. Return the events
   // observed in *this* execution, which should in theory be the same as the
@@ -75,7 +75,8 @@ class ReplayScheduler(enableFailureDetector:Boolean, strictChecking:Boolean)
           event_orchestrator.isolate_node(name)
         case MsgSend (snd, rcv, msg) =>
           // Track all messages we expect.
-          allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) + 1
+          val fingerprint = messageFingerprinter.fingerprint(msg)
+          allSends((snd, rcv, fingerprint)) = allSends.getOrElse((snd, rcv, fingerprint), 0) + 1
         case _ =>
           None
       }
@@ -136,6 +137,7 @@ class ReplayScheduler(enableFailureDetector:Boolean, strictChecking:Boolean)
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    val fingerprint = messageFingerprinter.fingerprint(msg)
     // N.B. we do not actually route messages destined for the
     // FailureDetector, we simply take note of them. This is because all
     // responses from the FailureDetector (from the previous execution)
@@ -143,20 +145,20 @@ class ReplayScheduler(enableFailureDetector:Boolean, strictChecking:Boolean)
     // messages, and will be injected by advanceReplay().
 
     if (strictChecking) {
-      if (!allSends.contains((snd, rcv, msg)) ||
-           allSends((snd, rcv, msg)) <= 0) {
+      if (!allSends.contains((snd, rcv, fingerprint)) ||
+           allSends((snd, rcv, fingerprint)) <= 0) {
         throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
       }
-      allSends((snd, rcv, msg)) = allSends.getOrElse((snd, rcv, msg), 0) - 1
+      allSends((snd, rcv, fingerprint)) = allSends.getOrElse((snd, rcv, fingerprint), 0) - 1
     }
 
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     // Drop any messages that crosses a partition.
     if (!event_orchestrator.crosses_partition(snd, rcv) && rcv != FailureDetector.fdName) {
-      val msgs = pendingEvents.getOrElse((snd, rcv, msg),
+      val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                           new Queue[Uniq[(ActorCell, Envelope)]])
-      pendingEvents((snd, rcv, msg)) = msgs += uniq
+      pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
     }
   }
 
@@ -197,7 +199,7 @@ class ReplayScheduler(enableFailureDetector:Boolean, strictChecking:Boolean)
       // unless something else went wrong.
       val key = event_orchestrator.current_event match {
         case MsgEvent(snd, rcv, msg) =>
-          (snd, rcv, msg)
+          (snd, rcv, messageFingerprinter.fingerprint(msg))
         case _ =>
          throw new Exception("Replay error")
       }

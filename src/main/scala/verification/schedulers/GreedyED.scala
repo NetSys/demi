@@ -34,12 +34,15 @@ import scala.util.control.Breaks._
  * Scheduler that takes greedily tries to minimize edit distance from the
  * original execution.
  */
-class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends AbstractScheduler
+class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
+               messageFingerprinter: MessageFingerprinter) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
   assume(!original_trace.isEmpty)
   assume(original_trace.original_externals != null)
 
-  def this(original_trace: EventTrace) = this(original_trace, -1)
+  def this(original_trace: EventTrace) = this(original_trace, -1, new BasicFingerprinter)
+  def this(original_trace: EventTrace, execution_bound: Int) =
+      this(original_trace, execution_bound, new BasicFingerprinter)
 
   enableCheckpointing()
 
@@ -51,7 +54,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
   // Current set of enabled events. Includes external messages, but not
   // failure detector messages, which are always sent in FIFO order.
   // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
-  var pendingEvents = new HashMap[(String, String, Any),
+  var pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Current set of failure detector messages destined for actors, to be delivered
@@ -243,7 +246,8 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
             def messagePending(m: MsgEvent) : Boolean = {
               // Make sure to send any external messages that recently got enqueued
               send_external_messages(false)
-              val key = (m.sender, m.receiver, m.msg)
+              val key = (m.sender, m.receiver,
+                         messageFingerprinter.fingerprint(m.msg))
               return pendingEvents.get(key) match {
                 case Some(queue) =>
                   !queue.isEmpty
@@ -302,8 +306,10 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    val fingerprint = messageFingerprinter.fingerprint(msg)
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+
 
     handle_event_produced(snd, rcv, envelope) match {
       case ExternalMessage => {
@@ -312,17 +318,17 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
         if (MessageTypes.fromFailureDetector(msg)) {
           pendingFDMessages += uniq
         } else {
-          val msgs = pendingEvents.getOrElse((snd, rcv, msg),
+          val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                               new Queue[Uniq[(ActorCell, Envelope)]])
-          pendingEvents((snd, rcv, msg)) = msgs += uniq
+          pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
         }
       }
       case InternalMessage => {
         // Drop any messages that crosses a partition.
         if (!event_orchestrator.crosses_partition(snd, rcv)) {
-          val msgs = pendingEvents.getOrElse((snd, rcv, msg),
+          val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                               new Queue[Uniq[(ActorCell, Envelope)]])
-          pendingEvents((snd, rcv, msg)) = msgs += uniq
+          pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
         }
       }
       case _ => None
@@ -389,7 +395,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int) extends
     // Pick next message based on trace.
     val key = event_orchestrator.current_event match {
       case MsgEvent(snd, rcv, msg) =>
-        (snd, rcv, msg)
+        (snd, rcv, messageFingerprinter.fingerprint(msg))
       case _ =>
         // We've broken out of advanceReplay() because of a
         // BeginWaitQuiescence event, but there were no pendingFDMessages to

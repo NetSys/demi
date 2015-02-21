@@ -63,11 +63,12 @@ object STSScheduler {
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
 class STSScheduler(var original_trace: EventTrace,
-                   allowPeek: Boolean) extends AbstractScheduler
+                   allowPeek: Boolean,
+                   messageFingerprinter: MessageFingerprinter) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
   assume(!original_trace.isEmpty)
 
-  def this(original_trace: EventTrace) = this(original_trace, false)
+  def this(original_trace: EventTrace) = this(original_trace, false, new BasicFingerprinter)
 
   enableCheckpointing()
 
@@ -79,7 +80,7 @@ class STSScheduler(var original_trace: EventTrace,
   // Current set of enabled events. Includes external messages, but not
   // failure detector messages, which are always sent in FIFO order.
   // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
-  val pendingEvents = new HashMap[(String, String, Any),
+  val pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Current set of failure detector messages destined for actors, to be delivered
@@ -212,7 +213,8 @@ class STSScheduler(var original_trace: EventTrace,
             def messagePending(m: MsgEvent) : Boolean = {
               // Make sure to send any external messages that recently got enqueued
               send_external_messages(false)
-              val key = (m.sender, m.receiver, m.msg)
+              val key = (m.sender, m.receiver,
+                         messageFingerprinter.fingerprint(m.msg))
               return pendingEvents.get(key) match {
                 case Some(queue) =>
                   !queue.isEmpty
@@ -259,6 +261,7 @@ class STSScheduler(var original_trace: EventTrace,
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    val fingerprint = messageFingerprinter.fingerprint(msg)
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
 
@@ -269,17 +272,17 @@ class STSScheduler(var original_trace: EventTrace,
         if (MessageTypes.fromFailureDetector(msg)) {
           pendingFDMessages += uniq
         } else {
-          val msgs = pendingEvents.getOrElse((snd, rcv, msg),
+          val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                               new Queue[Uniq[(ActorCell, Envelope)]])
-          pendingEvents((snd, rcv, msg)) = msgs += uniq
+          pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
         }
       }
       case InternalMessage => {
         // Drop any messages that crosses a partition.
         if (!event_orchestrator.crosses_partition(snd, rcv)) {
-          val msgs = pendingEvents.getOrElse((snd, rcv, msg),
+          val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                               new Queue[Uniq[(ActorCell, Envelope)]])
-          pendingEvents((snd, rcv, msg)) = msgs += uniq
+          pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
         }
       }
       case _ => None
@@ -346,7 +349,7 @@ class STSScheduler(var original_trace: EventTrace,
     // Pick next message based on trace.
     val key = event_orchestrator.current_event match {
       case MsgEvent(snd, rcv, msg) =>
-        (snd, rcv, msg)
+        (snd, rcv, messageFingerprinter.fingerprint(msg))
       case _ =>
         // We've broken out of advanceReplay() because of a
         // BeginWaitQuiescence event, but there were no pendingFDMessages to
