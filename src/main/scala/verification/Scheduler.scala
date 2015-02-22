@@ -68,4 +68,3 @@ trait Scheduler {
   def shutdown()
 
 }
-
