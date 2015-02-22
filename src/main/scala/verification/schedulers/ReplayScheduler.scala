@@ -27,7 +27,7 @@ import scala.util.control.Breaks._
  *  - If the application does not send a message that was previously sent
  */
 class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureDetector:Boolean, strictChecking:Boolean)
-    extends AbstractScheduler with ExternalEventInjector[Event] {
+    extends AbstractScheduler with ExternalEventInjector[Event] with HistoricalScheduler {
   def this() = this(new BasicFingerprinter, false, false)
 
   if (!enableFailureDetector) {
@@ -54,8 +54,6 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
-    event_orchestrator.set_trace(_trace.getEvents)
-    event_orchestrator.reset_events
     // We don't actually want to allow the failure detector to send messages,
     // since all the failure detector messages are recorded in _trace. So we
     // give it a no-op enqueue_message parameter.
@@ -67,7 +65,7 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
 
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
-    for (t <- event_orchestrator.trace) {
+    for (t <- _trace.getEvents) {
       t match {
         case SpawnEvent (_, props, name, _) =>
           // Just start and isolate all actors we might eventually care about
@@ -81,6 +79,12 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
           None
       }
     }
+
+    val updatedEvents = updateEvents(_trace.getEvents)
+    event_orchestrator.set_trace(updatedEvents)
+    // Bad method name. "reset recorded events"
+    event_orchestrator.reset_events
+
     currentlyInjecting.set(true)
     // Start playing back trace
     advanceReplay()
@@ -114,8 +118,9 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
           case MsgEvent(snd, rcv, msg) =>
             break
           case BeginWaitQuiescence =>
-             // This is just a nop. Do nothing
             event_orchestrator.events += BeginWaitQuiescence
+            //event_orchestrator.trace_advanced
+            //break
           case Quiescence =>
             // This is just a nop. Do nothing
             event_orchestrator.events += Quiescence
@@ -229,6 +234,9 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
         case None =>
           throw new RuntimeException("Expected event " + key)
         case Some(uniq) => None
+          if (!(event_orchestrator.actorToActorRef.values contains uniq.element._1.self)) {
+            throw new IllegalStateException("unknown ActorRef: " + uniq.element._1.self)
+          }
           event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
           schedSemaphore.release
           return Some(uniq.element)

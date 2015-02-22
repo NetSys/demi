@@ -65,7 +65,7 @@ object STSScheduler {
 class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
                    messageFingerprinter: MessageFingerprinter) extends AbstractScheduler
-    with ExternalEventInjector[Event] with TestOracle {
+    with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
 
   def this(original_trace: EventTrace) = this(original_trace, false, new BasicFingerprinter)
@@ -105,12 +105,10 @@ class STSScheduler(var original_trace: EventTrace,
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
                                   subsequenceIntersection(subseq)
-    event_orchestrator.set_trace(filtered.getEvents)
-    event_orchestrator.reset_events
     fd.startFD(instrumenter.actorSystem)
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
-    for (t <- event_orchestrator.trace) {
+    for (t <- filtered.getEvents) {
       t match {
         case SpawnEvent (_, props, name, _) =>
           // Just start and isolate all actors we might eventually care about
@@ -120,6 +118,12 @@ class STSScheduler(var original_trace: EventTrace,
           None
       }
     }
+
+    val updatedEvents = updateEvents(filtered.getEvents)
+    event_orchestrator.set_trace(updatedEvents)
+    // Bad method name. "reset recorded events"
+    event_orchestrator.reset_events
+
     currentlyInjecting.set(true)
     // Start playing back trace
     advanceReplay()
@@ -163,6 +167,7 @@ class STSScheduler(var original_trace: EventTrace,
     }
 
     val peeker = new IntervalPeekScheduler(expected, m)
+    peeker.eventMapper = eventMapper
     Instrumenter().scheduler = peeker
     val checkpoint = Instrumenter().checkpoint()
     println("Peek()'ing")
