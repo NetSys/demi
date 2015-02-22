@@ -9,8 +9,6 @@ trait MessageFingerprinter {
   def fingerprint(msg: Any) : MessageFingerprint
 }
 
-//case class BasicFingerprint(str: String) extends MessageFingerprint
-
 case class BasicFingerprint(str: String) extends MessageFingerprint {
   override def hashCode = str.hashCode
   override def equals(other: Any) : Boolean = {
