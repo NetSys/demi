@@ -138,6 +138,7 @@ privileged public aspect WeaveActor {
         i.handleTick(rcv, m, c);
       }
     }
+    inst.notify_timer_scheduled(sender, receiver, msg);
     MyRunnable runnable = new MyRunnable(receiver, msg, inst);
     Cancellable c = me.scheduleOnce(delay, runnable, exc);
     runnable.setCancellable(c);
@@ -177,6 +178,7 @@ privileged public aspect WeaveActor {
         i.handleTick(rcv, m, c);
       }
     }
+    inst.notify_timer_scheduled(sender, receiver, msg);
     MyRunnable runnable = new MyRunnable(receiver, msg, inst);
     Cancellable c = me.schedule(delay, interval, runnable, exc);
     runnable.setCancellable(c);

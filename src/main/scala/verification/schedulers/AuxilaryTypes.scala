@@ -25,6 +25,8 @@ final case class Continue(numSteps: Integer) extends ExternalEvent
 
 // Internal events in addition to those defined in ../AuxilaryTypes
 // MsgSend is the initial send, not the delivery
+// N.B., if an event trace was serialized, it's possible that msg is of type
+// MessageFingerprint rather than a whole message!
 final case class MsgSend (sender: String, 
                 receiver: String, msg: Any) extends Event
 final case class KillEvent (actor: String) extends Event 
@@ -35,6 +37,15 @@ final case object BeginWaitQuiescence extends Event
 // Marks when Quiescence was actually reached.
 final case object Quiescence extends Event
 final case class ChangeContext (actor: String) extends Event
+
+// Recording/Replaying Akka.FSM.Timer's (which aren't serializable! hence this madness)
+// N.B. these aren't explicitly recorded. We use them only when we want to serialize event
+// traces.
+final case class TimerFingerprint(name: String, sender: String, receiver: String,
+  msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int)
+final case class TimerSend(fingerprint: TimerFingerprint) extends Event
+final case class TimerDelivery(fingerprint: TimerFingerprint) extends Event
+
 
 object EventTypes {
   // Internal events that correspond to ExternalEvents.

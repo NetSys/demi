@@ -6,7 +6,14 @@ trait MessageFingerprint {
 }
 
 trait MessageFingerprinter {
-  def fingerprint(msg: Any) : MessageFingerprint
+  // Account for the possibility of serialized messages, that have been
+  // serialized as MessageFingerprints. Subclasses should probably call this.
+  def fingerprint(msg: Any) : MessageFingerprint = {
+    if (msg.isInstanceOf[MessageFingerprint]) {
+      return msg.asInstanceOf[MessageFingerprint]
+    }
+    return null
+  }
 }
 
 case class BasicFingerprint(str: String) extends MessageFingerprint {
@@ -21,7 +28,11 @@ case class BasicFingerprint(str: String) extends MessageFingerprint {
 }
 
 class BasicFingerprinter extends MessageFingerprinter {
-  def fingerprint(msg: Any) : MessageFingerprint = {
+  override def fingerprint(msg: Any) : MessageFingerprint = {
+    val superResult = super.fingerprint(msg)
+    if (superResult != null) {
+      return superResult
+    }
     return BasicFingerprint(msg.toString)
   }
 }

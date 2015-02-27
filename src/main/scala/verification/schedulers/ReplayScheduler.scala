@@ -2,6 +2,7 @@ package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
 import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.FSM.Timer
 
 import akka.dispatch.Envelope
 
@@ -46,11 +47,22 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   // is not perfect.
   private[this] val allSends = new HashMap[(String, String, MessageFingerprint), Int]
 
+  // When FSM.Timer's are scheduled, store them here.
+  var pendingTimers = new HashMap[TimerFingerprint, Timer]
+
+  def populateActorSystem(actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
+    for ((props, name) <- actorNamePropPairs) {
+      // Just start and isolate all actors we might eventually care about
+      instrumenter.actorSystem.actorOf(props, name)
+      event_orchestrator.isolate_node(name)
+    }
+  }
+
   // Given an event trace, try to replay it exactly. Return the events
   // observed in *this* execution, which should in theory be the same as the
   // original.
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
-  def replay (_trace: EventTrace) : EventTrace = {
+  def replay (_trace: EventTrace, populateActors:Boolean=true) : EventTrace = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -63,14 +75,17 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
       fd.startFD(instrumenter.actorSystem)
     }
 
+    if (populateActors) {
+      populateActorSystem(_trace.getEvents flatMap {
+        case SpawnEvent(_,props,name,_) => Some((props, name))
+        case _ => None
+      })
+    }
+
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable)
     for (t <- _trace.getEvents) {
       t match {
-        case SpawnEvent (_, props, name, _) =>
-          // Just start and isolate all actors we might eventually care about
-          instrumenter.actorSystem.actorOf(props, name)
-          event_orchestrator.isolate_node(name)
         case MsgSend (snd, rcv, msg) =>
           // Track all messages we expect.
           val fingerprint = messageFingerprinter.fingerprint(msg)
@@ -115,6 +130,15 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
             if (sender == "deadLetters") {
               enqueue_message(receiver, message)
             }
+          case TimerSend(fingerprint) =>
+            if (pendingTimers contains fingerprint) {
+              val timer = pendingTimers(fingerprint)
+              enqueue_message(fingerprint.receiver, timer)
+            } else {
+              throw new RuntimeException("Expected TimerSend("+fingerprint+")")
+            }
+          case TimerDelivery(fingerprint) =>
+            break
           case MsgEvent(snd, rcv, msg) =>
             break
           case BeginWaitQuiescence =>
@@ -187,7 +211,8 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   // Solve this someway nice.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     // First get us to kind of a good place: it should be the case after
-    // invoking advanceReplay() that the next event is a MsgEvent.
+    // invoking advanceReplay() that the next event is a MsgEvent or
+    // TimerDelivery event.
     advanceReplay()
     // Make sure to send any external messages that just got enqueued
     send_external_messages()
@@ -205,6 +230,10 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
       val key = event_orchestrator.current_event match {
         case MsgEvent(snd, rcv, msg) =>
           (snd, rcv, messageFingerprinter.fingerprint(msg))
+        case TimerDelivery(timer_fingerprint) =>
+          val timer = pendingTimers(timer_fingerprint)
+          (timer_fingerprint.sender, timer_fingerprint.receiver,
+           messageFingerprinter.fingerprint(timer))
         case _ =>
          throw new Exception("Replay error")
       }
@@ -232,6 +261,10 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
 
       nextMessage match {
         case None =>
+          println("pending keys:")
+          for (pending <- pendingEvents.keys) {
+            println(pending)
+          }
           throw new RuntimeException("Expected event " + key)
         case Some(uniq) => None
           if (!(event_orchestrator.actorToActorRef.values contains uniq.element._1.self)) {
@@ -280,5 +313,18 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   // Called after receive is done being processed
   override def after_receive(cell: ActorCell) {
     handle_after_receive(cell)
+  }
+
+  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                                      msg: Any) {
+    msg match {
+      case Timer(name, nestedMsg, repeat, generation) =>
+        val snd = if (sender == null) "deadLetters" else sender.path.name
+        val rcv = if (receiver == null) "deadLetters" else receiver.path.name
+        val fingerprint = TimerFingerprint(name, snd, rcv,
+          messageFingerprinter.fingerprint(nestedMsg), repeat, generation)
+        pendingTimers(fingerprint) = msg.asInstanceOf[Timer]
+      case _ => None
+    }
   }
 }

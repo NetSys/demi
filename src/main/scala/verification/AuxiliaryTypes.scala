@@ -29,6 +29,8 @@ case class Uniq[E](
 abstract trait Event
 
 // Message delivery -- (not the initial send)
+// N.B., if an event trace was serialized, it's possible that msg is of type
+// MessageFingerprint rather than a whole message!
 case class MsgEvent(
     sender: String, receiver: String, msg: Any) extends Event
 

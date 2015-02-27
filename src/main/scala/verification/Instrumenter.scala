@@ -326,6 +326,12 @@ class Instrumenter {
     await_timers(registeredCancellableTasks.size)
   }
 
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) {
+    if (scheduler != null) {
+      scheduler.notify_timer_scheduled(sender, receiver, msg)
+    }
+  }
+
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean) {
