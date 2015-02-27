@@ -326,10 +326,11 @@ class Instrumenter {
     await_timers(registeredCancellableTasks.size)
   }
 
-  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) {
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) : Boolean = {
     if (scheduler != null) {
-      scheduler.notify_timer_scheduled(sender, receiver, msg)
+      return scheduler.notify_timer_scheduled(sender, receiver, msg)
     }
+    return true
   }
 
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we

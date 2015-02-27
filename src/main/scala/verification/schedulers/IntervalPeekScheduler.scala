@@ -50,7 +50,7 @@ object IntervalPeekScheduler {
 
 /**
  * Similar to PeekScheduler(), except that:
- *  a. we start from mid-way in the * execution (or rather, we restore a checkpoint of
+ *  a. we start from mid-way in the execution (or rather, we restore a checkpoint of
  *     the state mid-way through the execution, by replaying all events that led up
  *     to that point),
  *  b. we only Peek() for a small interval (up to the next external event),

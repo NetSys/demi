@@ -27,6 +27,11 @@ import scala.concurrent.ExecutionContext;
 import java.lang.Runnable;
 
 privileged public aspect WeaveActor {
+  public class NOPCancellable implements Cancellable {
+    public boolean cancel() {return true;}
+    public boolean isCancelled() {return false;}
+  }
+
 
   Instrumenter inst = Instrumenter.apply();
     
@@ -138,12 +143,16 @@ privileged public aspect WeaveActor {
         i.handleTick(rcv, m, c);
       }
     }
-    inst.notify_timer_scheduled(sender, receiver, msg);
-    MyRunnable runnable = new MyRunnable(receiver, msg, inst);
-    Cancellable c = me.scheduleOnce(delay, runnable, exc);
-    runnable.setCancellable(c);
-    inst.registerCancellable(c, false);
-	  return c;
+    boolean shouldSchedule = inst.notify_timer_scheduled(sender, receiver, msg);
+    if (shouldSchedule) {
+      MyRunnable runnable = new MyRunnable(receiver, msg, inst);
+      Cancellable c = me.scheduleOnce(delay, runnable, exc);
+      runnable.setCancellable(c);
+      inst.registerCancellable(c, false);
+	    return c;
+    } else {
+      return new NOPCancellable();
+    }
   }
 
   // Override akka.actor.Scheduler.scheduler
@@ -178,11 +187,15 @@ privileged public aspect WeaveActor {
         i.handleTick(rcv, m, c);
       }
     }
-    inst.notify_timer_scheduled(sender, receiver, msg);
-    MyRunnable runnable = new MyRunnable(receiver, msg, inst);
-    Cancellable c = me.schedule(delay, interval, runnable, exc);
-    runnable.setCancellable(c);
-    inst.registerCancellable(c, true);
-	  return c;
+    boolean shouldSchedule = inst.notify_timer_scheduled(sender, receiver, msg);
+    if (shouldSchedule) {
+      MyRunnable runnable = new MyRunnable(receiver, msg, inst);
+      Cancellable c = me.schedule(delay, interval, runnable, exc);
+      runnable.setCancellable(c);
+      inst.registerCancellable(c, true);
+	    return c;
+    } else {
+      return new NOPCancellable();
+    }
   }
 }

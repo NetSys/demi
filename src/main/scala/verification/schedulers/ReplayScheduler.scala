@@ -316,7 +316,7 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   }
 
   override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                                      msg: Any) {
+                                      msg: Any): Boolean = {
     msg match {
       case Timer(name, nestedMsg, repeat, generation) =>
         val snd = if (sender == null) "deadLetters" else sender.path.name
@@ -326,5 +326,6 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
         pendingTimers(fingerprint) = msg.asInstanceOf[Timer]
       case _ => None
     }
+    return false
   }
 }
