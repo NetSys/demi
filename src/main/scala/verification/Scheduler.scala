@@ -63,6 +63,10 @@ trait Scheduler {
   // Tell the scheduler that it should eventually schedule the given message.
   // Used to feed messages from the external world into actor systems.
   
+  // Called whenever actorSystem.scheduler.schedule() is invoked by the
+  // application.
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any)
+  // Interface for (safely) sending external messages
   def enqueue_message(receiver: String, msg: Any)
   // Shut down the actor system.
   def shutdown()

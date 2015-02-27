@@ -9,7 +9,6 @@ import scala.collection.mutable.HashMap
  */
 trait ViolationFingerprint {
   def matches(other: ViolationFingerprint) : Boolean
-  def serialize()
 }
 
 trait TestOracle {

@@ -10,23 +10,12 @@ import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
-import com.lambdaworks.jacks.JacksMapper
-
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 
-object EventTrace {
-  def deserialize() : EventTrace = {
-    // val tuple = data.unpickle[Tuple2[Queue[Event], Seq[ExternalEvent]]]
-    // return new EventTrace(tuple._1, tuple._2)
-    return null
-  }
-}
-
 case class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new Queue[Event], null)
-  def this(events: Queue[Event]) = this(events, null)
   def this(original_externals: Seq[ExternalEvent]) = this(new Queue[Event], original_externals)
 
   override def hashCode = this.events.hashCode
@@ -49,12 +38,8 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
                           new Queue[ExternalEvent] ++ original_externals)
   }
 
-  def serialize() : String = {
-    val t = JacksMapper.writeValueAsString[Tuple2[Seq[Event],Seq[ExternalEvent]]]((events, original_externals))
-    val r = JacksMapper.readValue[Tuple2[Seq[Event],Seq[ExternalEvent]]](t)
-    return t
-  }
-
+  // The difference between EventTrace.events and EventTrace.getEvents is that
+  // we hide UniqueMsgSend/Events here
   def getEvents() : Seq[Event] = {
     return events.map(e =>
       e match {

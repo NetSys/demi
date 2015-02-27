@@ -211,4 +211,6 @@ class BasicScheduler extends Scheduler {
     instrumenter.restart_system
   }
 
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) {}
+
 }

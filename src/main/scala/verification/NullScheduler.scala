@@ -52,5 +52,6 @@ class NullScheduler extends Scheduler {
     throw new Exception("NYI")
   }
   def shutdown() {}
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) {}
 
 }

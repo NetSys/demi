@@ -738,4 +738,6 @@ class DPOR extends Scheduler with LazyLogging {
     instrumenter().restart_system
     // TODO(cs): not thread-safe? see PeekScheduler's shutdown()
   }
+
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) {}
 }

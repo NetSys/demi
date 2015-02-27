@@ -78,6 +78,8 @@ abstract class AbstractScheduler extends Scheduler {
     instrumenter.restart_system
   }
 
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) {}
+
   // Get next event
   def next_event() : Event = {
     throw new Exception("NYI")
