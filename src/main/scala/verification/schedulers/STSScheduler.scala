@@ -66,14 +66,19 @@ object STSScheduler {
 class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
                    messageFingerprinter: MessageFingerprinter,
-                   populateActors: Boolean) extends AbstractScheduler
+                   populateActors: Boolean,
+                   enableFailureDetector:Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
 
-  def this(original_trace: EventTrace) = this(original_trace, false,
-                                              new BasicFingerprinter, true)
+  def this(original_trace: EventTrace) =
+      this(original_trace, false, new BasicFingerprinter, true, true)
 
   enableCheckpointing()
+
+  if (!enableFailureDetector) {
+    disableFailureDetector()
+  }
 
   var test_invariant : Invariant = null
 
@@ -113,7 +118,9 @@ class STSScheduler(var original_trace: EventTrace,
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
 
-    fd.startFD(instrumenter.actorSystem)
+    if (enableFailureDetector) {
+      fd.startFD(instrumenter.actorSystem)
+    }
 
     if (populateActors) {
       populateActorSystem(original_trace.getEvents flatMap {
@@ -174,7 +181,8 @@ class STSScheduler(var original_trace: EventTrace,
       return
     }
 
-    val peeker = new IntervalPeekScheduler(expected, m)
+    val peeker = new IntervalPeekScheduler(
+      expected, m, 10, messageFingerprinter, enableFailureDetector)
     peeker.eventMapper = eventMapper
     Instrumenter().scheduler = peeker
     val checkpoint = Instrumenter().checkpoint()
@@ -342,11 +350,13 @@ class STSScheduler(var original_trace: EventTrace,
     }
 
     // Flush detector messages before proceeding with other messages.
-    send_external_messages()
-    if (!pendingFDMessages.isEmpty) {
-      val uniq = pendingFDMessages.dequeue()
-      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      return Some(uniq.element)
+    if (enableFailureDetector) {
+      send_external_messages()
+       if (!pendingFDMessages.isEmpty) {
+         val uniq = pendingFDMessages.dequeue()
+         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+         return Some(uniq.element)
+       }
     }
 
     // OK, now we first need to get to a good place: it should be the case after

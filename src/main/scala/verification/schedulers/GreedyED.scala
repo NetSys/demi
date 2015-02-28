@@ -39,15 +39,20 @@ import scala.util.control.Breaks._
  */
 class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
                messageFingerprinter: MessageFingerprinter,
-               populateActors: Boolean) extends AbstractScheduler
+               populateActors: Boolean,
+               enableFailureDetector: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
   assume(original_trace.original_externals != null)
 
   def this(original_trace: EventTrace) =
-      this(original_trace, -1, new BasicFingerprinter, true)
+      this(original_trace, -1, new BasicFingerprinter, true, true)
   def this(original_trace: EventTrace, execution_bound: Int) =
-      this(original_trace, execution_bound, new BasicFingerprinter, true)
+      this(original_trace, execution_bound, new BasicFingerprinter, true, true)
+
+  if (!enableFailureDetector) {
+    disableFailureDetector()
+  }
 
   enableCheckpointing()
 
@@ -138,7 +143,9 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
 
-    fd.startFD(instrumenter.actorSystem)
+    if (enableFailureDetector) {
+      fd.startFD(instrumenter.actorSystem)
+    }
 
     if (populateActors) {
       populateActorSystem(original_trace.getEvents flatMap {
@@ -198,7 +205,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       // Restore the checkpoint.
       // First kill the current actor system.
       shutdown()
-      val replayer = new ReplayScheduler
+      val replayer = new ReplayScheduler(messageFingerprinter, enableFailureDetector, false)
       Instrumenter().scheduler = replayer
       replayer.replay(prefix)
       // Now swap out the scheduler mid-execution
@@ -338,7 +345,6 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
 
-
     handle_event_produced(snd, rcv, envelope) match {
       case ExternalMessage => {
         // We assume that the failure detector and the outside world always
@@ -388,11 +394,13 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     }
 
     // Flush detector messages before proceeding with other messages.
-    send_external_messages()
-    if (!pendingFDMessages.isEmpty) {
-      val uniq = pendingFDMessages.dequeue()
-      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      return Some(uniq.element)
+    if (enableFailureDetector) {
+      send_external_messages()
+      if (!pendingFDMessages.isEmpty) {
+        val uniq = pendingFDMessages.dequeue()
+        event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+        return Some(uniq.element)
+      }
     }
 
     // OK, now we first need to get to a good place: it should be the case after

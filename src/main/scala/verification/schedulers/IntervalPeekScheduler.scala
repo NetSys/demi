@@ -68,9 +68,14 @@ object IntervalPeekScheduler {
  */
 class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
                             max_peek_messages: Int,
-                            messageFingerprinter: MessageFingerprinter) extends ReplayScheduler {
+                            messageFingerprinter: MessageFingerprinter,
+                            enableFailureDetector: Boolean) extends ReplayScheduler {
   def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) =
-      this(expected, lookingFor, 10, new BasicFingerprinter)
+      this(expected, lookingFor, 10, new BasicFingerprinter, true)
+
+  if (!enableFailureDetector) {
+    disableFailureDetector
+  }
 
   // Whether we are currently restoring the checkpoint (by replaying a prefix
   // of events), or have moved on to peeking.
