@@ -66,6 +66,10 @@ class Instrumenter {
   var registeredCancellableTasks = new HashSet[Cancellable]
   // Mark which of the timers are scheduleOnce vs schedule [ongoing]
   var ongoingCancellableTasks = new HashSet[Cancellable]
+  // Track which cancellables correspond to which messages
+  var cancellableToTimer = new HashMap[Cancellable, Tuple2[String, Any]]
+  // And vice versa
+  var timerToCancellable = new HashMap[Tuple2[String,Any], Cancellable]
   // Allow a calling thread to block until all registered Timers have gone off.
   // We initialize the semaphore to 0 rather than 1,
   // so that the main thread blocks upon invoking acquire() until another
@@ -186,6 +190,10 @@ class Instrumenter {
         task.cancel()
       }
       registeredCancellableTasks.clear
+      ongoingCancellableTasks.clear
+      cancellableToTimer.clear
+      timerToCancellable.clear
+
       system.shutdown()
 
       println("Shut down the actor system. " + argQueue.size)
@@ -322,7 +330,7 @@ class Instrumenter {
   }
 
   def await_timers() {
-    registeredCancellableTasks = registeredCancellableTasks.filterNot(c => c.isCancelled)
+    updateCancellables()
     await_timers(registeredCancellableTasks.size)
   }
 
@@ -335,10 +343,41 @@ class Instrumenter {
 
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
-  def registerCancellable(c: Cancellable, ongoingTimer: Boolean) {
+  def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
+                          rcv: ActorRef, msg: Any) {
+    val receiver = rcv.path.name
     registeredCancellableTasks += c
     if (ongoingTimer) {
       ongoingCancellableTasks += c
+    }
+    cancellableToTimer(c) = ((receiver, msg))
+    // TODO(cs): for now, assume that msg's are unique. Don't assume that.
+    if (timerToCancellable contains (receiver, msg)) {
+      throw new RuntimeException("Non-unique timer: "+ receiver + " " + msg)
+    }
+    timerToCancellable((receiver, msg)) = c
+  }
+
+  def updateCancellables() {
+    for (cancelled <- registeredCancellableTasks.filter(c => c.isCancelled)) {
+      removeCancellable(cancelled)
+    }
+  }
+
+  def removeCancellable(c: Cancellable) {
+    registeredCancellableTasks -= c
+    val (receiver, msg) = cancellableToTimer(c)
+    timerToCancellable -= ((receiver, msg))
+    cancellableToTimer -= c
+  }
+
+  // If the scheduler is replaying recorded event, it should invoke this
+  // whenever it wants to (re)trigger a recorded Timer events.
+  def manuallyHandleTick(receiver: String, msg: Any) {
+    if (timerToCancellable contains ((receiver, msg))) {
+      handleTick(actorMappings(receiver), msg, timerToCancellable((receiver, msg)))
+    } else {
+      throw new IllegalArgumentException("no such timer:" + receiver + " " + msg)
     }
   }
 
@@ -348,7 +387,7 @@ class Instrumenter {
     println("handleTick " + receiver)
     scheduler.enqueue_message(receiver.path.name, msg)
     if (!(ongoingCancellableTasks contains c)) {
-      registeredCancellableTasks -= c
+      removeCancellable(c)
     }
     val pending = pendingTimers.decrementAndGet()
     if (pending == 0) {
@@ -379,6 +418,9 @@ class Instrumenter {
       task.cancel()
     }
     registeredCancellableTasks.clear
+    ongoingCancellableTasks.clear
+    cancellableToTimer.clear
+    timerToCancellable.clear
 
     // TODO(cs): the state of the application is going to be reset on
     // reinitialize_system, due to shutdownCallback. This is problematic!

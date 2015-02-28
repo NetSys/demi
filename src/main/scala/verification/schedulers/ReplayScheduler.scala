@@ -47,17 +47,6 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   // is not perfect.
   private[this] val allSends = new HashMap[(String, String, MessageFingerprint), Int]
 
-  // When FSM.Timer's are scheduled, store them here.
-  var pendingTimers = new HashMap[TimerFingerprint, Timer]
-
-  def populateActorSystem(actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
-    for ((props, name) <- actorNamePropPairs) {
-      // Just start and isolate all actors we might eventually care about
-      instrumenter.actorSystem.actorOf(props, name)
-      event_orchestrator.isolate_node(name)
-    }
-  }
-
   // Given an event trace, try to replay it exactly. Return the events
   // observed in *this* execution, which should in theory be the same as the
   // original.
@@ -128,12 +117,16 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
           case MsgSend (sender, receiver, message) =>
             // sender == "deadLetters" means the message is external.
             if (sender == "deadLetters") {
-              enqueue_message(receiver, message)
+              if (Instrumenter().timerToCancellable contains ((receiver, message))) {
+                Instrumenter().manuallyHandleTick(receiver, message)
+              } else {
+                enqueue_message(receiver, message)
+              }
             }
           case TimerSend(fingerprint) =>
             if (pendingTimers contains fingerprint) {
               val timer = pendingTimers(fingerprint)
-              enqueue_message(fingerprint.receiver, timer)
+              Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
             } else {
               throw new RuntimeException("Expected TimerSend("+fingerprint+")")
             }
@@ -317,15 +310,7 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
 
   override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                                       msg: Any): Boolean = {
-    msg match {
-      case Timer(name, nestedMsg, repeat, generation) =>
-        val snd = if (sender == null) "deadLetters" else sender.path.name
-        val rcv = if (receiver == null) "deadLetters" else receiver.path.name
-        val fingerprint = TimerFingerprint(name, snd, rcv,
-          messageFingerprinter.fingerprint(nestedMsg), repeat, generation)
-        pendingTimers(fingerprint) = msg.asInstanceOf[Timer]
-      case _ => None
-    }
+    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
     return false
   }
 }

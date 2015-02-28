@@ -19,8 +19,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
-// TODO(cs): implement fingerprints for MsgEvent.message (domain-specific) types.
-
 // TODO(cs): we invoke advanceReplay one to many times when peek is enabled. I
 // believe two threads are waiting on schedSemaphore, and both call into
 // advanceReplay. For now it looks like the redundant calls into advanceReplay are a no-op,
@@ -59,16 +57,21 @@ object STSScheduler {
  * ExternalEvents. Attempts to find a schedule containing the ExternalEvents
  * that triggers a given invariant.
  *
+ * populateActors: whether to populateActors within test(). If false, you
+ * the caller needs to do it before invoking test().
+ *
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
 class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
-                   messageFingerprinter: MessageFingerprinter) extends AbstractScheduler
+                   messageFingerprinter: MessageFingerprinter,
+                   populateActors: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
 
-  def this(original_trace: EventTrace) = this(original_trace, false, new BasicFingerprinter)
+  def this(original_trace: EventTrace) = this(original_trace, false,
+                                              new BasicFingerprinter, true)
 
   enableCheckpointing()
 
@@ -83,6 +86,14 @@ class STSScheduler(var original_trace: EventTrace,
   val pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
 
+  // Track which timers we have sent (via TimerSend) so that we know whether
+  // we should act on the corresponding TimerDelivery.
+  // TODO(cs): this complexity may not be necessary, e.g. it's possible that
+  // we're guarenteed that TimerSent's are always valid such that
+  // TimerDelivery's are also valid. I just haven't thought about it deeply
+  // enough, so I'm being conservative.
+  val timersSentButNotYetDelivered = new MultiSet[TimerFingerprint]
+
   // Current set of failure detector messages destined for actors, to be delivered
   // in the order they arrive. Always prioritized over internal messages.
   var pendingFDMessages = new Queue[Uniq[(ActorCell, Envelope)]]
@@ -92,7 +103,8 @@ class STSScheduler(var original_trace: EventTrace,
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
-  def test (subseq: Seq[ExternalEvent], violationFingerprint: ViolationFingerprint) : Boolean = {
+  def test (subseq: Seq[ExternalEvent],
+            violationFingerprint: ViolationFingerprint) : Boolean = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -101,23 +113,19 @@ class STSScheduler(var original_trace: EventTrace,
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
 
+    fd.startFD(instrumenter.actorSystem)
+
+    if (populateActors) {
+      populateActorSystem(original_trace.getEvents flatMap {
+        case SpawnEvent(_,props,name,_) => Some((props, name))
+        case _ => None
+      })
+    }
+
     // We use the original trace as our reference point as we step through the
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
                                   subsequenceIntersection(subseq)
-    fd.startFD(instrumenter.actorSystem)
-    // We begin by starting all actors at the beginning of time, just mark them as
-    // isolated (i.e., unreachable)
-    for (t <- filtered.getEvents) {
-      t match {
-        case SpawnEvent (_, props, name, _) =>
-          // Just start and isolate all actors we might eventually care about
-          instrumenter.actorSystem.actorOf(props, name)
-          event_orchestrator.isolate_node(name)
-        case _ =>
-          None
-      }
-    }
 
     val updatedEvents = updateEvents(filtered.getEvents)
     event_orchestrator.set_trace(updatedEvents)
@@ -210,7 +218,22 @@ class STSScheduler(var original_trace: EventTrace,
             // detector -> actors from event_orchestrator.trace, to ensure
             // that we don't send redundant messages.
             if (sender == "deadLetters") {
-              enqueue_message(receiver, message)
+              if (Instrumenter().timerToCancellable contains ((receiver, message))) {
+                Instrumenter().manuallyHandleTick(receiver, message)
+              } else {
+                enqueue_message(receiver, message)
+              }
+            }
+          case TimerSend(fingerprint) =>
+            if (pendingTimers contains fingerprint) {
+              val timer = pendingTimers(fingerprint)
+              Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
+              timersSentButNotYetDelivered += fingerprint
+            }
+          case TimerDelivery(fingerprint) =>
+            if (timersSentButNotYetDelivered contains fingerprint) {
+              timersSentButNotYetDelivered -= fingerprint
+              break
             }
           // MsgEvent is the delivery
           case m: MsgEvent =>
@@ -355,6 +378,10 @@ class STSScheduler(var original_trace: EventTrace,
     val key = event_orchestrator.current_event match {
       case MsgEvent(snd, rcv, msg) =>
         (snd, rcv, messageFingerprinter.fingerprint(msg))
+      case TimerDelivery(timer_fingerprint) =>
+        val timer = pendingTimers(timer_fingerprint)
+        (timer_fingerprint.sender, timer_fingerprint.receiver,
+         messageFingerprinter.fingerprint(timer))
       case _ =>
         // We've broken out of advanceReplay() because of a
         // BeginWaitQuiescence event, but there were no pendingFDMessages to
@@ -447,5 +474,14 @@ class STSScheduler(var original_trace: EventTrace,
 
   def setInvariant(invariant: Invariant) {
     test_invariant = invariant
+  }
+
+  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                                      msg: Any): Boolean = {
+    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
+    // So long as we are following a fixed prefix, we just replay the recorded
+    // timer events, and ignore new timer events. IntervalPeekScheduler
+    // explores unexpected timer events on our behalf.
+    return false
   }
 }

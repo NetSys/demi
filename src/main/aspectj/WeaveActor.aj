@@ -27,12 +27,6 @@ import scala.concurrent.ExecutionContext;
 import java.lang.Runnable;
 
 privileged public aspect WeaveActor {
-  public class NOPCancellable implements Cancellable {
-    public boolean cancel() {return true;}
-    public boolean isCancelled() {return false;}
-  }
-
-
   Instrumenter inst = Instrumenter.apply();
     
   pointcut enqueueOperation(MessageQueue me, ActorRef receiver, Envelope handle): 
@@ -125,11 +119,13 @@ privileged public aspect WeaveActor {
       Object m;
       Instrumenter i;
       Cancellable c;
+      boolean shouldRun;
 
-      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst) {
+      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst, boolean _shouldRun) {
         rcv = receiver;
         m = msg;
         i = inst;
+        shouldRun = _shouldRun;
       }
 
       public void setCancellable(Cancellable cancellable) {
@@ -140,19 +136,17 @@ privileged public aspect WeaveActor {
         // Use essentially the same scheduleOnce implementation, but don't use !
         // See:
         //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
-        i.handleTick(rcv, m, c);
+        if (shouldRun) {
+          i.handleTick(rcv, m, c);
+        }
       }
     }
-    boolean shouldSchedule = inst.notify_timer_scheduled(sender, receiver, msg);
-    if (shouldSchedule) {
-      MyRunnable runnable = new MyRunnable(receiver, msg, inst);
-      Cancellable c = me.scheduleOnce(delay, runnable, exc);
-      runnable.setCancellable(c);
-      inst.registerCancellable(c, false);
-	    return c;
-    } else {
-      return new NOPCancellable();
-    }
+    boolean shouldRun = inst.notify_timer_scheduled(sender, receiver, msg);
+    MyRunnable runnable = new MyRunnable(receiver, msg, inst, shouldRun);
+    Cancellable c = me.scheduleOnce(delay, runnable, exc);
+    runnable.setCancellable(c);
+    inst.registerCancellable(c, false, receiver, msg);
+    return c;
   }
 
   // Override akka.actor.Scheduler.scheduler
@@ -169,11 +163,13 @@ privileged public aspect WeaveActor {
       Object m;
       Instrumenter i;
       Cancellable c;
+      boolean shouldRun;
 
-      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst) {
+      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst, boolean _shouldRun) {
         rcv = receiver;
         m = msg;
         i = inst;
+        shouldRun = _shouldRun;
       }
 
       public void setCancellable(Cancellable cancellable) {
@@ -184,18 +180,16 @@ privileged public aspect WeaveActor {
         // Use essentially the same scheduleOnce implementation, but don't use !
         // See:
         //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
-        i.handleTick(rcv, m, c);
+        if (shouldRun) {
+          i.handleTick(rcv, m, c);
+        }
       }
     }
-    boolean shouldSchedule = inst.notify_timer_scheduled(sender, receiver, msg);
-    if (shouldSchedule) {
-      MyRunnable runnable = new MyRunnable(receiver, msg, inst);
-      Cancellable c = me.schedule(delay, interval, runnable, exc);
-      runnable.setCancellable(c);
-      inst.registerCancellable(c, true);
-	    return c;
-    } else {
-      return new NOPCancellable();
-    }
+    boolean shouldRun = inst.notify_timer_scheduled(sender, receiver, msg);
+    MyRunnable runnable = new MyRunnable(receiver, msg, inst, shouldRun);
+    Cancellable c = me.schedule(delay, interval, runnable, exc);
+    runnable.setCancellable(c);
+    inst.registerCancellable(c, true, receiver, msg);
+    return c;
   }
 }

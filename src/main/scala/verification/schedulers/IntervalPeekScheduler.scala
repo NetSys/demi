@@ -13,6 +13,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Semaphore
 
+// TODO(cs): try placing newly scheduled timer events at the front of
+// pendingUnepxectedEvents, rather than at the back like other messages.
+
 object IntervalPeekScheduler {
   def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent]) : Seq[MsgEvent] = {
     // TODO(cs): consider ordering of expected, rather than treating it as a Set?
@@ -168,9 +171,23 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
       return None
     }
 
+    // Send any pending timers.
+    send_external_messages()
+
     if (pendingUnexpectedEvents.isEmpty) {
-      println("No more events to schedule..")
-      return None
+      // Before giving up, try to see if there are any pending timers. If so,
+      // pick one.
+      // TODO(cs): somewhat arbitrary to only trigger timers after
+      // pendingUnexpectedEvents.isEmpty. Why not before?
+      Instrumenter().updateCancellables()
+      if (!Instrumenter().cancellableToTimer.isEmpty) {
+        // Taking the first value gives us some degree of randomness
+        val (receiver, msg) = Instrumenter().cancellableToTimer.values.head
+        Instrumenter().manuallyHandleTick(receiver, msg)
+      } else {
+        println("No more events to schedule..")
+        return None
+      }
     }
 
     val next = pendingUnexpectedEvents.dequeue()
@@ -193,6 +210,12 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     }
     // Wake up the main thread.
     donePeeking.release
+  }
+
+  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                                      msg: Any): Boolean = {
+    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
+    return doneReplayingPrefix.get()
   }
 
   override def shutdown () = {
