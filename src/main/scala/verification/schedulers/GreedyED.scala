@@ -181,13 +181,16 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     // to include all expected events, not just the ones in this interval.
     expected ++= STSScheduler.getNextInterval(
       event_orchestrator.getRemainingTrace()).flatMap {
-        case m: MsgEvent => Some(m)
+        // Make sure to fingerprint the expected message
+        case m: MsgEvent =>
+          Some(MsgEvent(m.sender, m.receiver,
+            messageFingerprinter.fingerprint(m.msg)))
         case _ => None
     }
 
-    // Optimization: if no unexpected events to schedule, give up early.
     return IntervalPeekScheduler.unexpected(
-        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
+        messageFingerprinter)
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused
@@ -217,9 +220,11 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       pendingEvents = replayer.pendingEvents
       actorNames = replayer.actorNames
       currentTime = replayer.currentTime
-      var fd = replayer.fd
       // Give fd an actual (not no-op) enqueue_message
-      fd.enqueue_message = enqueue_message
+      if (enableFailureDetector) {
+        var fd = replayer.fd
+        fd.enqueue_message = enqueue_message
+      }
     } else {
       // Else we don't actually need to restore the checkpoint, since we're already
       // here!
@@ -301,6 +306,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
             //  - ignore m
             //  - try some number of unexpected events
             val unexpected = getUnexpected()
+            // TODO(cs): treat timers as unexpected messages
             if (!unexpected.isEmpty) {
               println("pushing priorityQueue and pausing..")
               val remaining_trace = event_orchestrator.getRemainingTrace().toList

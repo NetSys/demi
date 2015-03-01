@@ -71,8 +71,6 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
       })
     }
 
-    // We begin by starting all actors at the beginning of time, just mark them as
-    // isolated (i.e., unreachable)
     for (t <- _trace.getEvents) {
       t match {
         case MsgSend (snd, rcv, msg) =>

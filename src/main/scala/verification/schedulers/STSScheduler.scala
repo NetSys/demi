@@ -161,28 +161,35 @@ class STSScheduler(var original_trace: EventTrace,
   // Should only ever be invoked by notify_quiescence, after we have paused
   // the message dispatch loop.
   def peek() : Unit = {
-    val m : MsgEvent = event_orchestrator.current_event.asInstanceOf[MsgEvent]
+    val msgEvent : MsgEvent = event_orchestrator.current_event.asInstanceOf[MsgEvent]
+    val fingerprintedMsgEvent = MsgEvent(msgEvent.sender, msgEvent.receiver,
+        messageFingerprinter.fingerprint(msgEvent.msg))
 
     val expected = new MultiSet[MsgEvent]
     expected ++= STSScheduler.getNextInterval(
       event_orchestrator.trace.slice(event_orchestrator.traceIdx,
                                      event_orchestrator.trace.length)).flatMap {
-      case m: MsgEvent => Some(m)
+      case m: MsgEvent =>
+       // Make sure to fingerprint the expected message
+       Some(MsgEvent(m.sender, m.receiver,
+         messageFingerprinter.fingerprint(m.msg)))
       case _ => None
     }
 
     // Optimization: if no unexpected events to schedule, give up early.
     val unexpected = IntervalPeekScheduler.unexpected(
-        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
+        messageFingerprinter)
 
     if (unexpected.isEmpty) {
-      println("No unexpected messages. Ignoring message" + m)
+      // TODO(cs): consider pending timers as  unexpected messages?
+      println("No unexpected messages. Ignoring message" + msgEvent)
       event_orchestrator.trace_advanced
       return
     }
 
     val peeker = new IntervalPeekScheduler(
-      expected, m, 10, messageFingerprinter, enableFailureDetector)
+      expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
     peeker.eventMapper = eventMapper
     Instrumenter().scheduler = peeker
     val checkpoint = Instrumenter().checkpoint()
@@ -199,7 +206,7 @@ class STSScheduler(var original_trace: EventTrace,
         println("Found prefix!")
         event_orchestrator.prepend(lst)
       case None =>
-        println("Ignoring message" + m)
+        println("Ignoring message" + msgEvent)
         event_orchestrator.trace_advanced
     }
   }

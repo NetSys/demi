@@ -17,32 +17,38 @@ import java.util.concurrent.Semaphore
 // pendingUnepxectedEvents, rather than at the back like other messages.
 
 object IntervalPeekScheduler {
-  def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent]) : Seq[MsgEvent] = {
+  // N.B. enabled should contain non-fingerprinted messages, whereas _expected
+  // should contain fingerprinted messages
+  def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent],
+                 messageFingerprinter: MessageFingerprinter) : Seq[MsgEvent] = {
     // TODO(cs): consider ordering of expected, rather than treating it as a Set?
     val expected = new MultiSet[MsgEvent] ++ _expected
-    return enabled.filter(e =>
-      expected.contains(e) match {
-        case true =>
-          expected.remove(e)
-          false
-        case false =>
-          // Unexpected
-          true
+    def fingerprintAndMatch(e: MsgEvent): Boolean = {
+      val fingerprinted = MsgEvent(e.sender, e.receiver,
+        messageFingerprinter.fingerprint(e.msg))
+      expected.contains(fingerprinted) match {
+       case true =>
+         expected.remove(fingerprinted)
+         return false
+       case false =>
+         // Unexpected
+         return true
       }
-    )
+    }
+    return enabled.filter(fingerprintAndMatch)
   }
 
-  // Flatten all enabled events into a sorted list.
+  // Flatten all enabled events into a sorted list of (raw, non-fingerprinted) MsgEvents
   def flattenedEnabled(pendingEvents: HashMap[
       (String, String, MessageFingerprint), Queue[Uniq[(ActorCell, Envelope)]]]) : Seq[MsgEvent] = {
     // Last element of queue's tuple is the unique id, which is assumed to be
     // monotonically increasing by time of arrival.
-    val unsorted = new Queue[(String, String, MessageFingerprint, Int)]
+    val unsorted = new Queue[(String, String, Any, Int)]
     pendingEvents.foreach {
       case (key, queue) =>
         for (uniq <- queue) {
           if (key._2 != FailureDetector.fdName) {
-            unsorted += ((key._1, key._2, key._3, uniq.id))
+            unsorted += ((key._1, key._2, uniq.element._2.message, uniq.id))
           }
         }
     }
@@ -66,6 +72,8 @@ object IntervalPeekScheduler {
  *   we return the unexpected messages that lead up
  *   to its being enabled. Otherwise, return null.
  */
+// N.B. both expected and lookingFor should have their msg fields as a MessageFingerprint instead
+// of the raw message.
 class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
                             max_peek_messages: Int,
                             messageFingerprinter: MessageFingerprinter,
@@ -116,7 +124,8 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     // Feed the unexpected events present at the end of replay into
     // pendingUnexpectedEvents.
     val unexpected = IntervalPeekScheduler.unexpected(
-        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
+        messageFingerprinter)
     for (msgEvent <- unexpected) {
       val key = (msgEvent.sender, msgEvent.receiver,
                  messageFingerprinter.fingerprint(msgEvent.msg))
@@ -156,11 +165,11 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     val rcv = cell.self.path.name
     val msg = envelope.message
     val event = MsgEvent(snd, rcv, msg)
-    if (expected.contains(event)) {
+    val fingerprintedEvent = MsgEvent(snd, rcv,
+      messageFingerprinter.fingerprint(msg))
+    if (expected.contains(fingerprintedEvent)) {
       expected -= event
-    } else if (event == lookingFor) {
-      // TODO(cs): test whether event will ever == lookingFor. Not sure about
-      // how equality works for MsgEvent.msg.
+    } else if (fingerprintedEvent == lookingFor) {
       foundLookingFor.set(true)
     } else if (!event_orchestrator.crosses_partition(snd, rcv)) {
       pendingUnexpectedEvents += ((cell, envelope))
