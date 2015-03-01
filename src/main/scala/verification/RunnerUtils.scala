@@ -33,6 +33,7 @@ case class SerializedSpawnEvent(parent: String, props: Props, name: String, acto
 object ExperimentSerializer {
   val actors = "/actors.bin"
   val event_trace = "/event_trace.bin"
+  val original_externals = "/original_externals.bin"
   val violation = "/violation.bin"
 }
 
@@ -105,9 +106,15 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.event_trace,
                                   sanitizedBuf)
 
+    // Serialize the violation
     val violationBuf = JavaSerialization.serialize(violation)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.violation,
                                   violationBuf)
+
+    // Serialize the external events.
+    val externalBuf = message_serializer.serialize(trace.original_externals)
+    JavaSerialization.writeToFile(output_dir + ExperimentSerializer.original_externals,
+                                  externalBuf)
 
     return output_dir
   }
@@ -144,8 +151,14 @@ class ExperimentDeserializer(results_dir: String) {
       }
     )
 
-    // TODO(cs): need original external events?
-    return new EventTrace(new Queue[Event] ++ events, null)
+    val originalExternalBuf = JavaSerialization.readFromFile(results_dir +
+      ExperimentSerializer.original_externals)
+    // N.B. sbt does some strange things with the class path, and sometimes
+    // fails on this line. One way of fixing this: rather than running
+    // `sbt run`, invoke `sbt assembly; java -cp /path/to/assembledjar Main`
+    val originalExternals = JavaSerialization.deserialize[Seq[ExternalEvent]](originalExternalBuf)
+
+    return new EventTrace(new Queue[Event] ++ events, originalExternals)
   }
 }
 
