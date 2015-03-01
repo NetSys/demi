@@ -19,8 +19,9 @@ trait HistoricalScheduler {
   // When FSM.Timer's are scheduled, store them here.
   // This is really only needed to deal with the non-serializability of Timer
   // events.
-  var pendingTimers = new HashMap[TimerFingerprint, Timer]
+  var scheduledFSMTimers = new HashMap[TimerFingerprint, Timer]
 
+  // Invoked by aspectj
   def handle_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                              msg: Any, messageFingerprinter: MessageFingerprinter) {
     val snd = if (sender == null) "deadLetters" else sender.path.name
@@ -29,13 +30,30 @@ trait HistoricalScheduler {
       case Timer(name, nestedMsg, repeat, generation) =>
         val fingerprint = TimerFingerprint(name, snd, rcv,
           messageFingerprinter.fingerprint(nestedMsg), repeat, generation)
-        pendingTimers(fingerprint) = msg.asInstanceOf[Timer]
+        scheduledFSMTimers(fingerprint) = msg.asInstanceOf[Timer]
       case _ =>
         // TODO(cs): not sure this is really necessary! We only need
-        // pendingTimers to deal with non-serializability of Timers. As long
+        // scheduledFSMTimers to deal with non-serializability of Timers. As long
         // as this msg is serializable, there shouldn't be a problem?
         println("Warning: Non-akka.FSM.Timers not yet supported:" + msg)
     }
+  }
+
+  // Find a timer (any timer, not just FSM.Timer) that's waiting to be triggered
+  // TODO(cs): enforce that timer t is sent less than k
+  // times (where k is the number of times it was originally sent).
+  def getRandomPendingTimer(): Option[(String, Any)] = {
+    Instrumenter().updateCancellables()
+    if (!Instrumenter().cancellableToTimer.isEmpty) {
+      // Taking the first value gives us some degree of randomness
+      return Some(Instrumenter().cancellableToTimer.values.head)
+    }
+    return None
+  }
+
+  def getAllPendingTimers(): Seq[(String, Any)] = {
+    Instrumenter().updateCancellables()
+    return new Queue[(String, Any)] ++ Instrumenter().cancellableToTimer.values
   }
 
   def setEventMapper(mapper: EventMapper) {

@@ -179,10 +179,9 @@ class STSScheduler(var original_trace: EventTrace,
     // Optimization: if no unexpected events to schedule, give up early.
     val unexpected = IntervalPeekScheduler.unexpected(
         IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
-        messageFingerprinter)
+        getAllPendingTimers(), messageFingerprinter)
 
     if (unexpected.isEmpty) {
-      // TODO(cs): consider pending timers as  unexpected messages?
       println("No unexpected messages. Ignoring message" + msgEvent)
       event_orchestrator.trace_advanced
       return
@@ -243,8 +242,8 @@ class STSScheduler(var original_trace: EventTrace,
               }
             }
           case TimerSend(fingerprint) =>
-            if (pendingTimers contains fingerprint) {
-              val timer = pendingTimers(fingerprint)
+            if (scheduledFSMTimers contains fingerprint) {
+              val timer = scheduledFSMTimers(fingerprint)
               Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
               timersSentButNotYetDelivered += fingerprint
             }
@@ -399,7 +398,7 @@ class STSScheduler(var original_trace: EventTrace,
       case MsgEvent(snd, rcv, msg) =>
         (snd, rcv, messageFingerprinter.fingerprint(msg))
       case TimerDelivery(timer_fingerprint) =>
-        val timer = pendingTimers(timer_fingerprint)
+        val timer = scheduledFSMTimers(timer_fingerprint)
         (timer_fingerprint.sender, timer_fingerprint.receiver,
          messageFingerprinter.fingerprint(timer))
       case _ =>

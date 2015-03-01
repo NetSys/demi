@@ -190,7 +190,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
 
     return IntervalPeekScheduler.unexpected(
         IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
-        messageFingerprinter)
+        List.empty, messageFingerprinter)
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused
@@ -219,7 +219,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       event_orchestrator = replayer.event_orchestrator
       event_orchestrator.events.setOriginalExternalEvents(originalExternals)
       pendingEvents = replayer.pendingEvents
-      pendingTimers = replayer.pendingTimers
+      scheduledFSMTimers = replayer.scheduledFSMTimers
       enqueuedExternalMessages = replayer.enqueuedExternalMessages
       messagesToSend = replayer.messagesToSend
       actorNames = replayer.actorNames
@@ -274,8 +274,8 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
               }
             }
           case TimerSend(fingerprint) =>
-            if (pendingTimers contains fingerprint) {
-              val timer = pendingTimers(fingerprint)
+            if (scheduledFSMTimers contains fingerprint) {
+              val timer = scheduledFSMTimers(fingerprint)
               Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
               timersSentButNotYetDelivered += fingerprint
             }
@@ -443,7 +443,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       case MsgEvent(snd, rcv, msg) =>
         (snd, rcv, messageFingerprinter.fingerprint(msg))
       case TimerDelivery(timer_fingerprint) =>
-        val timer = pendingTimers(timer_fingerprint)
+        val timer = scheduledFSMTimers(timer_fingerprint)
         (timer_fingerprint.sender, timer_fingerprint.receiver,
          messageFingerprinter.fingerprint(timer))
       case _ =>

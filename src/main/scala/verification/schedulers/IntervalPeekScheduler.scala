@@ -20,7 +20,7 @@ object IntervalPeekScheduler {
   // N.B. enabled should contain non-fingerprinted messages, whereas _expected
   // should contain fingerprinted messages
   def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent],
-                 messageFingerprinter: MessageFingerprinter) : Seq[MsgEvent] = {
+                 pendingTimers: Seq[(String, Any)], messageFingerprinter: MessageFingerprinter) : Seq[MsgEvent] = {
     // TODO(cs): consider ordering of expected, rather than treating it as a Set?
     val expected = new MultiSet[MsgEvent] ++ _expected
     def fingerprintAndMatch(e: MsgEvent): Boolean = {
@@ -35,7 +35,8 @@ object IntervalPeekScheduler {
          return true
       }
     }
-    return enabled.filter(fingerprintAndMatch)
+    val timerEvents = pendingTimers.map(pair => MsgEvent("deadLetters", pair._1, pair._2))
+    return enabled.filter(fingerprintAndMatch) ++ timerEvents.filter(fingerprintAndMatch)
   }
 
   // Flatten all enabled events into a sorted list of (raw, non-fingerprinted) MsgEvents
@@ -125,7 +126,7 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     // pendingUnexpectedEvents.
     val unexpected = IntervalPeekScheduler.unexpected(
         IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
-        messageFingerprinter)
+        List.empty, messageFingerprinter)
     for (msgEvent <- unexpected) {
       val key = (msgEvent.sender, msgEvent.receiver,
                  messageFingerprinter.fingerprint(msgEvent.msg))
@@ -193,14 +194,12 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
       // pick one.
       // TODO(cs): somewhat arbitrary to only trigger timers after
       // pendingUnexpectedEvents.isEmpty. Why not before?
-      Instrumenter().updateCancellables()
-      if (!Instrumenter().cancellableToTimer.isEmpty) {
-        // Taking the first value gives us some degree of randomness
-        val (receiver, msg) = Instrumenter().cancellableToTimer.values.head
-        Instrumenter().manuallyHandleTick(receiver, msg)
-      } else {
-        println("No more events to schedule..")
-        return None
+      getRandomPendingTimer() match {
+        case Some((receiver, msg)) =>
+          Instrumenter().manuallyHandleTick(receiver, msg)
+        case None =>
+          println("No more events to schedule..")
+          return None
       }
     }
 

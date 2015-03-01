@@ -122,8 +122,8 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
               }
             }
           case TimerSend(fingerprint) =>
-            if (pendingTimers contains fingerprint) {
-              val timer = pendingTimers(fingerprint)
+            if (scheduledFSMTimers contains fingerprint) {
+              val timer = scheduledFSMTimers(fingerprint)
               Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
             } else {
               throw new RuntimeException("Expected TimerSend("+fingerprint+")")
@@ -222,7 +222,7 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
         case MsgEvent(snd, rcv, msg) =>
           (snd, rcv, messageFingerprinter.fingerprint(msg))
         case TimerDelivery(timer_fingerprint) =>
-          val timer = pendingTimers(timer_fingerprint)
+          val timer = scheduledFSMTimers(timer_fingerprint)
           (timer_fingerprint.sender, timer_fingerprint.receiver,
            messageFingerprinter.fingerprint(timer))
         case _ =>
