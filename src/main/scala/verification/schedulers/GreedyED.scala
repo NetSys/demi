@@ -209,6 +209,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       // First kill the current actor system.
       shutdown()
       val replayer = new ReplayScheduler(messageFingerprinter, enableFailureDetector, false)
+      replayer.eventMapper = eventMapper
       Instrumenter().scheduler = replayer
       replayer.replay(prefix)
       // Now swap out the scheduler mid-execution
@@ -218,6 +219,9 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       event_orchestrator = replayer.event_orchestrator
       event_orchestrator.events.setOriginalExternalEvents(originalExternals)
       pendingEvents = replayer.pendingEvents
+      pendingTimers = replayer.pendingTimers
+      enqueuedExternalMessages = replayer.enqueuedExternalMessages
+      messagesToSend = replayer.messagesToSend
       actorNames = replayer.actorNames
       currentTime = replayer.currentTime
       // Give fd an actual (not no-op) enqueue_message

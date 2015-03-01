@@ -98,9 +98,6 @@ class Instrumenter {
   def seededRandom() : Random = {
     return _randoms(actorSystem())
   }
-
-  // TODO(cs):
-  // def seededRandomForActorSystem
  
   
   def await_enqueue() {
