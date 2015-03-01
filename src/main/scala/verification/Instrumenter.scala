@@ -33,6 +33,9 @@ class InstrumenterCheckpoint(
   val dispatchers : HashMap[ActorRef, MessageDispatcher],
   val vectorClocks : HashMap[String, VectorClock],
   val sys: ActorSystem,
+  var cancellableToTimer : HashMap[Cancellable, Tuple2[String, Any]],
+  var ongoingCancellableTasks : HashSet[Cancellable],
+  var timerToCancellable : HashMap[Tuple2[String,Any], Cancellable],
   // TODO(cs): add the random associated with this actor system
   val applicationCheckpoint: Any
 ) {}
@@ -411,19 +414,16 @@ class Instrumenter {
    * method.
    */
   def checkpoint() : InstrumenterCheckpoint = {
-    // TODO(cs): for now we just cancel all timers in
-    // registeredCancellableTasks upon restart_system().
-    // Cancelling may affect the correctness of the application...
-    for (task <- registeredCancellableTasks.filterNot(c => c.isCancelled)) {
-      task.cancel()
-    }
-    registeredCancellableTasks.clear
-    ongoingCancellableTasks.clear
-    cancellableToTimer.clear
-    timerToCancellable.clear
+    // Right now we assume that STSSched is the only scheduler that invokes
+    // this. This assumption allows us to simply let all timers keep going rather than
+    // cancelling them and later rescheduling them, since
+    // STSSChed's timers are all no-ops anyways, i.e. notify_timer_scheduled
+    // always returns false.
 
-    // TODO(cs): the state of the application is going to be reset on
-    // reinitialize_system, due to shutdownCallback. This is problematic!
+    // TODO(cs): the shared state of the application is going to be reset on
+    // reinitialize_system, due to shutdownCallback. This is problematic,
+    // unless the application properly uses CheckpointSink's protocol for
+    // checking invariants
     val checkpoint = new InstrumenterCheckpoint(
       new HashMap[String, ActorRef] ++ actorMappings,
       new HashSet[(ActorSystem, Any)] ++ seenActors,
@@ -431,12 +431,20 @@ class Instrumenter {
       new HashMap[ActorRef, MessageDispatcher] ++ dispatchers,
       new HashMap[String, VectorClock] ++ Util.logger.actor2vc,
       _actorSystem,
+      new HashMap[Cancellable, Tuple2[String, Any]] ++ cancellableToTimer,
+      new HashSet[Cancellable] ++ ongoingCancellableTasks,
+      new HashMap[Tuple2[String,Any], Cancellable] ++ timerToCancellable,
       checkpointCallback()
     )
 
     Util.logger.reset
 
     // Reset all state so that a new actor system can be started.
+    registeredCancellableTasks.clear
+    ongoingCancellableTasks.clear
+    cancellableToTimer.clear
+    timerToCancellable.clear
+
     reinitialize_system(null, null)
 
     return checkpoint
@@ -457,6 +465,11 @@ class Instrumenter {
     dispatchers.clear
     dispatchers ++= checkpoint.dispatchers
     Util.logger.actor2vc = checkpoint.vectorClocks
+    cancellableToTimer = checkpoint.cancellableToTimer
+    ongoingCancellableTasks = checkpoint.ongoingCancellableTasks
+    timerToCancellable = checkpoint.timerToCancellable
+    registeredCancellableTasks.clear
+    registeredCancellableTasks ++= cancellableToTimer.keys
     _actorSystem = checkpoint.sys
     restoreCheckpointCallback(checkpoint.applicationCheckpoint)
   }

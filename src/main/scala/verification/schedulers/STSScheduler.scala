@@ -192,6 +192,9 @@ class STSScheduler(var original_trace: EventTrace,
       expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
     peeker.eventMapper = eventMapper
     Instrumenter().scheduler = peeker
+    // N.B. "checkpoint" here means checkpoint of the network's state, as
+    // opposed to a checkpoint of the applications state for checking
+    // invariants
     val checkpoint = Instrumenter().checkpoint()
     println("Peek()'ing")
     val prefix = peeker.peek(event_orchestrator.events)
