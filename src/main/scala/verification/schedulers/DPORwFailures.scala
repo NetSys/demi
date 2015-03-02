@@ -32,47 +32,6 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-       
-class ExploredTackerwFailures {
-  
-  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
-
-  
-  def setExplored(index: Int, pair: (Unique, Unique)) =
-  exploredStack.get(index) match {
-    case Some(set) => set += pair
-    case None =>
-      val newElem = new HashSet[(Unique, Unique)] + pair
-      exploredStack(index) = newElem
-  }
-  
-  
-  def isExplored(pair: (Unique, Unique)): Boolean = {
-
-    for ((index, set) <- exploredStack) set.contains(pair) match {
-      case true => return true
-      case false =>
-    }
-
-    return false
-  }
-
-  
-  def trimExplored(index: Int) = {
-    exploredStack = exploredStack.filter { other => other._1 <= index }
-  }
-
-  
-  def printExplored() = {
-    for ((index, set) <- exploredStack.toList.sortBy(t => (t._1))) {
-      println(index + ": " + set.size)
-      //val content = set.map(x => (x._1.id, x._2.id))
-      //println(index + ": " + set.size + ": " +  content))
-    }
-  }
-
-}
-       
 
 // DPOR scheduler.
 class DPORwFailures extends Scheduler with LazyLogging {
@@ -94,7 +53,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
   var invariant : Queue[Unique] = Queue()
-  var exploredTacker = new ExploredTackerwFailures
+  var exploredTacker = new ExploredTacker
   
   val currentTrace = new Queue[Unique]
   val nextTrace = new Queue[Unique]
