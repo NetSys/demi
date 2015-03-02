@@ -101,8 +101,12 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
         case event => event
       }
     )
+    // Use a data structure that won't cause stackoverflow on
+    // serialization. See:
+    // http://stackoverflow.com/questions/25147565/serializing-java-object-without-stackoverflowerror
+    val asArray : Array[Event] = sanitized.toArray
 
-    val sanitizedBuf = JavaSerialization.serialize(sanitized)
+    val sanitizedBuf = JavaSerialization.serialize(asArray)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.event_trace,
                                   sanitizedBuf)
 
@@ -136,7 +140,7 @@ class ExperimentDeserializer(results_dir: String) {
   def get_events(message_deserializer: MessageDeserializer, actorSystem: ActorSystem) : EventTrace = {
     val buf = JavaSerialization.readFromFile(results_dir +
       ExperimentSerializer.event_trace)
-    val events = JavaSerialization.deserialize[Seq[Event]](buf).map(e =>
+    val events = JavaSerialization.deserialize[Array[Event]](buf).map(e =>
       e match {
         case SerializedSpawnEvent(parent, props, name, actor) =>
           // For now, nobody uses the ActorRef field of SpawnEvents, so just
