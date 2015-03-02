@@ -33,16 +33,26 @@ import scala.util.control.Breaks._
 /**
  * Scheduler that takes greedily tries to minimize edit distance from the
  * original execution.
+ *
+ * populateActors: whether to populateActors within test(). If false, you
+ * the caller needs to do it before invoking test().
  */
 class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
-               messageFingerprinter: MessageFingerprinter) extends AbstractScheduler
+               messageFingerprinter: MessageFingerprinter,
+               populateActors: Boolean,
+               enableFailureDetector: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
   assume(original_trace.original_externals != null)
 
-  def this(original_trace: EventTrace) = this(original_trace, -1, new BasicFingerprinter)
+  def this(original_trace: EventTrace) =
+      this(original_trace, -1, new BasicFingerprinter, true, true)
   def this(original_trace: EventTrace, execution_bound: Int) =
-      this(original_trace, execution_bound, new BasicFingerprinter)
+      this(original_trace, execution_bound, new BasicFingerprinter, true, true)
+
+  if (!enableFailureDetector) {
+    disableFailureDetector()
+  }
 
   enableCheckpointing()
 
@@ -56,6 +66,14 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
   // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
   var pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
+
+  // Track which timers we have sent (via TimerSend) so that we know whether
+  // we should act on the corresponding TimerDelivery.
+  // TODO(cs): this complexity may not be necessary, e.g. it's possible that
+  // we're guarenteed that TimerSent's are always valid such that
+  // TimerDelivery's are also valid. I just haven't thought about it deeply
+  // enough, so I'm being conservative.
+  val timersSentButNotYetDelivered = new MultiSet[TimerFingerprint]
 
   // Current set of failure detector messages destined for actors, to be delivered
   // in the order they arrive. Always prioritized over internal messages.
@@ -125,24 +143,21 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
 
+    if (enableFailureDetector) {
+      fd.startFD(instrumenter.actorSystem)
+    }
+
+    if (populateActors) {
+      populateActorSystem(original_trace.getEvents flatMap {
+        case SpawnEvent(_,props,name,_) => Some((props, name))
+        case _ => None
+      })
+    }
+
     // We use the original trace as our reference point as we step through the
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
                                   subsequenceIntersection(subseq)
-    fd.startFD(instrumenter.actorSystem)
-    // We begin by starting all actors at the beginning of time, just mark them as
-    // isolated (i.e., unreachable)
-    for (t <- filtered.getEvents) {
-      t match {
-        case SpawnEvent (_, props, name, _) =>
-          // Just start and isolate all actors we might eventually care about
-          instrumenter.actorSystem.actorOf(props, name)
-          event_orchestrator.isolate_node(name)
-        case _ =>
-          None
-      }
-    }
-
     val updatedEvents = updateEvents(filtered.getEvents)
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
@@ -166,13 +181,16 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     // to include all expected events, not just the ones in this interval.
     expected ++= STSScheduler.getNextInterval(
       event_orchestrator.getRemainingTrace()).flatMap {
-        case m: MsgEvent => Some(m)
+        // Make sure to fingerprint the expected message
+        case m: MsgEvent =>
+          Some(MsgEvent(m.sender, m.receiver,
+            messageFingerprinter.fingerprint(m.msg)))
         case _ => None
     }
 
-    // Optimization: if no unexpected events to schedule, give up early.
     return IntervalPeekScheduler.unexpected(
-        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
+        List.empty, messageFingerprinter)
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused
@@ -190,7 +208,8 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       // Restore the checkpoint.
       // First kill the current actor system.
       shutdown()
-      val replayer = new ReplayScheduler
+      val replayer = new ReplayScheduler(messageFingerprinter, enableFailureDetector, false)
+      replayer.eventMapper = eventMapper
       Instrumenter().scheduler = replayer
       replayer.replay(prefix)
       // Now swap out the scheduler mid-execution
@@ -200,11 +219,16 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       event_orchestrator = replayer.event_orchestrator
       event_orchestrator.events.setOriginalExternalEvents(originalExternals)
       pendingEvents = replayer.pendingEvents
+      scheduledFSMTimers = replayer.scheduledFSMTimers
+      enqueuedExternalMessages = replayer.enqueuedExternalMessages
+      messagesToSend = replayer.messagesToSend
       actorNames = replayer.actorNames
       currentTime = replayer.currentTime
-      var fd = replayer.fd
       // Give fd an actual (not no-op) enqueue_message
-      fd.enqueue_message = enqueue_message
+      if (enableFailureDetector) {
+        var fd = replayer.fd
+        fd.enqueue_message = enqueue_message
+      }
     } else {
       // Else we don't actually need to restore the checkpoint, since we're already
       // here!
@@ -243,7 +267,22 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
             // detector -> actors from event_orchestrator.trace, to ensure
             // that we don't send redundant messages.
             if (sender == "deadLetters") {
-              enqueue_message(receiver, message)
+              if (Instrumenter().timerToCancellable contains ((receiver, message))) {
+                Instrumenter().manuallyHandleTick(receiver, message)
+              } else {
+                enqueue_message(receiver, message)
+              }
+            }
+          case TimerSend(fingerprint) =>
+            if (scheduledFSMTimers contains fingerprint) {
+              val timer = scheduledFSMTimers(fingerprint)
+              Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
+              timersSentButNotYetDelivered += fingerprint
+            }
+          case TimerDelivery(fingerprint) =>
+            if (timersSentButNotYetDelivered contains fingerprint) {
+              timersSentButNotYetDelivered -= fingerprint
+              break
             }
           // MsgEvent is the delivery
           case m: MsgEvent =>
@@ -271,6 +310,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
             //  - ignore m
             //  - try some number of unexpected events
             val unexpected = getUnexpected()
+            // TODO(cs): treat timers as unexpected messages
             if (!unexpected.isEmpty) {
               println("pushing priorityQueue and pausing..")
               val remaining_trace = event_orchestrator.getRemainingTrace().toList
@@ -314,7 +354,6 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     val fingerprint = messageFingerprinter.fingerprint(msg)
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
-
 
     handle_event_produced(snd, rcv, envelope) match {
       case ExternalMessage => {
@@ -365,11 +404,13 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     }
 
     // Flush detector messages before proceeding with other messages.
-    send_external_messages()
-    if (!pendingFDMessages.isEmpty) {
-      val uniq = pendingFDMessages.dequeue()
-      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      return Some(uniq.element)
+    if (enableFailureDetector) {
+      send_external_messages()
+      if (!pendingFDMessages.isEmpty) {
+        val uniq = pendingFDMessages.dequeue()
+        event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+        return Some(uniq.element)
+      }
     }
 
     // OK, now we first need to get to a good place: it should be the case after
@@ -401,6 +442,10 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     val key = event_orchestrator.current_event match {
       case MsgEvent(snd, rcv, msg) =>
         (snd, rcv, messageFingerprinter.fingerprint(msg))
+      case TimerDelivery(timer_fingerprint) =>
+        val timer = scheduledFSMTimers(timer_fingerprint)
+        (timer_fingerprint.sender, timer_fingerprint.receiver,
+         messageFingerprinter.fingerprint(timer))
       case _ =>
         // We've broken out of advanceReplay() because of a
         // BeginWaitQuiescence event, but there were no pendingFDMessages to
@@ -518,6 +563,15 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
   // Called after receive is done being processed
   override def after_receive(cell: ActorCell) {
     // handle_after_receive(cell)
+  }
+
+  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                                      msg: Any): Boolean = {
+    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
+    // So long as we are following a fixed prefix, we just replay the recorded
+    // timer events, and ignore new timer events. IntervalPeekScheduler
+    // explores unexpected timer events on our behalf.
+    return false
   }
 
   def setInvariant(invariant: Invariant) {

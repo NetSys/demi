@@ -141,6 +141,18 @@ trait ExternalEventInjector[E] {
     }
   }
 
+  // When deserializing an event trace, we need the actors to be prepopulated
+  // so we can resolve serialized ActorRefs. Here we populate the actor system
+  // give the names and props of all actors that will eventually appear in the
+  // execution.
+  def populateActorSystem(actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
+    for ((props, name) <- actorNamePropPairs) {
+      // Just start and isolate all actors we might eventually care about
+      Instrumenter().actorSystem.actorOf(props, name)
+      event_orchestrator.isolate_node(name)
+    }
+  }
+
   // Given an external event trace, see the events produced
   def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)

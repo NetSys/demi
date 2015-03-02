@@ -13,33 +13,43 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Semaphore
 
+// TODO(cs): try placing newly scheduled timer events at the front of
+// pendingUnepxectedEvents, rather than at the back like other messages.
+
 object IntervalPeekScheduler {
-  def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent]) : Seq[MsgEvent] = {
+  // N.B. enabled should contain non-fingerprinted messages, whereas _expected
+  // should contain fingerprinted messages
+  def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent],
+                 pendingTimers: Seq[(String, Any)], messageFingerprinter: MessageFingerprinter) : Seq[MsgEvent] = {
     // TODO(cs): consider ordering of expected, rather than treating it as a Set?
     val expected = new MultiSet[MsgEvent] ++ _expected
-    return enabled.filter(e =>
-      expected.contains(e) match {
-        case true =>
-          expected.remove(e)
-          false
-        case false =>
-          // Unexpected
-          true
+    def fingerprintAndMatch(e: MsgEvent): Boolean = {
+      val fingerprinted = MsgEvent(e.sender, e.receiver,
+        messageFingerprinter.fingerprint(e.msg))
+      expected.contains(fingerprinted) match {
+       case true =>
+         expected.remove(fingerprinted)
+         return false
+       case false =>
+         // Unexpected
+         return true
       }
-    )
+    }
+    val timerEvents = pendingTimers.map(pair => MsgEvent("deadLetters", pair._1, pair._2))
+    return enabled.filter(fingerprintAndMatch) ++ timerEvents.filter(fingerprintAndMatch)
   }
 
-  // Flatten all enabled events into a sorted list.
+  // Flatten all enabled events into a sorted list of (raw, non-fingerprinted) MsgEvents
   def flattenedEnabled(pendingEvents: HashMap[
       (String, String, MessageFingerprint), Queue[Uniq[(ActorCell, Envelope)]]]) : Seq[MsgEvent] = {
     // Last element of queue's tuple is the unique id, which is assumed to be
     // monotonically increasing by time of arrival.
-    val unsorted = new Queue[(String, String, MessageFingerprint, Int)]
+    val unsorted = new Queue[(String, String, Any, Int)]
     pendingEvents.foreach {
       case (key, queue) =>
         for (uniq <- queue) {
           if (key._2 != FailureDetector.fdName) {
-            unsorted += ((key._1, key._2, key._3, uniq.id))
+            unsorted += ((key._1, key._2, uniq.element._2.message, uniq.id))
           }
         }
     }
@@ -50,7 +60,7 @@ object IntervalPeekScheduler {
 
 /**
  * Similar to PeekScheduler(), except that:
- *  a. we start from mid-way in the * execution (or rather, we restore a checkpoint of
+ *  a. we start from mid-way in the execution (or rather, we restore a checkpoint of
  *     the state mid-way through the execution, by replaying all events that led up
  *     to that point),
  *  b. we only Peek() for a small interval (up to the next external event),
@@ -63,11 +73,18 @@ object IntervalPeekScheduler {
  *   we return the unexpected messages that lead up
  *   to its being enabled. Otherwise, return null.
  */
+// N.B. both expected and lookingFor should have their msg fields as a MessageFingerprint instead
+// of the raw message.
 class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
                             max_peek_messages: Int,
-                            messageFingerprinter: MessageFingerprinter) extends ReplayScheduler {
+                            messageFingerprinter: MessageFingerprinter,
+                            enableFailureDetector: Boolean) extends ReplayScheduler {
   def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) =
-      this(expected, lookingFor, 10, new BasicFingerprinter)
+      this(expected, lookingFor, 10, new BasicFingerprinter, true)
+
+  if (!enableFailureDetector) {
+    disableFailureDetector
+  }
 
   // Whether we are currently restoring the checkpoint (by replaying a prefix
   // of events), or have moved on to peeking.
@@ -108,7 +125,8 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     // Feed the unexpected events present at the end of replay into
     // pendingUnexpectedEvents.
     val unexpected = IntervalPeekScheduler.unexpected(
-        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected)
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
+        List.empty, messageFingerprinter)
     for (msgEvent <- unexpected) {
       val key = (msgEvent.sender, msgEvent.receiver,
                  messageFingerprinter.fingerprint(msgEvent.msg))
@@ -148,11 +166,11 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     val rcv = cell.self.path.name
     val msg = envelope.message
     val event = MsgEvent(snd, rcv, msg)
-    if (expected.contains(event)) {
+    val fingerprintedEvent = MsgEvent(snd, rcv,
+      messageFingerprinter.fingerprint(msg))
+    if (expected.contains(fingerprintedEvent)) {
       expected -= event
-    } else if (event == lookingFor) {
-      // TODO(cs): test whether event will ever == lookingFor. Not sure about
-      // how equality works for MsgEvent.msg.
+    } else if (fingerprintedEvent == lookingFor) {
       foundLookingFor.set(true)
     } else if (!event_orchestrator.crosses_partition(snd, rcv)) {
       pendingUnexpectedEvents += ((cell, envelope))
@@ -168,9 +186,21 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
       return None
     }
 
+    // Send any pending timers.
+    send_external_messages()
+
     if (pendingUnexpectedEvents.isEmpty) {
-      println("No more events to schedule..")
-      return None
+      // Before giving up, try to see if there are any pending timers. If so,
+      // pick one.
+      // TODO(cs): somewhat arbitrary to only trigger timers after
+      // pendingUnexpectedEvents.isEmpty. Why not before?
+      getRandomPendingTimer() match {
+        case Some((receiver, msg)) =>
+          Instrumenter().manuallyHandleTick(receiver, msg)
+        case None =>
+          println("No more events to schedule..")
+          return None
+      }
     }
 
     val next = pendingUnexpectedEvents.dequeue()
@@ -193,6 +223,12 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     }
     // Wake up the main thread.
     donePeeking.release
+  }
+
+  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                                      msg: Any): Boolean = {
+    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
+    return doneReplayingPrefix.get()
   }
 
   override def shutdown () = {
