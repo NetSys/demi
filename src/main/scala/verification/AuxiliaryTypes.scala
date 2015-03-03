@@ -4,7 +4,9 @@ import akka.actor.{ ActorCell, ActorRef, Props }
 import akka.dispatch.{ Envelope }
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.Semaphore
+import java.util.concurrent.Semaphore,
+       scala.collection.mutable.HashMap,
+       scala.collection.mutable.HashSet
 
 
 object IDGenerator {
@@ -82,6 +84,7 @@ object ActorTypes {
   }
 }
 
+
 trait TellEnqueue {
   def tell()
   def enqueue()
@@ -146,4 +149,37 @@ class TellEnqueueSemaphore extends Semaphore(1) with TellEnqueue {
   }
 }
 
+class ExploredTacker {
+  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
+  
+  def setExplored(index: Int, pair: (Unique, Unique)) =
+  exploredStack.get(index) match {
+    case Some(set) => set += pair
+    case None =>
+      val newElem = new HashSet[(Unique, Unique)] + pair
+      exploredStack(index) = newElem
+  }
+  
+  def isExplored(pair: (Unique, Unique)): Boolean = {
 
+    for ((index, set) <- exploredStack) set.contains(pair) match {
+      case true => return true
+      case false =>
+    }
+
+    return false
+  }
+  
+  def trimExplored(index: Int) = {
+    exploredStack = exploredStack.filter { other => other._1 <= index }
+  }
+
+  
+  def printExplored() = {
+    for ((index, set) <- exploredStack.toList.sortBy(t => (t._1))) {
+      println(index + ": " + set.size)
+      //val content = set.map(x => (x._1.id, x._2.id))
+      //println(index + ": " + set.size + ": " +  content))
+    }
+  }
+}
