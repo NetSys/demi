@@ -19,8 +19,7 @@ import scala.collection.Iterator
 
 import scala.collection.generic.GenericTraversableTemplate
 
-// A basic scheduler
-// TODO(cs): what's the difference between BasicScheduler and FairScheduler?
+// A basic scheduler. Schedules events in the order they arrive.
 class BasicScheduler extends Scheduler {
   
   var instrumenter = Instrumenter()
@@ -51,7 +50,7 @@ class BasicScheduler extends Scheduler {
   // Is this message a system message
   def isSystemMessage(src: String, dst: String): Boolean = {
     if ((actorNames contains src) || (actorNames contains dst))
-      return false
+      return dst == "deadLetters"
     
     return true
   }
@@ -204,5 +203,14 @@ class BasicScheduler extends Scheduler {
   def notify_quiescence () {
   }
   
+  def enqueue_message(receiver: String, msg: Any) {
+    throw new Exception("NYI")
+  }
 
+  def shutdown() {
+    instrumenter.restart_system
+  }
+
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                             msg: Any): Boolean = {return true}
 }
