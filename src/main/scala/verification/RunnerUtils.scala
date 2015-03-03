@@ -1,10 +1,11 @@
 package akka.dispatch.verification
 
 
+// Utilities for writing Runner.scala files.
 object RunnerUtils {
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant, shutdownCallback: () => Any) :
-        Tuple2[ViolationFingerprint, EventTrace] = {
+        Tuple2[EventTrace, ViolationFingerprint] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
     while (violationFound == null) {
@@ -30,17 +31,26 @@ object RunnerUtils {
       }
     }
 
-    return (violationFound, traceFound)
+    return (traceFound, violationFound)
   }
 
-  def replayExperiment(experiment_dir: String, messageFingerprinter: MessageFingerprinter,
-                       messageDeserializer: MessageDeserializer) : EventTrace = {
+  def deserializeExperiment(experiment_dir: String,
+      messageDeserializer: MessageDeserializer,
+      scheduler: ExternalEventInjector[_] with Scheduler):
+                  Tuple2[EventTrace, ViolationFingerprint] = {
     val deserializer = new ExperimentDeserializer(experiment_dir)
-    val replayer = new ReplayScheduler(messageFingerprinter, false, false)
-    Instrumenter().scheduler = replayer
-    replayer.populateActorSystem(deserializer.get_actors)
+    Instrumenter().scheduler = scheduler
+    scheduler.populateActorSystem(deserializer.get_actors)
+    val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
-    // val violation = deserializer.get_violation(messageDeserializer)
+    return (trace, violation)
+  }
+
+  def replayExperiment(experiment_dir: String,
+                       messageFingerprinter: MessageFingerprinter,
+                       messageDeserializer: MessageDeserializer) : EventTrace = {
+    val replayer = new ReplayScheduler(messageFingerprinter, false, false)
+    val (trace, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
 
     println("Trying replay:")
     val events = replayer.replay(trace, populateActors=false)
