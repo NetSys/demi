@@ -26,14 +26,20 @@ import java.util.Random
  * the execution. Otherwise, checks the invariant every
  * invariant_check_interval message deliveries.
  *
+ * max_executions determines how many executions we will try before giving
+ * up.
+ *
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, invariant_check_interval: Int, disableCheckpointing: Boolean)
+// TODO(cs): not guarenteed to terminate! E.g. if we're replaying a
+// "WaitQuiescence" external event, but the system never quiescenes. Might
+// want to allow the user to specify a bound on how many messages to schedule.
+class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean, invariant_check_interval: Int, disableCheckpointing: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_interleavings: Int) = this(max_interleavings, true, 0, false)
-  def this(max_interleavings: Int, enableFailureDetector: Boolean) =
-      this(max_interleavings, enableFailureDetector, 0, false)
+  def this(max_executions: Int) = this(max_executions, true, 0, false)
+  def this(max_executions: Int, enableFailureDetector: Boolean) =
+      this(max_executions, enableFailureDetector, 0, false)
 
   var test_invariant : Invariant = null
 
@@ -44,7 +50,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
   }
 
   if (!disableCheckpointing) {
-     enableCheckpointing()
+    enableCheckpointing()
   }
 
   // Current set of enabled events.
@@ -105,7 +111,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
    *
    * Returns a trace of the internal and external events observed if a failing
    * execution was found, along with a `fingerprint` of the safety violation.
-   * otherwise returns None if no failure was triggered within max_interleavings.
+   * otherwise returns None if no failure was triggered within max_executions.
    *
    * Callers should call shutdown() sometime after this method returns if they
    * want to invoke any other methods.
@@ -131,7 +137,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
 
-    for (i <- 1 to max_interleavings) {
+    for (i <- 1 to max_executions) {
       println("Trying random interleaving " + i)
       event_orchestrator.events.setOriginalExternalEvents(_trace)
       val event_trace = execute_trace(_trace)
@@ -155,7 +161,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
           }
       }
 
-      if (i != max_interleavings) {
+      if (i != max_executions) {
         // 'Tis a lesson you should heed: Try, try, try again.
         // If at first you don't succeed: Try, try, try again
         reset_all_state
