@@ -12,6 +12,10 @@ import java.io._
 import java.nio._
 import scala.io._
 
+
+// Note: in general, try to avoid anonymous functions when writing
+// Runner.scala files. This makes deseralization of closures brittle.
+
 trait MessageSerializer {
   def serialize(msg: Any): ByteBuffer
 }
