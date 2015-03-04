@@ -28,8 +28,6 @@ case class Uniq[E](
   var id : Int = IDGenerator.get()
 )
 
-abstract trait Event
-
 // Message delivery -- (not the initial send)
 // N.B., if an event trace was serialized, it's possible that msg is of type
 // MessageFingerprint rather than a whole message!
@@ -43,8 +41,7 @@ case class NetworkPartition(
     first: Set[String], 
     second: Set[String]) extends Event with ExternalEvent
 
-case class DporQuiescence(
-  count: Int) extends Event with ExternalEvent
+//case object DporQuiescence extends Event with ExternalEvent
 
 
 
