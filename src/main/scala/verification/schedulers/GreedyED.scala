@@ -35,22 +35,18 @@ import scala.util.control.Breaks._
 /**
  * Scheduler that takes greedily tries to minimize edit distance from the
  * original execution.
- *
- * populateActors: whether to populateActors within test(). If false, you
- * the caller needs to do it before invoking test().
  */
 class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
                messageFingerprinter: MessageFingerprinter,
-               populateActors: Boolean,
                enableFailureDetector: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
   assume(original_trace.original_externals != null)
 
   def this(original_trace: EventTrace) =
-      this(original_trace, -1, new BasicFingerprinter, true, true)
+      this(original_trace, -1, new BasicFingerprinter, true)
   def this(original_trace: EventTrace, execution_bound: Int) =
-      this(original_trace, execution_bound, new BasicFingerprinter, true, true)
+      this(original_trace, execution_bound, new BasicFingerprinter, true)
 
   def getName: String = "GreedyED"
 
@@ -152,7 +148,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       fd.startFD(instrumenter.actorSystem)
     }
 
-    if (populateActors) {
+    if (!alreadyPopulated) {
       populateActorSystem(original_trace.getEvents flatMap {
         case SpawnEvent(_,props,name,_) => Some((props, name))
         case _ => None

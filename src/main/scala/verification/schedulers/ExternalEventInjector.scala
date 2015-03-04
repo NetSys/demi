@@ -96,6 +96,9 @@ trait ExternalEventInjector[E] {
   // external events.
   var numWaitingFor = new AtomicInteger(0)
 
+  // Whether populateActors has been invoked.
+  var alreadyPopulated = false
+
   // Enqueue an external message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
@@ -146,6 +149,7 @@ trait ExternalEventInjector[E] {
   // give the names and props of all actors that will eventually appear in the
   // execution.
   def populateActorSystem(actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
+    alreadyPopulated = true
     for ((props, name) <- actorNamePropPairs) {
       // Just start and isolate all actors we might eventually care about
       Instrumenter().actorSystem.actorOf(props, name)
@@ -154,7 +158,7 @@ trait ExternalEventInjector[E] {
   }
 
   // Given an external event trace, see the events produced
-  def execute_trace (_trace: Seq[E], populateActors:Boolean=true) : EventTrace = {
+  def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
 
@@ -165,7 +169,7 @@ trait ExternalEventInjector[E] {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
-    if (populateActors) {
+    if (!alreadyPopulated) {
       populateActorSystem(_trace flatMap {
         case SpawnEvent(_,props,name,_) => Some((props, name))
         case Start(propCtor,name) => Some((propCtor(), name))
@@ -317,6 +321,7 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_shutdown () {
+    alreadyPopulated = false
     Instrumenter().restart_system
     shutdownSem.acquire
   }
@@ -357,6 +362,7 @@ trait ExternalEventInjector[E] {
     enqueuedExternalMessages = new MultiSet[Any]
     messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
     numWaitingFor = new AtomicInteger(0)
+    alreadyPopulated = false
     println("state reset.")
   }
 }

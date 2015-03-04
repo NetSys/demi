@@ -37,11 +37,11 @@ import java.util.Random
 // want to allow the user to specify a bound on how many messages to schedule.
 class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
                       invariant_check_interval: Int,
-                      disableCheckpointing: Boolean, populateActors: Boolean)
+                      disableCheckpointing: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_executions: Int) = this(max_executions, true, 0, false, true)
+  def this(max_executions: Int) = this(max_executions, true, 0, false)
   def this(max_executions: Int, enableFailureDetector: Boolean) =
-      this(max_executions, enableFailureDetector, 0, false, true)
+      this(max_executions, enableFailureDetector, 0, false)
 
   def getName: String = "RandomScheduler"
 
@@ -150,7 +150,7 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
       if (stats != null) {
         stats.increment_replays()
       }
-      val event_trace = execute_trace(_trace, populateActors=populateActors)
+      val event_trace = execute_trace(_trace)
 
       // If the violation has already been found, return.
       violationFound match {

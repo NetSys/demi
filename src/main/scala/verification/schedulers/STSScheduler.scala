@@ -57,22 +57,18 @@ object STSScheduler {
  * ExternalEvents. Attempts to find a schedule containing the ExternalEvents
  * that triggers a given invariant.
  *
- * populateActors: whether to populateActors within test(). If false, you
- * the caller needs to do it before invoking test().
- *
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
 class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
                    messageFingerprinter: MessageFingerprinter,
-                   populateActors: Boolean,
                    enableFailureDetector:Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
 
   def this(original_trace: EventTrace) =
-      this(original_trace, false, new BasicFingerprinter, true, true)
+      this(original_trace, false, new BasicFingerprinter, true)
 
   def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 
@@ -84,7 +80,7 @@ class STSScheduler(var original_trace: EventTrace,
 
   var test_invariant : Invariant = null
 
-  // Have we started off the execution yet?
+  // Have we not started off the execution yet?
   private[this] var firstMessage = true
 
   // Current set of enabled events. Includes external messages, but not
@@ -129,7 +125,7 @@ class STSScheduler(var original_trace: EventTrace,
       fd.startFD(instrumenter.actorSystem)
     }
 
-    if (populateActors) {
+    if (!alreadyPopulated) {
       populateActorSystem(original_trace.getEvents flatMap {
         case SpawnEvent(_,props,name,_) => Some((props, name))
         case _ => None
@@ -162,11 +158,12 @@ class STSScheduler(var original_trace: EventTrace,
       case _ => None
     }
     shutdown()
-    if (violationFound) {
-      return Some(event_orchestrator.events)
-    } else {
-      return None
+    val ret = violationFound match {
+      case true => Some(event_orchestrator.events)
+      case false => None
     }
+    reset_all_state
+    return ret
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused
@@ -513,5 +510,15 @@ class STSScheduler(var original_trace: EventTrace,
     // timer events, and ignore new timer events. IntervalPeekScheduler
     // explores unexpected timer events on our behalf.
     return false
+  }
+
+  override def reset_all_state() {
+    super.reset_all_state
+    reset_state
+    firstMessage = true
+    pendingEvents.clear
+    timersSentButNotYetDelivered.clear
+    pendingFDMessages.clear
+    pausing = new AtomicBoolean(false)
   }
 }

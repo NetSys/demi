@@ -12,7 +12,7 @@ object RunnerUtils {
       val fuzzTest = fuzzer.generateFuzzTest()
       println("Trying: " + fuzzTest)
 
-      val sched = new RandomScheduler(1, false, 30, false, true)
+      val sched = new RandomScheduler(1, false, 30, false)
       sched.setInvariant(invariant)
       Instrumenter().scheduler = sched
       sched.explore(fuzzTest) match {
@@ -53,7 +53,7 @@ object RunnerUtils {
     val (trace, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
 
     println("Trying replay:")
-    val events = replayer.replay(trace, populateActors=false)
+    val events = replayer.replay(trace)
     println("Done with replay")
     replayer.shutdown
     return events
@@ -63,7 +63,7 @@ object RunnerUtils {
                   messageFingerprinter: MessageFingerprinter,
                   messageDeserializer: MessageDeserializer) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new RandomScheduler(1, false, 0, false, false)
+    val sched = new RandomScheduler(1, false, 0, false)
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
 
     val ddmin = new DDMin(sched)
@@ -76,10 +76,15 @@ object RunnerUtils {
   def stsSchedDDMin(experiment_dir: String,
                     messageFingerprinter: MessageFingerprinter,
                     messageDeserializer: MessageDeserializer,
-                    allowPeek: Boolean) :
+                    allowPeek: Boolean,
+                    event_mapper: Option[HistoricalScheduler.EventMapper]) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(new EventTrace, allowPeek,
-        messageFingerprinter, false, false)
+        messageFingerprinter, false)
+    event_mapper match {
+      case Some(f) => sched.setEventMapper(f)
+      case None => None
+    }
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
 
     val ddmin = new DDMin(sched)
