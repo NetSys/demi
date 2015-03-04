@@ -33,7 +33,7 @@ abstract class AbstractScheduler extends Scheduler {
 
   def isSystemMessage(src: String, dst: String): Boolean = {
     if ((actorNames contains src) || (actorNames contains dst))
-      return false
+      return dst == "deadLetters"
     
     return true
   }
@@ -77,6 +77,9 @@ abstract class AbstractScheduler extends Scheduler {
   def shutdown() {
     instrumenter.restart_system
   }
+
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                             msg: Any): Boolean = {return true}
 
   // Get next event
   def next_event() : Event = {

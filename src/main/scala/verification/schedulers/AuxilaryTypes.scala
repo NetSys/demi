@@ -6,16 +6,27 @@ import akka.dispatch.{Envelope}
 // External events used to specify a trace
 abstract trait ExternalEvent
 
-final case class Start (prop: Props, name: String) extends ExternalEvent
+final case class Start (propCtor: () => Props, name: String) extends ExternalEvent
 final case class Kill (name: String) extends ExternalEvent {}
-final case class Send (name: String, message: Any) extends ExternalEvent
+// Allow the client to late-bind the construction of the message. Invoke the
+// function at the point that the Send is about to be injected.
+final case class Send (name: String, messageCtor: () => Any) extends ExternalEvent
 final case object WaitQuiescence extends ExternalEvent
+// Wait for numTimers currently queued timers to be scheduled. numTimers can be set to
+// -1 to wait for all currently queued timers.
+final case class WaitTimers(numTimers: Integer) extends ExternalEvent
 // Bidirectional partitions.
 final case class Partition (a: String, b: String) extends ExternalEvent
 final case class UnPartition (a: String, b: String) extends ExternalEvent
+// Continue scheduling numSteps internal events. Whenver we arrive at
+// quiescence, wait for the next timer, then wait for quiescence, etc. until
+// numSteps messages have been sent.
+final case class Continue(numSteps: Integer) extends ExternalEvent
 
 // Internal events in addition to those defined in ../AuxilaryTypes
 // MsgSend is the initial send, not the delivery
+// N.B., if an event trace was serialized, it's possible that msg is of type
+// MessageFingerprint rather than a whole message!
 final case class MsgSend (sender: String, 
                 receiver: String, msg: Any) extends Event
 final case class KillEvent (actor: String) extends Event 
@@ -26,6 +37,15 @@ final case object BeginWaitQuiescence extends Event
 // Marks when Quiescence was actually reached.
 final case object Quiescence extends Event
 final case class ChangeContext (actor: String) extends Event
+
+// Recording/Replaying Akka.FSM.Timer's (which aren't serializable! hence this madness)
+// N.B. these aren't explicitly recorded. We use them only when we want to serialize event
+// traces.
+final case class TimerFingerprint(name: String, sender: String, receiver: String,
+  msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int)
+final case class TimerSend(fingerprint: TimerFingerprint) extends Event
+final case class TimerDelivery(fingerprint: TimerFingerprint) extends Event
+
 
 object EventTypes {
   // Internal events that correspond to ExternalEvents.

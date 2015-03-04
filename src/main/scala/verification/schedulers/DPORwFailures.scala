@@ -32,44 +32,6 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-       
-class ExploredTackerwFailures {
-  
-  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
-
-  
-  def setExplored(index: Int, pair: (Unique, Unique)) =
-  exploredStack.get(index) match {
-    case Some(set) => set += pair
-    case None =>
-      val newElem = new HashSet[(Unique, Unique)] + pair
-      exploredStack(index) = newElem
-  }
-  
-  
-  def isExplored(pair: (Unique, Unique)): Boolean = {
-
-    for ((index, set) <- exploredStack) set.contains(pair) match {
-      case true => return true
-      case false =>
-    }
-
-    return false
-  }
-
-  
-  def trimExplored(index: Int) = {
-    exploredStack = exploredStack.filter { other => other._1 <= index }
-  }
-
-  
-  def printExplored() = {
-    for ((index, set) <- exploredStack.toList.sortBy(t => (t._1)))
-      println(index + ": " + set.size)
-  }
-
-}
-       
 
 // DPOR scheduler.
 class DPORwFailures extends Scheduler with LazyLogging {
@@ -91,14 +53,13 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
   var invariant : Queue[Unique] = Queue()
-  var exploredTacker = new ExploredTackerwFailures
+  var exploredTacker = new ExploredTacker
   
   val currentTrace = new Queue[Unique]
   val nextTrace = new Queue[Unique]
   var parentEvent = getRootEvent
   
   val reachabilityMap = new HashMap[String, Set[String]]
-  
   
   var post: (Queue[Unique]) => Unit = nullFunPost
   var done: (Scheduler) => Unit = nullFunDone
@@ -148,7 +109,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   // Is this message a system message
   override def isSystemMessage(sender: String, receiver: String, msg: Any): Boolean = {
-    return !isValidActor(sender, receiver)
+    return !isValidActor(sender, receiver) || receiver == "deadLetters"
   }
   
   
@@ -359,12 +320,12 @@ class DPORwFailures extends Scheduler with LazyLogging {
     
     for(event <- externalEventList) event match {
     
-      case Start(props, name) => 
-        instrumenter().actorSystem().actorOf(props, name)
+      case Start(propsCtor, name) => 
+        instrumenter().actorSystem().actorOf(propsCtor(), name)
   
-      case Send(rcv, msg) =>
+      case Send(rcv, msgCtor) =>
         val ref = instrumenter().actorMappings(rcv)
-        instrumenter().actorMappings(rcv) ! msg
+        instrumenter().actorMappings(rcv) ! msgCtor()
 
       case uniq @ Unique(par : NetworkPartition, id) =>  
         val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
@@ -398,7 +359,6 @@ class DPORwFailures extends Scheduler with LazyLogging {
       case par: NetworkPartition => 
         val unique = Unique(par)
         depGraph.add(unique)
-        depGraph.addEdge(unique, getRootEvent())(DiEdge)
         unique
       case other => other
     } }
@@ -508,21 +468,27 @@ class DPORwFailures extends Scheduler with LazyLogging {
         Util.traceStr(currentTrace) + Console.RESET)
     
     nextTrace.clear()
-    nextTrace ++= dpor(currentTrace)
     
-    logger.debug(Console.BLUE + "Next trace:  " + 
-        Util.traceStr(nextTrace) + Console.RESET)
-    
-    parentEvent = getRootEvent()
+    dpor(currentTrace) match {
+      case Some(trace) =>
+        nextTrace ++= trace
+        
+        logger.debug(Console.BLUE + "Next trace:  " + 
+            Util.traceStr(nextTrace) + Console.RESET)
+        
+        parentEvent = getRootEvent
 
-    post(currentTrace)
-    
-    pendingEvents.clear()
-    currentTrace.clear
+        post(currentTrace)
+        
+        pendingEvents.clear()
+        currentTrace.clear
 
-    
-    instrumenter().await_enqueue()
-    instrumenter().restart_system()
+        
+        instrumenter().await_enqueue()
+        instrumenter().restart_system()
+      case None =>
+        return
+    }
   }
   
   
@@ -534,6 +500,9 @@ class DPORwFailures extends Scheduler with LazyLogging {
   def shutdown(): Unit = {
     throw new Exception("internal error not a message")
   }
+
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                             msg: Any): Boolean = {return true}
   
   
   def getEvent(index: Integer, trace: Queue[Unique]) : Unique = {
@@ -544,7 +513,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   }
   
 
-  def dpor(trace: Queue[Unique]) : Queue[Unique] = {
+  def dpor(trace: Queue[Unique]) : Option[Queue[Unique]] = {
     
     interleavingCounter += 1
     val root = getEvent(0, currentTrace)
@@ -725,12 +694,13 @@ class DPORwFailures extends Scheduler with LazyLogging {
       }
     }
     
-    def getNext() : (Int, (Unique, Unique), Seq[Unique]) = {
+    def getNext() : Option[(Int, (Unique, Unique), Seq[Unique])] = {
             // If the backtrack set is empty, this means we're done.
       if (backTrack.isEmpty) {
         logger.info("Tutto finito!")
         done(this)
-        System.exit(0);
+        return None
+        //System.exit(0);
       }
   
       // Find the deepest backtrack value, and make sure
@@ -751,35 +721,39 @@ class DPORwFailures extends Scheduler with LazyLogging {
       
       exploredTacker.isExplored((e1, e2)) match {
         case true => return getNext()
-        case false => return (maxIndex, (e1, e2), replayThis) 
+        case false => return Some((maxIndex, (e1, e2), replayThis))
       }
 
     }
 
-    val (maxIndex, (e1, e2), replayThis) = getNext()
-    //println(backTrack(maxIndex).head._2.map(x => x.id))
-    
-
-    logger.info(Console.RED + "Exploring a new message interleaving " + 
-       e1.id + " and " + e2.id  + " at index " + maxIndex + Console.RESET)
+    getNext() match {
+      case Some((maxIndex, (e1, e2), replayThis)) =>
+        //println(backTrack(maxIndex).head._2.map(x => x.id))
         
-    
-    exploredTacker.setExplored(maxIndex, (e1, e2))
-    exploredTacker.trimExplored(maxIndex)
-    exploredTacker.printExplored()
-    
-    // A variable used to figure out if the replay diverged.
-    invariant = Queue(e1, e2)
-    
-    // Remove the backtrack branch, since we're about explore it now.
-    if (backTrack(maxIndex).isEmpty)
-      backTrack -= maxIndex
-    
-    // Return all events up to the backtrack index we're interested in
-    // and slap on it a new set of events that need to be replayed in
-    // order to explore that interleaving.
-    return trace.take(maxIndex + 1) ++ replayThis   
+
+        logger.info(Console.RED + "Exploring a new message interleaving " + 
+           e1.id + " and " + e2.id  + " at index " + maxIndex + Console.RESET)
+            
+        
+        exploredTacker.setExplored(maxIndex, (e1, e2))
+        exploredTacker.trimExplored(maxIndex)
+        exploredTacker.printExplored()
+        
+        // A variable used to figure out if the replay diverged.
+        invariant = Queue(e1, e2)
+        
+        // Remove the backtrack branch, since we're about explore it now.
+        if (backTrack(maxIndex).isEmpty)
+          backTrack -= maxIndex
+        
+        // Return all events up to the backtrack index we're interested in
+        // and slap on it a new set of events that need to be replayed in
+        // order to explore that interleaving.
+        return Some(trace.take(maxIndex + 1) ++ replayThis)
+      case None =>
+        return None
+    }
   }
-  
 
 }
+

@@ -12,6 +12,7 @@ import scala.collection.mutable.Iterable
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.PriorityQueue
 import scala.collection.JavaConversions._
 
 import java.util.concurrent.Semaphore
@@ -19,66 +20,41 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
-// TODO(cs): we invoke advanceReplay one to many times when peek is enabled. I
-// believe two threads are waiting on schedSemaphore, and both call into
-// advanceReplay. For now it looks like the redundant calls into advanceReplay are a no-op,
-// but it's possible that this might trigger a bug.
-
-object STSScheduler {
-  // The maximum number of unexpected messages to try in a Peek() run before
-  // giving up.
-  val maxPeekMessagesToTry = 100
-
-  /**
-   * Return a slice of events:
-   *   events[0...index of first external event that is not events(0)]
-   *
-   * Or an empty list if events is empty.
-   * Or events if there are no more external events.
-   *
-   * ... is exclusive
-   */
-  def getNextInterval(events: Seq[Event]) : Seq[Event] = {
-    if (events.isEmpty) {
-      return events
-    }
-    // Skip over first event.
-    val i = events.tail.indexWhere(e => EventTypes.isExternal(e))
-    if (i == -1) {
-      return events
-    }
-    return events.slice(0, i)
-  }
-}
+// TODO(cs): make EventTrace immutable so that copying is far more efficient.
+// TODO(cs): I'm fairly sure this code is full of race conditions. Example
+// stack traces:
+//   - java.lang.RuntimeException: Expected event (deadLetters,bcast0,NodeReachable(bcast3))
+//       at  akka.dispatch.verification.ReplayScheduler.schedule_new_message(ReplayScheduler.scala:215)
+//   - assume(pendingFDMessages.isEmpty) does not hold.
+// TODO(cs): would be nice force GreedyED to favor deletions rather than
+// unexpecteds, since DFS terminates whereas BFS does not necessarily.
+// TODO(cs): at some point, GreedyED slows down dramatically. Figure out why.
 
 /**
- * Scheduler that takes an execution history (e.g. the
- * return value of RandomScheduler.peek()), as well as a subsequence of
- * ExternalEvents. Attempts to find a schedule containing the ExternalEvents
- * that triggers a given invariant.
+ * Scheduler that takes greedily tries to minimize edit distance from the
+ * original execution.
  *
  * populateActors: whether to populateActors within test(). If false, you
  * the caller needs to do it before invoking test().
- *
- * Follows essentially the same heuristics as STS1:
- *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
-class STSScheduler(var original_trace: EventTrace,
-                   allowPeek: Boolean,
-                   messageFingerprinter: MessageFingerprinter,
-                   populateActors: Boolean,
-                   enableFailureDetector:Boolean) extends AbstractScheduler
+class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
+               messageFingerprinter: MessageFingerprinter,
+               populateActors: Boolean,
+               enableFailureDetector: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
+  assume(original_trace.original_externals != null)
 
   def this(original_trace: EventTrace) =
-      this(original_trace, false, new BasicFingerprinter, true, true)
-
-  enableCheckpointing()
+      this(original_trace, -1, new BasicFingerprinter, true, true)
+  def this(original_trace: EventTrace, execution_bound: Int) =
+      this(original_trace, execution_bound, new BasicFingerprinter, true, true)
 
   if (!enableFailureDetector) {
     disableFailureDetector()
   }
+
+  enableCheckpointing()
 
   var test_invariant : Invariant = null
 
@@ -88,7 +64,7 @@ class STSScheduler(var original_trace: EventTrace,
   // Current set of enabled events. Includes external messages, but not
   // failure detector messages, which are always sent in FIFO order.
   // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
-  val pendingEvents = new HashMap[(String, String, MessageFingerprint),
+  var pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
 
   // Track which timers we have sent (via TimerSend) so that we know whether
@@ -103,17 +79,66 @@ class STSScheduler(var original_trace: EventTrace,
   // in the order they arrive. Always prioritized over internal messages.
   var pendingFDMessages = new Queue[Uniq[(ActorCell, Envelope)]]
 
-  // Are we currently pausing the ActorSystem in order to invoke Peek()
+  // The external event subsequence we're currently testing.
+  var subseq : Seq[ExternalEvent] = null
+
+  // How many times we have needed to make a choice about whether to drop. This is to
+  // allow an optimization: if we pop from the priority queue and discovery that we
+  // just added that item to the priority queue, then we don't need to restore the snapshot.
+  var currentFork = 0
+
+  // A priority queue for tracking what event we're going to explore next.
+  // Tuple type is:
+  //   (edit distance, checkpoint, remaining events, message to inject next, fork index)
+  // We subtract to get a min-heap rather than a max-heap.
+  // If there is a tie, the priority queue acts as a FIFO queue.
+  def ordering(t: (Int, EventTrace, Seq[Event], Int)) = -t._1
+  var priorityQueue = new PriorityQueue[
+    (Int, EventTrace, Seq[Event], Int)]()(Ordering.by(ordering))
+
+  // Our current edit distance from the original trace.
+  var ed = 0
+
+  // Whether we are currently backtracking.
   var pausing = new AtomicBoolean(false)
+
+  // Whether we have found the invariant violation, and are in the process of
+  // halting the system.
+  var foundViolation = new AtomicBoolean(false)
+
+  // The violation fingerprint we're looking for
+  var violationFingerprint : ViolationFingerprint = null
+
+  // We can't shutdown() within an actor's thread -- we need a thread outside
+  // the actor system to do it for us. This is our signal from the actor
+  // system to that thread that a shutdown is required. We initialize the
+  // semaphore to 0 rather than 1, so that the shutdown thread blocks upon
+  // invoking acquire() until some actor thread release()'s it.
+  var restoreCheckpointSemaphore = new Semaphore(0)
+  new Thread(new Runnable {
+    def run() {
+      while (true) {
+        // N.B. we assume that when the actor thread release()'s the
+        // semaphore, it immediately goes to sleep, i.e. the ActorSystem has
+        // stopped dispatching.
+        restoreCheckpointSemaphore.acquire
+        popPriorityQueue()
+      }
+    }
+  }).start
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
-  def test (subseq: Seq[ExternalEvent],
-            violationFingerprint: ViolationFingerprint) : Boolean = {
+  def test (_subseq: Seq[ExternalEvent],
+            _violationFingerprint: ViolationFingerprint) : Boolean = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
-    assume(!subseq.isEmpty)
+    assume(!_subseq.isEmpty)
+    subseq = _subseq
+    violationFingerprint = _violationFingerprint
+    event_orchestrator.events.setOriginalExternalEvents(
+        original_trace.original_externals)
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
@@ -133,7 +158,6 @@ class STSScheduler(var original_trace: EventTrace,
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
                                   subsequenceIntersection(subseq)
-
     val updatedEvents = updateEvents(filtered.getEvents)
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
@@ -146,71 +170,79 @@ class STSScheduler(var original_trace: EventTrace,
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
-    val checkpoint = takeCheckpoint()
-    val violation = test_invariant(subseq, checkpoint)
-    var violationFound = false
-    violation match {
-      case Some(fingerprint) =>
-        violationFound = fingerprint.matches(violationFingerprint)
-      case _ => None
-    }
     shutdown()
-    return !violationFound
+    // Somewhat confusing: test passes if we failed to find a violation.
+    return !foundViolation.get
+  }
+
+  private[this] def getUnexpected() : Seq[MsgEvent] = {
+    val expected = new MultiSet[MsgEvent]
+    // TODO(cs): getNextInterval might be too conservative, i.e. we might want
+    // to include all expected events, not just the ones in this interval.
+    expected ++= STSScheduler.getNextInterval(
+      event_orchestrator.getRemainingTrace()).flatMap {
+        // Make sure to fingerprint the expected message
+        case m: MsgEvent =>
+          Some(MsgEvent(m.sender, m.receiver,
+            messageFingerprinter.fingerprint(m.msg)))
+        case _ => None
+    }
+
+    return IntervalPeekScheduler.unexpected(
+        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
+        List.empty, messageFingerprinter)
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused
   // the message dispatch loop.
-  def peek() : Unit = {
-    val msgEvent : MsgEvent = event_orchestrator.current_event.asInstanceOf[MsgEvent]
-    val fingerprintedMsgEvent = MsgEvent(msgEvent.sender, msgEvent.receiver,
-        messageFingerprinter.fingerprint(msgEvent.msg))
+  def popPriorityQueue() : Unit = {
+    println("popPriorityQueue")
+    val (_ed, prefix, remaining_trace, fork) = priorityQueue.dequeue
+    ed = _ed
+    // TODO(cs): use fork to break ties, prefering longer event chains to
+    // shorter ones.
+    currentFork = fork + 1
 
-    val expected = new MultiSet[MsgEvent]
-    expected ++= STSScheduler.getNextInterval(
-      event_orchestrator.trace.slice(event_orchestrator.traceIdx,
-                                     event_orchestrator.trace.length)).flatMap {
-      case m: MsgEvent =>
-       // Make sure to fingerprint the expected message
-       Some(MsgEvent(m.sender, m.receiver,
-         messageFingerprinter.fingerprint(m.msg)))
-      case _ => None
+    if (prefix != event_orchestrator.events) {
+      println("restoring checkpoint")
+      // Restore the checkpoint.
+      // First kill the current actor system.
+      shutdown()
+      val replayer = new ReplayScheduler(messageFingerprinter, enableFailureDetector, false)
+      replayer.eventMapper = eventMapper
+      Instrumenter().scheduler = replayer
+      replayer.replay(prefix)
+      // Now swap out the scheduler mid-execution
+      Instrumenter().scheduler = this
+      // Grab the replayer's relevant state
+      val originalExternals = event_orchestrator.events.original_externals
+      event_orchestrator = replayer.event_orchestrator
+      event_orchestrator.events.setOriginalExternalEvents(originalExternals)
+      pendingEvents = replayer.pendingEvents
+      scheduledFSMTimers = replayer.scheduledFSMTimers
+      enqueuedExternalMessages = replayer.enqueuedExternalMessages
+      messagesToSend = replayer.messagesToSend
+      actorNames = replayer.actorNames
+      currentTime = replayer.currentTime
+      // Give fd an actual (not no-op) enqueue_message
+      if (enableFailureDetector) {
+        var fd = replayer.fd
+        fd.enqueue_message = enqueue_message
+      }
+    } else {
+      // Else we don't actually need to restore the checkpoint, since we're already
+      // here!
+      println("Skipped checkpoint restoration!")
     }
 
-    // Optimization: if no unexpected events to schedule, give up early.
-    val unexpected = IntervalPeekScheduler.unexpected(
-        IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
-        getAllPendingTimers(), messageFingerprinter)
+    // Reset the remaining expected events.
+    event_orchestrator.set_trace(remaining_trace)
 
-    if (unexpected.isEmpty) {
-      println("No unexpected messages. Ignoring message" + msgEvent)
-      event_orchestrator.trace_advanced
-      return
-    }
-
-    val peeker = new IntervalPeekScheduler(
-      expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
-    peeker.eventMapper = eventMapper
-    Instrumenter().scheduler = peeker
-    // N.B. "checkpoint" here means checkpoint of the network's state, as
-    // opposed to a checkpoint of the applications state for checking
-    // invariants
-    val checkpoint = Instrumenter().checkpoint()
-    println("Peek()'ing")
-    val prefix = peeker.peek(event_orchestrator.events)
-    peeker.shutdown
-    println("Restoring checkpoint")
-    Instrumenter().scheduler = this
-    Instrumenter().restoreCheckpoint(checkpoint)
-    prefix match {
-      case Some(lst) =>
-        // Prepend the prefix onto expected events so that
-        // schedule_new_message() correctly schedules the prefix.
-        println("Found prefix!")
-        event_orchestrator.prepend(lst)
-      case None =>
-        println("Ignoring message" + msgEvent)
-        event_orchestrator.trace_advanced
-    }
+    // Get us moving again.
+    pausing.set(false)
+    firstMessage = true
+    println("Unpausing")
+    advanceReplay()
   }
 
   def advanceReplay() {
@@ -273,14 +305,27 @@ class STSScheduler(var original_trace: EventTrace,
               // Yay, it's already enabled.
               break
             }
-            if (allowPeek) {
-              // If it isn't enabled yet, let's try Peek()'ing for it.
-              // First, we need to pause the ActorSystem.
-              println("Pausing")
+
+            // Here we have have two choices:
+            //  - ignore m
+            //  - try some number of unexpected events
+            val unexpected = getUnexpected()
+            // TODO(cs): treat timers as unexpected messages
+            if (!unexpected.isEmpty) {
+              println("pushing priorityQueue and pausing..")
+              val remaining_trace = event_orchestrator.getRemainingTrace().toList
+              // First try ignoring m
+              priorityQueue += ((ed+1, event_orchestrator.events.copy, remaining_trace.tail, currentFork))
+              // Now try the unexpecteds.
+              for (msgEvent <- unexpected) {
+                val prepended = msgEvent :: remaining_trace
+                priorityQueue += ((ed+1, event_orchestrator.events.copy, prepended, currentFork))
+              }
               pausing.set(true)
               break
             }
-            // if (!allowPeek) we skip over this event
+            // Else, unexpected.isEmpty, and we don't have any choice other
+            // than to ignore this message.
             println("Ignoring message " + m)
           case Quiescence =>
             // This is just a nop. Do nothing
@@ -361,11 +406,11 @@ class STSScheduler(var original_trace: EventTrace,
     // Flush detector messages before proceeding with other messages.
     if (enableFailureDetector) {
       send_external_messages()
-       if (!pendingFDMessages.isEmpty) {
-         val uniq = pendingFDMessages.dequeue()
-         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-         return Some(uniq.element)
-       }
+      if (!pendingFDMessages.isEmpty) {
+        val uniq = pendingFDMessages.dequeue()
+        event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+        return Some(uniq.element)
+      }
     }
 
     // OK, now we first need to get to a good place: it should be the case after
@@ -446,22 +491,52 @@ class STSScheduler(var original_trace: EventTrace,
 
   override def notify_quiescence () {
     if (pausing.get) {
-      // We've now paused the ActorSystem. Go ahead with peek()
-      peek()
-      // Get us moving again.
-      pausing.set(false)
-      firstMessage = true
-      advanceReplay()
+      assume(pendingFDMessages.isEmpty)
+      assume(messagesToSend.isEmpty)
+      assume(enqueuedExternalMessages.isEmpty)
+      restoreCheckpointSemaphore.release
       return
     }
+
     assert(started.get)
     started.set(false)
     if (!event_orchestrator.trace_finished) {
-      throw new Exception("Failed to find messages to send to finish the trace!")
+      throw new Exception("Shouldn't have stopped!")
     } else {
       if (currentlyInjecting.get) {
-        // Tell the calling thread we are done
-        traceSem.release
+        // Check if we found the violation.
+        // TODO(cs): is it OK to invoke takeCheckpoint from within an actor
+        // thread?
+        val checkpoint = takeCheckpoint()
+        val violation = test_invariant(subseq, checkpoint)
+        var violationFound = false
+        violation match {
+          case Some(fingerprint) =>
+            violationFound = violationFingerprint.matches(fingerprint)
+          case _  =>  None
+        }
+        execution_bound -= 1
+        if (violationFound) {
+          // Tell the calling thread we are done
+          println("Violation found!")
+          foundViolation.set(true)
+          traceSem.release
+        } else if (priorityQueue.isEmpty) {
+          println("No more executions to try")
+          // Alas, no violation found.
+          traceSem.release
+        } else if (execution_bound == 0) {
+          println("Execution bound exceeded")
+          // Alas, no violation found.
+          traceSem.release
+        } else {
+          // Try, try, try again.
+          println("No violation found. Trying other paths.")
+          assume(pendingFDMessages.isEmpty)
+          assume(messagesToSend.isEmpty)
+          assume(enqueuedExternalMessages.isEmpty)
+          restoreCheckpointSemaphore.release
+        }
       } else {
         throw new RuntimeException("currentlyInjecting.get returned false")
       }
@@ -476,23 +551,18 @@ class STSScheduler(var original_trace: EventTrace,
 
   // Notification that the system has been reset
   override def start_trace() : Unit = {
-    println("start_trace")
     handle_start_trace
   }
 
   // Called before we start processing a newly received event
   override def before_receive(cell: ActorCell) {
     super.before_receive(cell)
-    handle_before_receive(cell)
+    // handle_before_receive(cell)
   }
 
   // Called after receive is done being processed
   override def after_receive(cell: ActorCell) {
-    handle_after_receive(cell)
-  }
-
-  def setInvariant(invariant: Invariant) {
-    test_invariant = invariant
+    // handle_after_receive(cell)
   }
 
   override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
@@ -502,5 +572,9 @@ class STSScheduler(var original_trace: EventTrace,
     // timer events, and ignore new timer events. IntervalPeekScheduler
     // explores unexpected timer events on our behalf.
     return false
+  }
+
+  def setInvariant(invariant: Invariant) {
+    test_invariant = invariant
   }
 }

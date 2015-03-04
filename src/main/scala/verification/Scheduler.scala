@@ -3,6 +3,9 @@ package akka.dispatch.verification
 import akka.actor.ActorCell
 import akka.actor.ActorRef
 import akka.actor.Props;
+import akka.actor.AutoReceivedMessage;
+import akka.actor.ActorIdentity;
+import akka.actor.ReceiveTimeout;
 
 import akka.dispatch.Envelope
 
@@ -10,13 +13,26 @@ import akka.dispatch.Envelope
 trait Scheduler {
   
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean
-  def isSystemCommunication(sender: ActorRef, receiver: ActorRef, msg: Any): Boolean = 
-    isSystemCommunication(sender, receiver)
+  def isSystemCommunication(sender: ActorRef, receiver: ActorRef, msg: Any): Boolean = {
+    if (msg.isInstanceOf[AutoReceivedMessage] ||
+        msg.isInstanceOf[ActorIdentity] ||
+        msg.isInstanceOf[ReceiveTimeout]) {
+      return true
+    }
+    return isSystemCommunication(sender, receiver)
+  }
+    
     
   // Is this message a system message
   def isSystemMessage(src: String, dst: String): Boolean
-  def isSystemMessage(src: String, dst: String, msg: Any): Boolean =
-    isSystemMessage(src, dst)
+  def isSystemMessage(src: String, dst: String, msg: Any): Boolean = {
+    if (msg.isInstanceOf[AutoReceivedMessage] ||
+        msg.isInstanceOf[ActorIdentity] ||
+        msg.isInstanceOf[ReceiveTimeout]) {
+      return true
+    }
+    return isSystemMessage(src, dst)
+  }
     
   // Notification that the system has been reset
   def start_trace() : Unit
@@ -47,9 +63,14 @@ trait Scheduler {
   // Tell the scheduler that it should eventually schedule the given message.
   // Used to feed messages from the external world into actor systems.
   
+  // Called whenever actorSystem.scheduler.schedule() is invoked by the
+  // application. Return whether the timer should actualy be scheduled (if
+  // not, return a no-op cancellable to the application).
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                             msg: Any) : Boolean
+  // Interface for (safely) sending external messages
   def enqueue_message(receiver: String, msg: Any)
   // Shut down the actor system.
   def shutdown()
 
 }
-

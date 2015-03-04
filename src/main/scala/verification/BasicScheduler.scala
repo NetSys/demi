@@ -50,7 +50,7 @@ class BasicScheduler extends Scheduler {
   // Is this message a system message
   def isSystemMessage(src: String, dst: String): Boolean = {
     if ((actorNames contains src) || (actorNames contains dst))
-      return false
+      return dst == "deadLetters"
     
     return true
   }
@@ -211,4 +211,6 @@ class BasicScheduler extends Scheduler {
     instrumenter.restart_system
   }
 
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                             msg: Any): Boolean = {return true}
 }

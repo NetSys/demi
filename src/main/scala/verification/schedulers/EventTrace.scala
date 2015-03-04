@@ -3,7 +3,6 @@ package akka.dispatch.verification
 import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.Envelope
 
-
 import scala.collection.mutable.ListBuffer
 import scala.collection.generic.Growable
 import scala.collection.mutable.Queue
@@ -15,10 +14,15 @@ import scala.collection.mutable.HashSet
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 
-class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
+case class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new Queue[Event], null)
-  def this(events: Queue[Event]) = this(events, null)
   def this(original_externals: Seq[ExternalEvent]) = this(new Queue[Event], original_externals)
+
+  override def hashCode = this.events.hashCode
+  override def equals(other: Any) : Boolean = other match {
+    case that: EventTrace => this.events == that.events
+    case _ => false
+  }
 
   // Optional: if you have the original external events, that helps us with
   // filtering.
@@ -26,6 +30,16 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
     original_externals = _original_externals
   }
 
+  def copy() : EventTrace = {
+    assume(original_externals != null)
+    assume(!events.isEmpty)
+    assume(!original_externals.isEmpty)
+    return new EventTrace(new Queue[Event] ++ events,
+                          new Queue[ExternalEvent] ++ original_externals)
+  }
+
+  // The difference between EventTrace.events and EventTrace.getEvents is that
+  // we hide UniqueMsgSend/Events here
   def getEvents() : Seq[Event] = {
     return events.map(e =>
       e match {
@@ -85,6 +99,16 @@ class EventTrace(events: Queue[Event], var original_externals: Seq[ExternalEvent
         case _ => false
       }
     ), original_externals)
+  }
+
+  def filterCheckpointMessages(): EventTrace = {
+    return new EventTrace(events flatMap {
+      case UniqueMsgEvent(MsgEvent(_, _, CheckpointRequest), _) => None
+      case UniqueMsgEvent(MsgEvent(_, _, CheckpointReply(_)), _) => None
+      case UniqueMsgSend(MsgSend(_, _, CheckpointRequest), _) => None
+      case UniqueMsgSend(MsgSend(_, _, CheckpointReply(_)), _) => None
+      case e => Some(e)
+    }, original_externals)
   }
 
   // Filter all external events in original_trace that aren't in subseq.

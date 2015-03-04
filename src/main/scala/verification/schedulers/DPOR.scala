@@ -36,45 +36,6 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
        
-class ExploredTacker {
-  
-  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
-
-  
-  def setExplored(index: Int, pair: (Unique, Unique)) =
-  exploredStack.get(index) match {
-    case Some(set) => set += pair
-    case None =>
-      val newElem = new HashSet[(Unique, Unique)] + pair
-      exploredStack(index) = newElem
-  }
-  
-  
-  def isExplored(pair: (Unique, Unique)): Boolean = {
-
-    for ((index, set) <- exploredStack) set.contains(pair) match {
-      case true => return true
-      case false =>
-    }
-
-    return false
-  }
-
-  
-  def trimExplored(index: Int) = {
-    exploredStack = exploredStack.filter { other => other._1 <= index }
-  }
-
-  
-  def printExplored() = {
-    for ((index, set) <- exploredStack) {
-      println(index + ": " + set.size)
-    }
-  }
-
-}
-       
-
 // DPOR scheduler.
 class DPOR extends Scheduler with LazyLogging {
   
@@ -148,7 +109,7 @@ class DPOR extends Scheduler with LazyLogging {
   def isSystemMessage(sender: String, receiver: String): Boolean = {
     ((actorNames contains sender) || (actorNames contains receiver)) match
     {
-      case true => return false
+      case true => return receiver == "deadLetters"
       case _ => return true
     }
   }
@@ -355,10 +316,10 @@ class DPOR extends Scheduler with LazyLogging {
     // we unisolate the actor.
     for (t <- externalEventList) {
       t match {
-        case Start (prop, name) => 
+        case Start (propCtor, name) => 
           // Just start and isolate all actors we might eventually care about [top-level actors]
           // TODO(cs): doesn't actually isolate the nodes at the moment..
-          instrumenter().actorSystem.actorOf(prop, name)
+          instrumenter().actorSystem.actorOf(propCtor(), name)
           fd.isolate_node(name)
         case _ =>
           None
@@ -368,12 +329,12 @@ class DPOR extends Scheduler with LazyLogging {
     currentTrace += getRootEvent
     
     for(event <- externalEventList) event match {
-      case Start(props, name) => 
+      case Start(_, name) => 
         fd.unisolate_node(name)
         fd.handle_start_event(name)
         
-      case Send(rcv, msg) =>
-        enqueue_message(rcv, msg)
+      case Send(rcv, msgCtor) =>
+        enqueue_message(rcv, msgCtor())
         
       case _ => throw new Exception("unsuported external event")
     }
@@ -432,7 +393,7 @@ class DPOR extends Scheduler with LazyLogging {
     // Check if it's an external event.
     if (enqueuedExternalMessages.contains(envelope.message)) {
       pendingExternalEvents += ((cell, envelope))
-      enqueuedExternalMessages.remove(envelope.message)
+      enqueuedExternalMessages -= envelope.message
       return
     }
 
@@ -730,7 +691,7 @@ class DPOR extends Scheduler with LazyLogging {
   }
 
   private[this] def enqueue_message(actor: ActorRef, msg: Any) {
-    enqueuedExternalMessages.add(msg)
+    enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
   }
 
@@ -738,4 +699,7 @@ class DPOR extends Scheduler with LazyLogging {
     instrumenter().restart_system
     // TODO(cs): not thread-safe? see PeekScheduler's shutdown()
   }
+
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
+                             msg: Any): Boolean = {return true}
 }

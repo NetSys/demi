@@ -12,6 +12,8 @@ import akka.actor.ActorCell;
 import akka.actor.ActorSystem;
 import akka.actor.ActorContext;
 import akka.actor.Scheduler;
+import akka.actor.Cancellable;
+import akka.actor.LightArrayRevolverScheduler;
 
 import akka.pattern.AskSupport;
 
@@ -24,9 +26,7 @@ import scala.concurrent.duration.FiniteDuration;
 import scala.concurrent.ExecutionContext;
 import java.lang.Runnable;
 
-
 privileged public aspect WeaveActor {
-
   Instrumenter inst = Instrumenter.apply();
     
   pointcut enqueueOperation(MessageQueue me, ActorRef receiver, Envelope handle): 
@@ -105,54 +105,91 @@ privileged public aspect WeaveActor {
   args(msg, sender, ..) && this(me) {
   }
 
-  /*
-  // TODO(cs): the following pointcut is not applied, for a reason I do not
-  // understand. Debug this later, since it will probably come in handy. 
-  // For what it's worth, here is the decompiled byte code from
-  // akka.actor.Scheduler.scala:
-
-  $ javap Scheduler.class 
-  Compiled from "Scheduler.scala"
-  public abstract class akka.actor.Scheduler$class extends java.lang.Object{
-      public static final akka.actor.Cancellable schedule(akka.actor.Scheduler, scala.concurrent.duration.FiniteDuration, scala.concurrent.duration.FiniteDuration, akka.actor.ActorRef, java.lang.Object, scala.concurrent.ExecutionContext, akka.actor.ActorRef);
-      public static final akka.actor.Cancellable schedule(akka.actor.Scheduler, scala.concurrent.duration.FiniteDuration, scala.concurrent.duration.FiniteDuration, scala.Function0, scala.concurrent.ExecutionContext);
-      public static final akka.actor.ActorRef schedule$default$6(akka.actor.Scheduler, scala.concurrent.duration.FiniteDuration, scala.concurrent.duration.FiniteDuration, akka.actor.ActorRef, java.lang.Object);
-      public static final akka.actor.Cancellable scheduleOnce(akka.actor.Scheduler, scala.concurrent.duration.FiniteDuration, akka.actor.ActorRef, java.lang.Object, scala.concurrent.ExecutionContext, akka.actor.ActorRef);
-      public static final akka.actor.Cancellable scheduleOnce(akka.actor.Scheduler, scala.concurrent.duration.FiniteDuration, scala.Function0, scala.concurrent.ExecutionContext);
-      public static final akka.actor.ActorRef scheduleOnce$default$5(akka.actor.Scheduler, scala.concurrent.duration.FiniteDuration, akka.actor.ActorRef, java.lang.Object);
-      public static void $init$(akka.actor.Scheduler);
-  }
-
   // Override akka.actor.Scheduler.schedulerOnce
-  // TODO(cs): also interpose on akka.actor.Scheduler.schedule()
-  pointcut Timer(Scheduler me, FiniteDuration delay, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
-  execution(* akka.actor.Scheduler.schedulerOnce(..)) &&
+  pointcut scheduleOnce(LightArrayRevolverScheduler me, FiniteDuration delay, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
+  execution(public * akka.actor.LightArrayRevolverScheduler.scheduleOnce(FiniteDuration,ActorRef,Object,ExecutionContext,ActorRef)) &&
   args(delay, receiver, msg, exc, sender) && this(me);
 
   // Never actually proceed(), just schedule our own timer, which does not use
-  // ! directly, but instead calls enqueue_message.
-  Object around(Scheduler me, FiniteDuration delay, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
-  Timer(me, delay, receiver, msg, exc, sender) {
+  // ! directly, but instead calls enqueue_message..
+  Object around(LightArrayRevolverScheduler me, FiniteDuration delay, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
+  scheduleOnce(me, delay, receiver, msg, exc, sender) {
     class MyRunnable implements java.lang.Runnable {
       ActorRef rcv;
       Object m;
       Instrumenter i;
+      Cancellable c;
+      boolean shouldRun;
 
-      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst) {
+      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst, boolean _shouldRun) {
         rcv = receiver;
         m = msg;
         i = inst;
+        shouldRun = _shouldRun;
+      }
+
+      public void setCancellable(Cancellable cancellable) {
+        c = cancellable;
       }
 
       public void run() {
         // Use essentially the same scheduleOnce implementation, but don't use !
         // See:
         //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
-        i.handleTick(rcv, m);
+        if (shouldRun) {
+          i.handleTick(rcv, m, c);
+        }
       }
     }
-    me.scheduleOnce(delay, new MyRunnable(receiver, msg, inst), exc);
-	  return null;
+    boolean shouldRun = inst.notify_timer_scheduled(sender, receiver, msg);
+    MyRunnable runnable = new MyRunnable(receiver, msg, inst, shouldRun);
+    Cancellable c = me.scheduleOnce(delay, runnable, exc);
+    runnable.setCancellable(c);
+    inst.registerCancellable(c, false, receiver, msg);
+    return c;
   }
-  */
+
+  // Override akka.actor.Scheduler.scheduler
+  pointcut schedule(LightArrayRevolverScheduler me, FiniteDuration delay, FiniteDuration interval, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
+  execution(public * akka.actor.LightArrayRevolverScheduler.schedule(FiniteDuration,FiniteDuration,ActorRef,Object,ExecutionContext,ActorRef)) &&
+  args(delay, interval, receiver, msg, exc, sender) && this(me);
+
+  // Never actually proceed(), just schedule our own timer, which does not use
+  // ! directly, but instead calls enqueue_message..
+  Object around(LightArrayRevolverScheduler me, FiniteDuration delay, FiniteDuration interval, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
+  schedule(me, delay, interval, receiver, msg, exc, sender) {
+    class MyRunnable implements java.lang.Runnable {
+      ActorRef rcv;
+      Object m;
+      Instrumenter i;
+      Cancellable c;
+      boolean shouldRun;
+
+      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst, boolean _shouldRun) {
+        rcv = receiver;
+        m = msg;
+        i = inst;
+        shouldRun = _shouldRun;
+      }
+
+      public void setCancellable(Cancellable cancellable) {
+        c = cancellable;
+      }
+
+      public void run() {
+        // Use essentially the same scheduleOnce implementation, but don't use !
+        // See:
+        //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
+        if (shouldRun) {
+          i.handleTick(rcv, m, c);
+        }
+      }
+    }
+    boolean shouldRun = inst.notify_timer_scheduled(sender, receiver, msg);
+    MyRunnable runnable = new MyRunnable(receiver, msg, inst, shouldRun);
+    Cancellable c = me.schedule(delay, interval, runnable, exc);
+    runnable.setCancellable(c);
+    inst.registerCancellable(c, true, receiver, msg);
+    return c;
+  }
 }

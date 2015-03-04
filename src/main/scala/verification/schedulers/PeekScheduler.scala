@@ -29,12 +29,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  * PeekScheduler finally returns all events observed during the execution, including
  * external and internal events.
  */
-class PeekScheduler()
+class PeekScheduler(enableFailureDetector: Boolean)
     extends FairScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
+  def this() = this(true)
 
   var test_invariant : Invariant = null
 
+  enableCheckpointing()
+
+  if (!enableFailureDetector) {
+    disableFailureDetector()
+  }
+
   def peek (_trace: Seq[ExternalEvent]) : EventTrace = {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
     event_orchestrator.events.setOriginalExternalEvents(_trace)
     return execute_trace(_trace)
   }
@@ -45,6 +55,7 @@ class PeekScheduler()
     val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
+      case CheckpointReplyMessage => None
       case _ => {
         if (!crosses_partition(snd, rcv)) {
           pendingEvents(rcv) = msgs += ((cell, envelope))
@@ -106,14 +117,21 @@ class PeekScheduler()
     super[ExternalEventInjector].enqueue_message(receiver, msg)
   }
 
-  def test(events: Seq[ExternalEvent]) : Boolean = {
+  def test(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Boolean = {
     Instrumenter().scheduler = this
     peek(events)
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
-    val passes = test_invariant(events)
+    val checkpoint = takeCheckpoint()
+    val violation = test_invariant(events, checkpoint)
+    var violation_found = false
+    violation match {
+      case Some(fingerprint) =>
+        violation_found = fingerprint.matches(violation_fingerprint)
+      case None => None
+    }
     shutdown()
-    return passes
+    return !violation_found
   }
 }

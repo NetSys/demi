@@ -15,11 +15,13 @@ import scala.collection.generic.Clearable
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 abstract class MessageType()
 final case object ExternalMessage extends MessageType
 final case object InternalMessage extends MessageType
 final case object SystemMessage extends MessageType
+final case object CheckpointReplyMessage extends MessageType
 
 /**
  * A mix-in for schedulers that take external events as input, and generate
@@ -32,6 +34,20 @@ trait ExternalEventInjector[E] {
   // Handler for FailureDetector messages
   var fd : FDMessageOrchestrator = new FDMessageOrchestrator(enqueue_message)
   event_orchestrator.set_failure_detector(fd)
+  var _disableFailureDetector = false
+
+  def disableFailureDetector() {
+    _disableFailureDetector = true
+    event_orchestrator.set_failure_detector(null)
+  }
+
+  // Handler for Checkpoint responses
+  var checkpointer : CheckpointCollector = null
+  var _enableCheckpointing = false
+  def enableCheckpointing() {
+    _enableCheckpointing = true
+    checkpointer = new CheckpointCollector
+  }
 
   // Semaphore to wait for trace replay to be done. We initialize the
   // semaphore to 0 rather than 1, so that the main thread blocks upon
@@ -46,6 +62,14 @@ trait ExternalEventInjector[E] {
   // semaphore to 0 rather than 1, so that the main thread blocks upon
   // invoking acquire() until another thread release()'s it.
   var shutdownSem = new Semaphore(0)
+
+  // Semaphore to use when taking a checkpoint. We initialize the
+  // semaphore to 0 rather than 1, so that the main thread blocks upon
+  // invoking acquire() until another thread release()'s it.
+  var checkpointSem = new Semaphore(0)
+
+  // Whether a thread is blocked waiting for a checkpoint.
+  var blockedOnCheckpoint = new AtomicBoolean(false)
 
   // Are we expecting message receives
   val started = new AtomicBoolean(false)
@@ -67,6 +91,11 @@ trait ExternalEventInjector[E] {
   // queued here.
   var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
 
+  // Whenever we inject a "Continue" external event, this tracks how many
+  // events we have left to scheduled until we return to scheduling more
+  // external events.
+  var numWaitingFor = new AtomicInteger(0)
+
   // Enqueue an external message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
@@ -77,16 +106,22 @@ trait ExternalEventInjector[E] {
   }
 
   def enqueue_message(actor: ActorRef, msg: Any) {
-    enqueuedExternalMessages.add(msg)
+    enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
+  }
+
+  def send_external_messages() {
+    send_external_messages(true)
   }
 
   // Initiates message sends for all messages in messagesToSend. Note that
   // delivery does not occur immediately! These messages will subsequently show
   // up in event_produced as messages to be scheduled by schedule_new_message.
-  def send_external_messages() {
+  def send_external_messages(acquireSemaphore: Boolean) {
     // Ensure that only one thread is accessing shared scheduler structures
-    schedSemaphore.acquire
+    if (acquireSemaphore) {
+      schedSemaphore.acquire
+    }
     assert(started.get)
 
     // Send all pending fd responses
@@ -101,26 +136,48 @@ trait ExternalEventInjector[E] {
     Instrumenter().await_enqueue()
 
     // schedule_new_message is reenterant, hence release before calling.
-    schedSemaphore.release
+    if (acquireSemaphore) {
+      schedSemaphore.release
+    }
+  }
+
+  // When deserializing an event trace, we need the actors to be prepopulated
+  // so we can resolve serialized ActorRefs. Here we populate the actor system
+  // give the names and props of all actors that will eventually appear in the
+  // execution.
+  def populateActorSystem(actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
+    for ((props, name) <- actorNamePropPairs) {
+      // Just start and isolate all actors we might eventually care about
+      Instrumenter().actorSystem.actorOf(props, name)
+      event_orchestrator.isolate_node(name)
+    }
   }
 
   // Given an external event trace, see the events produced
   def execute_trace (_trace: Seq[E]) : EventTrace = {
     event_orchestrator.set_trace(_trace)
-    fd.startFD(Instrumenter().actorSystem)
+    event_orchestrator.reset_events
+
+    if (!_disableFailureDetector) {
+      fd.startFD(Instrumenter().actorSystem)
+    }
+    if (_enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
+    }
     // We begin by starting all actors at the beginning of time, just mark them as
     // isolated (i.e., unreachable). Later, when we replay the `Start` event,
     // we unisolate the actor.
     for (t <- event_orchestrator.trace) {
       t match {
-        case Start (prop, name) =>
+        case Start (propCtor, name) =>
           // Just start and isolate all actors we might eventually care about [top-level actors]
-          Instrumenter().actorSystem.actorOf(prop, name)
+          Instrumenter().actorSystem.actorOf(propCtor(), name)
           event_orchestrator.isolate_node(name)
         case _ =>
           None
       }
     }
+
     currentlyInjecting.set(true)
     // Start playing back trace
     advanceTrace()
@@ -138,10 +195,56 @@ trait ExternalEventInjector[E] {
     schedSemaphore.acquire
     started.set(true)
     event_orchestrator.inject_until_quiescence(enqueue_message)
+    if (!event_orchestrator.trace_finished) {
+      event_orchestrator.current_event match {
+        case Continue(n) => numWaitingFor.set(n)
+        case _ => None
+      }
+    }
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
     Instrumenter().start_dispatch()
+  }
+
+  /**
+   * It is the responsibility of the caller to schedule CheckpointRequest
+   * messages in schedule_new_message() and return to quiescence once all
+   * CheckpointRequests have been sent.
+   *
+   * N.B. this method blocks. The system must be quiescent before
+   * you invoke this. (See RandomScheduler.scala for an example of how to take
+   * checkpoints mid-execution without blocking.)
+   */
+  def takeCheckpoint() : HashMap[String, Option[CheckpointReply]] = {
+    println("Initiating checkpoint")
+    if (!_enableCheckpointing) {
+      throw new IllegalStateException("Must invoke enableCheckpointing() first")
+    }
+    blockedOnCheckpoint.set(true)
+    prepareCheckpoint()
+    require(!started.get)
+    started.set(true)
+    Instrumenter().start_dispatch()
+    checkpointSem.acquire()
+    blockedOnCheckpoint.set(false)
+    return checkpointer.checkpoints
+  }
+
+  def prepareCheckpoint() = {
+    val actorRefs = event_orchestrator.
+                      actorToActorRef.
+                      filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                      values.toSeq
+    val checkpointRequests = checkpointer.prepareRequests(actorRefs)
+    // Put our requests at the front of the queue, and any existing requests
+    // at the end of the queue.
+    val existingExternals = new Queue[(ActorRef, Any)] ++ messagesToSend
+    messagesToSend.clear
+    for ((actor, request) <- checkpointRequests) {
+      enqueue_message(actor, request)
+    }
+    messagesToSend ++= existingExternals
   }
 
   /**
@@ -152,8 +255,15 @@ trait ExternalEventInjector[E] {
   def handle_event_produced(snd: String, rcv: String, envelope: Envelope) : MessageType = {
     // Intercept any messages sent towards the failure detector
     if (rcv == FailureDetector.fdName) {
-      fd.handle_fd_message(envelope.message, snd)
+      if (!_disableFailureDetector) {
+        fd.handle_fd_message(envelope.message, snd)
+      }
       return SystemMessage
+    } else if (rcv == CheckpointSink.name) {
+      if (_enableCheckpointing) {
+        checkpointer.handleCheckpointResponse(envelope.message, snd)
+      }
+      return CheckpointReplyMessage
     } else if (enqueuedExternalMessages.contains(envelope.message)) {
       return ExternalMessage
     } else {
@@ -178,10 +288,11 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_event_consumed(cell: ActorCell, envelope: Envelope) = {
+    numWaitingFor.decrementAndGet()
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (enqueuedExternalMessages.contains(msg)) {
-      enqueuedExternalMessages.remove(msg)
+      enqueuedExternalMessages -= msg
     }
     assert(started.get)
     event_orchestrator.events += ChangeContext(rcv)
@@ -191,7 +302,13 @@ trait ExternalEventInjector[E] {
     assert(started.get)
     started.set(false)
     event_orchestrator.events += Quiescence
-    if (!event_orchestrator.trace_finished) {
+    if (numWaitingFor.get() > 0) {
+      Instrumenter().await_timers(1)
+      started.set(true)
+      Instrumenter().start_dispatch()
+    } else if (blockedOnCheckpoint.get()) {
+      checkpointSem.release()
+    } else if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       advanceTrace()
     } else {
@@ -205,7 +322,6 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_shutdown () {
-    println("restarting system")
     Instrumenter().restart_system
     shutdownSem.acquire
   }
@@ -230,7 +346,14 @@ trait ExternalEventInjector[E] {
     handle_shutdown()
     event_orchestrator = new EventOrchestrator[E]()
     fd = new FDMessageOrchestrator(enqueue_message)
-    event_orchestrator.set_failure_detector(fd)
+    if (!_disableFailureDetector) {
+      event_orchestrator.set_failure_detector(fd)
+    }
+    if (_enableCheckpointing) {
+      checkpointer = new CheckpointCollector
+    }
+    blockedOnCheckpoint = new AtomicBoolean(false)
+    checkpointSem = new Semaphore(0)
     traceSem = new Semaphore(0)
     currentlyInjecting.set(false)
     shutdownSem = new Semaphore(0)
@@ -238,6 +361,7 @@ trait ExternalEventInjector[E] {
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
     messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
+    numWaitingFor = new AtomicInteger(0)
     println("state reset.")
   }
 }
