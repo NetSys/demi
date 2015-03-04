@@ -368,7 +368,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
 
   
   def runExternal() = {
-    logger.debug(Console.RED + " RUN EXTERNAL CALLED initial IDX = " + externalEventIdx +Console.RESET) 
+    logger.trace(Console.RED + " RUN EXTERNAL CALLED initial IDX = " + externalEventIdx +Console.RESET) 
    
     var await = false
     while (externalEventIdx < externalEventList.length && !await) {
@@ -400,7 +400,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
       externalEventIdx += 1
     }
     
-    logger.debug(Console.RED + " RUN EXTERNAL LOOP ENDED idx = " + externalEventIdx + Console.RESET) 
+    logger.trace(Console.RED + " RUN EXTERNAL LOOP ENDED idx = " + externalEventIdx + Console.RESET) 
     
     instrumenter().tellEnqueue.await()
     
