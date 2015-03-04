@@ -33,6 +33,8 @@ class PeekScheduler(enableFailureDetector: Boolean)
     extends FairScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
   def this() = this(true)
 
+  def getName: String = "FairScheduler"
+
   var test_invariant : Invariant = null
 
   enableCheckpointing()
@@ -117,7 +119,9 @@ class PeekScheduler(enableFailureDetector: Boolean)
     super[ExternalEventInjector].enqueue_message(receiver, msg)
   }
 
-  def test(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Boolean = {
+  def test(events: Seq[ExternalEvent],
+           violation_fingerprint: ViolationFingerprint,
+           stats: MinimizationStats) : Option[EventTrace] = {
     Instrumenter().scheduler = this
     peek(events)
     if (test_invariant == null) {
@@ -132,6 +136,10 @@ class PeekScheduler(enableFailureDetector: Boolean)
       case None => None
     }
     shutdown()
-    return !violation_found
+    if (violation_found) {
+      return Some(event_orchestrator.events)
+    } else {
+      return None
+    }
   }
 }

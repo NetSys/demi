@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
-// TODO(cs): we invoke advanceReplay one to many times when peek is enabled. I
+// TODO(cs): we invoke advanceReplay one too many times when peek is enabled. I
 // believe two threads are waiting on schedSemaphore, and both call into
 // advanceReplay. For now it looks like the redundant calls into advanceReplay are a no-op,
 // but it's possible that this might trigger a bug.
@@ -74,6 +74,8 @@ class STSScheduler(var original_trace: EventTrace,
   def this(original_trace: EventTrace) =
       this(original_trace, false, new BasicFingerprinter, true, true)
 
+  def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
+
   enableCheckpointing()
 
   if (!enableFailureDetector) {
@@ -109,13 +111,18 @@ class STSScheduler(var original_trace: EventTrace,
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent],
-            violationFingerprint: ViolationFingerprint) : Boolean = {
+            violationFingerprint: ViolationFingerprint,
+            stats: MinimizationStats) : Option[EventTrace] = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
     assume(!subseq.isEmpty)
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
+    }
+    // We only ever replay once
+    if (stats != null) {
+      stats.increment_replays()
     }
 
     if (enableFailureDetector) {
@@ -155,7 +162,11 @@ class STSScheduler(var original_trace: EventTrace,
       case _ => None
     }
     shutdown()
-    return !violationFound
+    if (violationFound) {
+      return Some(event_orchestrator.events)
+    } else {
+      return None
+    }
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused

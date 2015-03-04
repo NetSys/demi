@@ -154,7 +154,7 @@ trait ExternalEventInjector[E] {
   }
 
   // Given an external event trace, see the events produced
-  def execute_trace (_trace: Seq[E]) : EventTrace = {
+  def execute_trace (_trace: Seq[E], populateActors:Boolean=true) : EventTrace = {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
 
@@ -164,18 +164,13 @@ trait ExternalEventInjector[E] {
     if (_enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
-    // We begin by starting all actors at the beginning of time, just mark them as
-    // isolated (i.e., unreachable). Later, when we replay the `Start` event,
-    // we unisolate the actor.
-    for (t <- event_orchestrator.trace) {
-      t match {
-        case Start (propCtor, name) =>
-          // Just start and isolate all actors we might eventually care about [top-level actors]
-          Instrumenter().actorSystem.actorOf(propCtor(), name)
-          event_orchestrator.isolate_node(name)
-        case _ =>
-          None
-      }
+
+    if (populateActors) {
+      populateActorSystem(_trace flatMap {
+        case SpawnEvent(_,props,name,_) => Some((props, name))
+        case Start(propCtor,name) => Some((propCtor(), name))
+        case _ => None
+      })
     }
 
     currentlyInjecting.set(true)

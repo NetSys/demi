@@ -99,6 +99,11 @@ trait EventDag {
    * Return all ExternalEvents, with AtomicEvents expanded.
    */
   def get_all_events() : Seq[ExternalEvent]
+
+  /**
+   * Return get_all_events().length
+   */
+  def length: Int
 }
 
 // Internal utility methods
@@ -232,6 +237,8 @@ class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
   def get_all_events() : Seq[ExternalEvent] = {
     return events
   }
+
+  def length: Int = events.length
 }
 
 /**
@@ -262,4 +269,6 @@ class EventDagView(parent: UnmodifiedEventDag, events: Seq[ExternalEvent]) exten
   def get_all_events() : Seq[ExternalEvent] = {
     return events
   }
+
+  def length: Int = events.length
 }

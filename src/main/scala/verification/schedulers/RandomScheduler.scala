@@ -35,11 +35,15 @@ import java.util.Random
 // TODO(cs): not guarenteed to terminate! E.g. if we're replaying a
 // "WaitQuiescence" external event, but the system never quiescenes. Might
 // want to allow the user to specify a bound on how many messages to schedule.
-class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean, invariant_check_interval: Int, disableCheckpointing: Boolean)
+class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
+                      invariant_check_interval: Int,
+                      disableCheckpointing: Boolean, populateActors: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_executions: Int) = this(max_executions, true, 0, false)
+  def this(max_executions: Int) = this(max_executions, true, 0, false, true)
   def this(max_executions: Int, enableFailureDetector: Boolean) =
-      this(max_executions, enableFailureDetector, 0, false)
+      this(max_executions, enableFailureDetector, 0, false, true)
+
+  def getName: String = "RandomScheduler"
 
   var test_invariant : Invariant = null
 
@@ -79,6 +83,8 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean, invar
 
   // what was the last value of messagesScheduledSoFar we took a checkpoint at.
   var lastCheckpoint = 0
+
+  var stats: MinimizationStats = null
 
   /**
    * If we're looking for a specific violation, return None if the given
@@ -126,7 +132,8 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean, invar
    * if looking_for is not None, only look for an invariant violation that
    * matches looking_for
    */
-  def explore (_trace: Seq[ExternalEvent], _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
+  def explore (_trace: Seq[ExternalEvent],
+               _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -140,7 +147,10 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean, invar
     for (i <- 1 to max_executions) {
       println("Trying random interleaving " + i)
       event_orchestrator.events.setOriginalExternalEvents(_trace)
-      val event_trace = execute_trace(_trace)
+      if (stats != null) {
+        stats.increment_replays()
+      }
+      val event_trace = execute_trace(_trace, populateActors=populateActors)
 
       // If the violation has already been found, return.
       violationFound match {
@@ -315,11 +325,19 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean, invar
     lastCheckpoint = 0
   }
 
-  def test(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Boolean = {
+  def test(events: Seq[ExternalEvent],
+           violation_fingerprint: ViolationFingerprint,
+           _stats: MinimizationStats) : Option[EventTrace] = {
+    stats = _stats
     Instrumenter().scheduler = this
     val tuple_option = explore(events, Some(violation_fingerprint))
     reset_all_state
     // test passes if we were unable to find a failure.
-    return tuple_option == None
+    tuple_option match {
+      case Some((trace, violation)) =>
+        return Some(trace)
+      case None =>
+        return None
+    }
   }
 }

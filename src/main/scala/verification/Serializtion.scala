@@ -35,11 +35,10 @@ object ExperimentSerializer {
   val event_trace = "/event_trace.bin"
   val original_externals = "/original_externals.bin"
   val violation = "/violation.bin"
-}
+  val mcs = "/mcs.bin"
+  val stats = "/minimization_stats.json"
 
-class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_serializer: MessageSerializer) {
-
-  private[this] def create_experiment_dir(experiment_name: String) : String = {
+  def create_experiment_dir(experiment_name: String) : String = {
     // Create experiment dir.
     var output_dir = ""
     val errToDevNull = BasicIO(false, (out) => output_dir = out, None)
@@ -48,10 +47,13 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     proc.exitValue
     return output_dir.trim
   }
+}
+
+class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_serializer: MessageSerializer) {
 
   def record_experiment(experiment_name: String, trace: EventTrace,
                         violation: ViolationFingerprint) : String = {
-    val output_dir = create_experiment_dir(experiment_name)
+    val output_dir = ExperimentSerializer.create_experiment_dir(experiment_name)
     // We store the actor's names and props separately (reduntantly), so that
     // we can properly deserialize ActorRefs later. (When deserializing
     // ActorRefs, we need access to an ActorSystem with all the actors already booted,
@@ -223,6 +225,23 @@ object JavaSerialization {
       try {
         if (fos != null) {
            fos.close()
+        }
+      } catch {
+        case ioe: IOException => None
+      }
+    }
+  }
+
+  def writeToFile(filename: String, contents: String) {
+    val file = new File(filename)
+    var pw : PrintWriter = null
+    try {
+      val pw = new PrintWriter(file)
+      pw.write(contents)
+    } finally {
+      try {
+        if (pw != null) {
+          pw.close()
         }
       } catch {
         case ioe: IOException => None
