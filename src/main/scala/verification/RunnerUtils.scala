@@ -61,9 +61,11 @@ object RunnerUtils {
 
   def randomDDMin(experiment_dir: String,
                   messageFingerprinter: MessageFingerprinter,
-                  messageDeserializer: MessageDeserializer) :
+                  messageDeserializer: MessageDeserializer,
+                  invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new RandomScheduler(1, false, 0, false)
+    sched.setInvariant(invariant)
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
 
     val ddmin = new DDMin(sched)
@@ -77,10 +79,12 @@ object RunnerUtils {
                     messageFingerprinter: MessageFingerprinter,
                     messageDeserializer: MessageDeserializer,
                     allowPeek: Boolean,
+                    invariant: TestOracle.Invariant,
                     event_mapper: Option[HistoricalScheduler.EventMapper]) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(new EventTrace, allowPeek,
         messageFingerprinter, false)
+    sched.setInvariant(invariant)
     event_mapper match {
       case Some(f) => sched.setEventMapper(f)
       case None => None
