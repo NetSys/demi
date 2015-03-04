@@ -32,6 +32,10 @@ class DDMin (oracle: TestOracle) extends Minimizer {
     return ret
   }
 
+  def verify_mcs(mcs: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint): Option[EventTrace] = {
+    return oracle.test(mcs, _violation_fingerprint, new MinimizationStats("NOP", "NOP"))
+  }
+
   def ddmin2(dag: EventDag, remainder: EventDag, total_inputs_pruned: Int): EventDag = {
     if (dag.get_atomic_events.length <= 1) {
       println("base case")

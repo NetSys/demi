@@ -39,5 +39,9 @@ class LeftToRightRemoval (oracle: TestOracle) extends Minimizer {
 
     return dag.get_all_events
   }
+
+  def verify_mcs(mcs: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint): Option[EventTrace] = {
+    return oracle.test(mcs, violation_fingerprint, new MinimizationStats("NOP", "NOP"))
+  }
 }
 

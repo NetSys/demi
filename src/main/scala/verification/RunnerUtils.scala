@@ -61,39 +61,31 @@ object RunnerUtils {
 
   def randomDDMin(experiment_dir: String,
                   messageFingerprinter: MessageFingerprinter,
-                  messageDeserializer: MessageDeserializer) : Tuple2[Seq[ExternalEvent], MinimizationStats] = {
+                  messageDeserializer: MessageDeserializer) :
+        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new RandomScheduler(1, false, 0, false, false)
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
 
     val ddmin = new DDMin(sched)
-    return (ddmin.minimize(trace.original_externals, violation), ddmin.stats)
+    val mcs = ddmin.minimize(trace.original_externals, violation)
+    println("Validing MCS...")
+    val validated_mcs = ddmin.verify_mcs(mcs, violation)
+    return (mcs, ddmin.stats, validated_mcs, violation)
   }
 
   def stsSchedDDMin(experiment_dir: String,
                     messageFingerprinter: MessageFingerprinter,
                     messageDeserializer: MessageDeserializer,
-                    allowPeek: Boolean) : Tuple2[Seq[ExternalEvent], MinimizationStats] = {
+                    allowPeek: Boolean) :
+        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(new EventTrace, allowPeek,
         messageFingerprinter, false, false)
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
 
     val ddmin = new DDMin(sched)
-    return (ddmin.minimize(trace.original_externals, violation), ddmin.stats)
-  }
-
-  // TODO(cs): add smallest execution that reproduces the bug.
-  def serializeMCS(old_experiment_dir: String, mcs: Seq[ExternalEvent],
-                   stats: MinimizationStats) {
-    val new_experiment_dir = old_experiment_dir + "_" +
-        stats.minimization_strategy + "_" + stats.test_oracle
-    ExperimentSerializer.create_experiment_dir(new_experiment_dir)
-
-    val mcsBuf = JavaSerialization.serialize(mcs.toArray)
-    JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
-                                  mcsBuf)
-
-    val statsJson = stats.toJson
-    JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.stats,
-                                  statsJson)
+    val mcs = ddmin.minimize(trace.original_externals, violation)
+    println("Validing MCS...")
+    val validated_mcs = ddmin.verify_mcs(mcs, violation)
+    return (mcs, ddmin.stats, validated_mcs, violation)
   }
 }

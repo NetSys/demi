@@ -61,6 +61,12 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     // corresponding actors in the new ActorSystem. We therefore first boot the
     // system with all these actors created, and then deserialize the rest of the
     // events.)
+    record_experiment_known_dir(output_dir, trace, violation)
+    return output_dir
+  }
+
+  def record_experiment_known_dir(output_dir: String, trace: EventTrace,
+                                  violation: ViolationFingerprint) {
     val actorPropNamePairs = trace.events.flatMap {
       case SpawnEvent(_,props,name,_) => Some((props, name))
       case _ => None
@@ -121,8 +127,29 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     val externalBuf = message_serializer.serialize(trace.original_externals)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.original_externals,
                                   externalBuf)
+  }
 
-    return output_dir
+  def serializeMCS(old_experiment_dir: String, mcs: Seq[ExternalEvent],
+                   stats: MinimizationStats,
+                   mcs_execution: Option[EventTrace],
+                   violation: ViolationFingerprint) {
+    val new_experiment_dir = old_experiment_dir + "_" +
+        stats.minimization_strategy + "_" + stats.test_oracle
+    ExperimentSerializer.create_experiment_dir(new_experiment_dir)
+
+    val mcsBuf = JavaSerialization.serialize(mcs.toArray)
+    JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
+                                  mcsBuf)
+
+    val statsJson = stats.toJson
+    JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.stats,
+                                  statsJson)
+
+    mcs_execution match {
+      case Some(event_trace) =>
+        record_experiment_known_dir(new_experiment_dir, event_trace, violation)
+      case None => None
+    }
   }
 }
 
