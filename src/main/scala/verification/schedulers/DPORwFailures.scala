@@ -41,6 +41,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
+  var externalEventIdx = 0
   var started = false
   
   var currentTime = 0
@@ -50,6 +51,8 @@ class DPORwFailures extends Scheduler with LazyLogging {
   val actorNames = new HashSet[String]
  
   val depGraph = Graph[Unique, DiEdge]()
+
+  val quiescentPeriod = new HashMap[Unique, Int]
   
   val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
   var invariant : Queue[Unique] = Queue()
@@ -64,13 +67,34 @@ class DPORwFailures extends Scheduler with LazyLogging {
   var post: (Queue[Unique]) => Unit = nullFunPost
   var done: (Scheduler) => Unit = nullFunDone
   
+  var currentQuiescentPeriod = 0
+  var awaitingQuiescence = false
+  var nextQuiescentPeriod = 0
+  var quiescentMarker:Unique = null
+
   def nullFunPost(trace: Queue[Unique]) : Unit = {}
   def nullFunDone(s :Scheduler) : Unit = {}
   
+  private[this] def awaitQuiescenceUpdate (nextEvent:Unique) = { 
+    logger.trace(Console.BLUE + "Beginning to wait for quiescence " + Console.RESET)
+    nextEvent match {
+      case Unique(DporQuiescence(qperiod), _) =>
+        awaitingQuiescence = true
+        nextQuiescentPeriod = qperiod
+        quiescentMarker = nextEvent
+      case _ =>
+        throw new Exception("Bad args")
+    }
+  }
+
+  private[this] def addGraphNode (event: Unique) = {
+    depGraph.add(event)
+    quiescentPeriod(event) = currentQuiescentPeriod
+  }
   
   def getRootEvent() : Unique = {
     var root = Unique(MsgEvent("null", "null", null), 0)
-    depGraph.add(root)
+    addGraphNode(root)
     return root
   }
   
@@ -118,7 +142,9 @@ class DPORwFailures extends Scheduler with LazyLogging {
     
     started = false
     actorNames.clear
+    externalEventIdx = 0
     
+    currentTrace += getRootEvent()
     runExternal()
   }
   
@@ -133,7 +159,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
 
   // Get next message event from the trace.
-  def getNextTraceMessage() : Option[Unique] =
+  def getNextTraceMessage() : Option[Unique] = 
   mutableTraceIterator(nextTrace) match {
     // All spawn events are ignored.
     case some @ Some(Unique(s: SpawnEvent, id)) => getNextTraceMessage()
@@ -194,15 +220,19 @@ class DPORwFailures extends Scheduler with LazyLogging {
           logger.trace( Console.GREEN + "Now playing the high level partition event " +
               id + Console.RESET)
           Some(par)
-          
+
+        case Some(qui @ (Unique(DporQuiescence(_), id), _, _)) =>
+          logger.trace( Console.GREEN + "Now playing the high level quiescence event " +
+              id + Console.RESET)
+          Some(qui)
+
         case None => None        
         case _ => throw new Exception("internal error")
       }
     }
     
     
-    def getMatchingMessage() : Option[(Unique, ActorCell, Envelope)] = 
-      
+    def getMatchingMessage() : Option[(Unique, ActorCell, Envelope)] = {
       getNextTraceMessage() match {
         // The trace says there is a message event to run.
         case Some(u @ Unique(MsgEvent(snd, rcv, msg), id)) =>
@@ -220,14 +250,21 @@ class DPORwFailures extends Scheduler with LazyLogging {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
             case None =>  None
           }
+
+        case Some(u @ Unique(DporQuiescence(_), _)) => // Look at the pending events to see if such message event exists. 
+          pendingEvents.get(SCHEDULER) match {
+            case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
+            case None =>  None
+          }
           
         // The trace says there is nothing to run so we have either exhausted our
         // trace or are running for the first time. Use any enabled transitions.
         case None => None
         case _ => throw new Exception("internal error")
       }
-
     
+    }
+    //
     // Are there any prioritized events that need to be dispatched.
     pendingEvents.get(PRIORITY) match {
       case Some(queue) if !queue.isEmpty => {
@@ -238,25 +275,37 @@ class DPORwFailures extends Scheduler with LazyLogging {
     }
     
     
-    val result = getMatchingMessage() match {
-      
-      // There is a pending event that matches a message in our trace.
-      // We call this a convergent state.
-      case m @ Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
-        logger.trace( Console.GREEN + "Replaying the exact message: Message: " +
-            "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
-        Some((u, cell, env))
-        
-      case Some((u @ Unique(NetworkPartition(part1, part2), id), _, _)) =>
-        logger.trace( Console.GREEN + "Replaying the exact message: Partition: (" 
-            + part1 + " <-> " + part2 + ")" + Console.RESET )
-        Some((u, null, null))
-        
-      // We call this a divergent state.
-      case None => getPendingEvent()
-      
-      // Something went wrong.
-      case _ => throw new Exception("not a message")
+    val result = awaitingQuiescence match {
+      case false =>
+        getMatchingMessage() match {
+          
+          // There is a pending event that matches a message in our trace.
+          // We call this a convergent state.
+          case m @ Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
+            logger.trace( Console.GREEN + "Replaying the exact message: Message: " +
+                "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
+            Some((u, cell, env))
+            
+          case Some((u @ Unique(NetworkPartition(part1, part2), id), _, _)) =>
+            logger.trace( Console.GREEN + "Replaying the exact message: Partition: (" 
+                + part1 + " <-> " + part2 + ")" + Console.RESET )
+            Some((u, null, null))
+
+          case Some((u @ Unique(DporQuiescence(qid), id), _, _)) =>
+            logger.trace( Console.GREEN + "Replaying the exact message: Quiescence: (" 
+                + qid +  ")" + Console.RESET )
+            Some((u, null, null))
+            
+          // We call this a divergent state.
+          case None => getPendingEvent()
+          
+          // Something went wrong.
+          case _ => throw new Exception("not a message")
+        }
+      case true => // Don't call getMatchingMessage when waiting quiescence. Except when divergent or running the first
+                  // time through, there should be no pending messages, signifying quiescence. Get pending event takes
+                  // care of the first run. We could explicitly detect divergence here, but we haven't been so far.
+        getPendingEvent()
     }
     
     
@@ -288,7 +337,10 @@ class DPORwFailures extends Scheduler with LazyLogging {
         
         currentTrace += nextEvent
         return schedule_new_message()
-        
+
+      case Some((nextEvent @ Unique(DporQuiescence(qperiod), nID), _, _)) =>
+        awaitQuiescenceUpdate(nextEvent)
+        return schedule_new_message()
       case _ => return None
     }
     
@@ -316,25 +368,39 @@ class DPORwFailures extends Scheduler with LazyLogging {
 
   
   def runExternal() = {
-    currentTrace += getRootEvent()
+    logger.debug(Console.RED + " RUN EXTERNAL CALLED initial IDX = " + externalEventIdx +Console.RESET) 
+   
+    var await = false
+    while (externalEventIdx < externalEventList.length && !await) {
+      val event = externalEventList(externalEventIdx)
+      event match {
     
-    for(event <- externalEventList) event match {
+        case Start(propsCtor, name) => 
+          instrumenter().actorSystem().actorOf(propsCtor(), name)
     
-      case Start(propsCtor, name) => 
-        instrumenter().actorSystem().actorOf(propsCtor(), name)
-  
-      case Send(rcv, msgCtor) =>
-        val ref = instrumenter().actorMappings(rcv)
-        instrumenter().actorMappings(rcv) ! msgCtor()
+        case Send(rcv, msgCtor) =>
+          val ref = instrumenter().actorMappings(rcv)
+          instrumenter().actorMappings(rcv) ! msgCtor()
 
-      case uniq @ Unique(par : NetworkPartition, id) =>  
-        val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
-        pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
-      
-      // A unique ID needs to be associated with all network events.
-      case par : NetworkPartition => throw new Exception("internal error")
-      case _ => throw new Exception("unsuported external event")
+        case uniq @ Unique(par : NetworkPartition, id) =>  
+          val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
+          pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
+          addGraphNode(uniq)
+       
+        case event @ Unique(_: DporQuiescence, _) =>
+          val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
+          pendingEvents(SCHEDULER) = msgs += ((event, null, null))
+          addGraphNode(event)
+          await = true
+
+        // A unique ID needs to be associated with all network events.
+        case par : NetworkPartition => throw new Exception("internal error")
+        case _ => throw new Exception("unsuported external event")
+      }
+      externalEventIdx += 1
     }
+    
+    logger.debug(Console.RED + " RUN EXTERNAL LOOP ENDED idx = " + externalEventIdx + Console.RESET) 
     
     instrumenter().tellEnqueue.await()
     
@@ -358,8 +424,9 @@ class DPORwFailures extends Scheduler with LazyLogging {
     externalEventList = externalEvents.map { e => e match {
       case par: NetworkPartition => 
         val unique = Unique(par)
-        depGraph.add(unique)
         unique
+      case qui : DporQuiescence =>
+        Unique(qui)
       case other => other
     } }
     
@@ -428,7 +495,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
             "(" + msg.sender + " -> " + msg.receiver + ") " +
             id + Console.RESET)
         
-        depGraph.add(unique)
+        addGraphNode(unique)
         depGraph.addEdge(unique, parentEvent)(DiEdge)
     }
     
@@ -461,33 +528,49 @@ class DPORwFailures extends Scheduler with LazyLogging {
   
   def notify_quiescence() {
     
-    logger.info("\n--------------------- Interleaving #" +
-                interleavingCounter + " ---------------------")
-    
-    logger.debug(Console.BLUE + "Current trace: " +
-        Util.traceStr(currentTrace) + Console.RESET)
-    
-    nextTrace.clear()
-    
-    dpor(currentTrace) match {
-      case Some(trace) =>
-        nextTrace ++= trace
-        
-        logger.debug(Console.BLUE + "Next trace:  " + 
-            Util.traceStr(nextTrace) + Console.RESET)
-        
-        parentEvent = getRootEvent
+    if (awaitingQuiescence) {
+      awaitingQuiescence = false
+      logger.trace(Console.BLUE + " Done waiting for quiescence " + Console.RESET)
 
-        post(currentTrace)
-        
-        pendingEvents.clear()
-        currentTrace.clear
+      currentQuiescentPeriod = nextQuiescentPeriod
+      nextQuiescentPeriod = 0
 
-        
-        instrumenter().await_enqueue()
-        instrumenter().restart_system()
-      case None =>
-        return
+      addGraphNode(quiescentMarker)
+      currentTrace += quiescentMarker
+      quiescentMarker = null
+
+      runExternal()
+    } else {
+      logger.info("\n--------------------- Interleaving #" +
+                  interleavingCounter + " ---------------------")
+      
+      logger.debug(Console.BLUE + "Current trace: " +
+          Util.traceStr(currentTrace) + Console.RESET)
+
+      
+      nextTrace.clear()
+      
+      dpor(currentTrace) match {
+        case Some(trace) =>
+          nextTrace ++= trace
+          
+          logger.debug(Console.BLUE + "Next trace:  " + 
+              Util.traceStr(nextTrace) + Console.RESET)
+          
+          parentEvent = getRootEvent
+
+          post(currentTrace)
+          
+          pendingEvents.clear()
+          currentTrace.clear
+          currentQuiescentPeriod = 0
+
+          
+          instrumenter().await_enqueue()
+          instrumenter().restart_system()
+        case None =>
+          return
+      }
     }
   }
   
@@ -637,10 +720,16 @@ class DPORwFailures extends Scheduler with LazyLogging {
       // NetworkPartition is always co-enabled with any other event.
       case (Unique(p : NetworkPartition, _), _) => true
       case (_, Unique(p : NetworkPartition, _)) => true
+      // Quiescence is never co-enabled
+      case (Unique(p : DporQuiescence, _), _) => false
+      case (_, Unique(p : DporQuiescence, _)) => false
       //case (_, _) =>
       case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
         if (m1.receiver != m2.receiver) 
           return false
+        if (quiescentPeriod.get(earlier).get != quiescentPeriod.get(later).get) {
+          return false
+        }
         val earlierN = (depGraph get earlier)
         val laterN = (depGraph get later)
         

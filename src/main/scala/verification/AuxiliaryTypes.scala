@@ -43,6 +43,9 @@ case class NetworkPartition(
     first: Set[String], 
     second: Set[String]) extends Event with ExternalEvent
 
+case class DporQuiescence(
+  count: Int) extends Event with ExternalEvent
+
 
 
 // Base class for failure detector messages
