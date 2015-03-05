@@ -10,7 +10,7 @@ import java.util.concurrent.Semaphore,
 
 
 object IDGenerator {
-  var uniqueId = new AtomicInteger
+  var uniqueId = new AtomicInteger // DPOR root event is assumed to be ID 0, incrementAndGet ensures starting at 1
 
   def get() : Integer = {
     return uniqueId.incrementAndGet()
@@ -40,6 +40,8 @@ case class SpawnEvent(
 case class NetworkPartition(
     first: Set[String], 
     second: Set[String]) extends Event with ExternalEvent
+
+case object RootEvent extends Event
 
 //case object DporQuiescence extends Event with ExternalEvent
 
