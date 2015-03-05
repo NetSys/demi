@@ -78,6 +78,10 @@ class EventOrchestrator[E] {
     return traceIdx >= trace.size
   }
 
+  def finish_early() = {
+    traceIdx = trace.size
+  }
+
   // A bit of a misnomer: current *trace* event, not current recorded event.
   def current_event() : E = {
     if (traceIdx >= trace.length) {

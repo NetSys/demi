@@ -313,7 +313,6 @@ trait ExternalEventInjector[E] {
         return
       }
     } else if (blockedOnCheckpoint.get()) {
-      println
       checkpointSem.release()
       return
     }

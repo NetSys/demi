@@ -240,6 +240,8 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
 
     // Also check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
+      numWaitingFor.set(0)
+      event_orchestrator.finish_early
       return None
     }
 
