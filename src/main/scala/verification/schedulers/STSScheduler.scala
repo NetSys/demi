@@ -254,7 +254,11 @@ class STSScheduler(var original_trace: EventTrace,
           case TimerSend(fingerprint) =>
             if (scheduledFSMTimers contains fingerprint) {
               val timer = scheduledFSMTimers(fingerprint)
-              Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
+              // It may have been cancelled:
+              if (Instrumenter().timerToCancellable contains
+                  ((fingerprint.receiver, timer))) {
+                Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
+              }
               timersSentButNotYetDelivered += fingerprint
             }
           case TimerDelivery(fingerprint) =>
