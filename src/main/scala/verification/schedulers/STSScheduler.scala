@@ -157,7 +157,6 @@ class STSScheduler(var original_trace: EventTrace,
       case _ => None
     }
     currentlyInjecting.set(false)
-    shutdown()
     val ret = violationFound match {
       case true => Some(event_orchestrator.events)
       case false => None
