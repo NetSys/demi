@@ -124,6 +124,9 @@ class STSScheduler(var original_trace: EventTrace,
     if (enableFailureDetector) {
       fd.startFD(instrumenter.actorSystem)
     }
+    if (_enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
+    }
 
     if (!alreadyPopulated) {
       populateActorSystem(original_trace.getEvents flatMap {
