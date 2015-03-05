@@ -66,7 +66,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   val reachabilityMap = new HashMap[String, Set[String]]
   
   var post: (Trace) => Unit = nullFunPost
-  var done: (Scheduler) => Unit = nullFunDone
+  var done: (Graph[Unique, DiEdge]) => Unit = nullFunDone
   
   var currentQuiescentPeriod = 0
   var awaitingQuiescence = false
@@ -74,7 +74,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   var quiescentMarker:Unique = null
 
   def nullFunPost(trace: Trace) : Unit = {}
-  def nullFunDone(s :Scheduler) : Unit = {}
+  def nullFunDone(graph: Graph[Unique, DiEdge]) : Unit = {}
 
   // Reset state between runs
   private[this] def reset() = {
@@ -87,7 +87,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     nextQuiescentPeriod = 0
     quiescentMarker = null
     currentQuiescentPeriod = 0
-    //depGraph.clear
+    depGraph.clear
     externalEventIdx = 0
     currentTime = 0
     interleavingCounter = 0
@@ -438,8 +438,9 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
 
   def run(externalEvents: Seq[ExternalEvent],
           f1: (Trace) => Unit = nullFunPost,
-          f2: (Scheduler) => Unit = nullFunDone,
-          initialTrace: Option[Trace] = None) = {
+          f2: (Graph[Unique, DiEdge]) => Unit = nullFunDone,
+          initialTrace: Option[Trace] = None,
+          initialGraph: Option[Graph[Unique, DiEdge]] = None) = {
     reset()
     // Transform the original list of external events,
     // and assign a unique ID to all network events.
@@ -456,9 +457,15 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     
     post = f1
     done = f2
+    
     initialTrace match {
-     case Some(tr) => nextTrace ++= tr
-     case _ => nextTrace.clear
+      case Some(tr) => 
+        nextTrace ++= tr
+        initialGraph match {
+          case Some(gr) => depGraph ++= gr
+          case _ => throw new Exception("Must supply a dependency graph with a trace")
+        } 
+      case _ => nextTrace.clear
     }
     
     
@@ -812,7 +819,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
             // If the backtrack set is empty, this means we're done.
       if (backTrack.isEmpty) {
         logger.info("Tutto finito!")
-        done(this)
+        done(depGraph)
         return None
         //System.exit(0);
       }
