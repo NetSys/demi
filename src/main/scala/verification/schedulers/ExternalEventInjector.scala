@@ -99,7 +99,7 @@ trait ExternalEventInjector[E] {
   // Whether populateActors has been invoked.
   var alreadyPopulated = false
 
-  // Enqueue an external message for future delivery
+    // Enqueue an external message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
       enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)

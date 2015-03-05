@@ -4,7 +4,7 @@ package akka.dispatch.verification
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
 
-  def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant, shutdownCallback: () => Any) :
+  def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant) :
         Tuple2[EventTrace, ViolationFingerprint] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -20,7 +20,6 @@ object RunnerUtils {
           println("Returned to main with events")
           sched.shutdown()
           println("shutdown successfully")
-          shutdownCallback()
         case Some((trace, violation)) => {
           println("Found a safety violation!")
           violationFound = violation
