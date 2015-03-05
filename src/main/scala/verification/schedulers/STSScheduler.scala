@@ -156,6 +156,7 @@ class STSScheduler(var original_trace: EventTrace,
         violationFound = fingerprint.matches(violationFingerprint)
       case _ => None
     }
+    currentlyInjecting.set(false)
     shutdown()
     val ret = violationFound match {
       case true => Some(event_orchestrator.events)
@@ -463,6 +464,11 @@ class STSScheduler(var original_trace: EventTrace,
     }
     assert(started.get)
     started.set(false)
+    if (blockedOnCheckpoint.get) {
+      checkpointSem.release()
+      return
+    }
+
     if (!event_orchestrator.trace_finished) {
       throw new Exception("Failed to find messages to send to finish the trace!")
     } else {
