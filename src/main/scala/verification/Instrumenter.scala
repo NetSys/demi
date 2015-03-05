@@ -320,6 +320,7 @@ class Instrumenter {
 
   // Return whether there were any timers to wait for...
   def await_timers(numTimers: Integer): Boolean = {
+    updateCancellables()
     if (numTimers <= 0) {
       throw new IllegalArgumentException("numTimers must be > 0")
     }

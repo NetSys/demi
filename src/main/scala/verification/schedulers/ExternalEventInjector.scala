@@ -195,7 +195,7 @@ trait ExternalEventInjector[E] {
     started.set(true)
     event_orchestrator.inject_until_quiescence(enqueue_message)
     if (!event_orchestrator.trace_finished) {
-      event_orchestrator.current_event match {
+      event_orchestrator.previous_event match {
         case Continue(n) => numWaitingFor.set(n)
         case _ => None
       }
@@ -297,21 +297,28 @@ trait ExternalEventInjector[E] {
     event_orchestrator.events += ChangeContext(rcv)
   }
 
-  def handle_quiescence () {
+  def handle_quiescence(): Unit = {
     assert(started.get)
     started.set(false)
     event_orchestrator.events += Quiescence
     if (numWaitingFor.get() > 0) {
       val pendingTimers = Instrumenter().await_timers(1)
       if (!pendingTimers) {
-        advanceTrace()
+        // Nothing to wait for.
+        // Fall through to next if/else block.
+        numWaitingFor.set(0)
       } else {
         started.set(true)
         Instrumenter().start_dispatch()
+        return
       }
     } else if (blockedOnCheckpoint.get()) {
+      println
       checkpointSem.release()
-    } else if (!event_orchestrator.trace_finished) {
+      return
+    }
+
+    if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       advanceTrace()
     } else {

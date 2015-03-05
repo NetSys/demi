@@ -67,6 +67,13 @@ class EventOrchestrator[E] {
     traceIdx += 1
   }
 
+  def previous_event(): E = {
+    if (traceIdx - 0 < 0) {
+      throw new IllegalStateException("No previous event..")
+    }
+    trace(traceIdx - 1)
+  }
+
   def trace_finished() : Boolean = {
     return traceIdx >= trace.size
   }
