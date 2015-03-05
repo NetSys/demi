@@ -17,7 +17,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
     violation_fingerprint = _violation_fingerprint
 
     // First check if the initial trace violates the exception
-    if (checkUnmodified) {
+    if (checkUnmodifed) {
       println("Checking if unmodified trace triggers violation...")
       if (oracle.test(events, violation_fingerprint, stats) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")

@@ -9,7 +9,7 @@ class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends M
 
   def minimize(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
     // First check if the initial trace violates the exception
-    if (checkUnmodified) {
+    if (checkUnmodifed) {
       println("Checking if unmodified trace triggers violation...")
       if (oracle.test(events, violation_fingerprint, stats) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
