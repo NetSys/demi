@@ -44,7 +44,7 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
 
   // Allow the user to place a bound on how many messages are delivered.
   // Useful for dealing with non-terminating systems.
-  var maxMessages = -1
+  var maxMessages = Int.MaxValue
   def setMaxMessages(_maxMessages: Int) = {
     maxMessages = _maxMessages
   }
@@ -279,6 +279,9 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     }
 
     messagesScheduledSoFar += 1
+    if (messagesScheduledSoFar == Int.MaxValue) {
+      messagesScheduledSoFar = 1
+    }
     val uniq = pendingInternalEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
     return Some(uniq.element)
