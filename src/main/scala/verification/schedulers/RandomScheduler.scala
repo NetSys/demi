@@ -32,9 +32,6 @@ import java.util.Random
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-// TODO(cs): not guarenteed to terminate! E.g. if we're replaying a
-// "WaitQuiescence" external event, but the system never quiescenes. Might
-// want to allow the user to specify a bound on how many messages to schedule.
 class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
                       invariant_check_interval: Int,
                       disableCheckpointing: Boolean)
@@ -44,6 +41,13 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
       this(max_executions, enableFailureDetector, 0, false)
 
   def getName: String = "RandomScheduler"
+
+  // Allow the user to place a bound on how many messages are delivered.
+  // Useful for dealing with non-terminating systems.
+  var maxMessages = -1
+  def setMaxMessages(_maxMessages: Int) = {
+    maxMessages = _maxMessages
+  }
 
   var test_invariant : Invariant = null
 
@@ -232,6 +236,11 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
         return None
       case None =>
         None
+    }
+
+    // Also check if we've exceeded our message limit
+    if (messagesScheduledSoFar > maxMessages) {
+      return None
     }
 
     // Otherwise, see if it's time to check the invariant violation.

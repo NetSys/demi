@@ -20,7 +20,6 @@ object RunnerUtils {
           println("Returned to main with events")
           sched.shutdown()
           println("shutdown successfully")
-          // raftChecks = new RaftChecks
           shutdownCallback()
         case Some((trace, violation)) => {
           println("Found a safety violation!")
@@ -67,6 +66,7 @@ object RunnerUtils {
     val sched = new RandomScheduler(1, false, 0, false)
     sched.setInvariant(invariant)
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    sched.setMaxMessages(trace.size)
 
     val ddmin = new DDMin(sched, false)
     val mcs = ddmin.minimize(trace.original_externals, violation)
