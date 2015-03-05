@@ -3,14 +3,17 @@ package akka.dispatch.verification
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.HashSet
 
-class LeftToRightRemoval (oracle: TestOracle) extends Minimizer {
+class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
+  def this(oracle: TestOracle) = this(oracle, true)
   val stats = new MinimizationStats("LeftToRightRemoval", oracle.getName)
 
   def minimize(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
     // First check if the initial trace violates the exception
-    println("Checking if unmodified trace triggers violation...")
-    if (oracle.test(events, violation_fingerprint, stats) == None) {
-      throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+    if (checkUnmodified) {
+      println("Checking if unmodified trace triggers violation...")
+      if (oracle.test(events, violation_fingerprint, stats) == None) {
+        throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+      }
     }
 
     var dag : EventDag = new UnmodifiedEventDag(events)

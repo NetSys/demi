@@ -68,7 +68,7 @@ object RunnerUtils {
     sched.setInvariant(invariant)
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
 
-    val ddmin = new DDMin(sched)
+    val ddmin = new DDMin(sched, false)
     val mcs = ddmin.minimize(trace.original_externals, violation)
     println("Validing MCS...")
     val validated_mcs = ddmin.verify_mcs(mcs, violation)

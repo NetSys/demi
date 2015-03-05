@@ -1,6 +1,8 @@
 package akka.dispatch.verification
 
-class DDMin (oracle: TestOracle) extends Minimizer {
+class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
+  def this(oracle: TestOracle) = this(oracle, true)
+
   var violation_fingerprint : ViolationFingerprint = null
   val stats = new MinimizationStats("DDMin", oracle.getName)
   var original_num_events = 0
@@ -15,9 +17,11 @@ class DDMin (oracle: TestOracle) extends Minimizer {
     violation_fingerprint = _violation_fingerprint
 
     // First check if the initial trace violates the exception
-    println("Checking if unmodified trace triggers violation...")
-    if (oracle.test(events, violation_fingerprint, stats) == None) {
-      throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+    if (checkUnmodified) {
+      println("Checking if unmodified trace triggers violation...")
+      if (oracle.test(events, violation_fingerprint, stats) == None) {
+        throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+      }
     }
     stats.reset()
     original_num_events = events.length
