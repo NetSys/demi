@@ -65,8 +65,6 @@ class STSScheduler(var original_trace: EventTrace,
                    messageFingerprinter: MessageFingerprinter,
                    enableFailureDetector:Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
-  assume(!original_trace.isEmpty)
-
   def this(original_trace: EventTrace) =
       this(original_trace, false, new BasicFingerprinter, true)
 
@@ -109,6 +107,7 @@ class STSScheduler(var original_trace: EventTrace,
   def test (subseq: Seq[ExternalEvent],
             violationFingerprint: ViolationFingerprint,
             stats: MinimizationStats) : Option[EventTrace] = {
+    assume(!original_trace.isEmpty)
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }

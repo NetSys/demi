@@ -90,6 +90,7 @@ object RunnerUtils {
       case None => None
     }
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    sched.original_trace = trace
 
     val ddmin = new DDMin(sched)
     val mcs = ddmin.minimize(trace.original_externals, violation)
