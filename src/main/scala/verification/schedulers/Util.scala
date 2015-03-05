@@ -225,8 +225,15 @@ object Util {
     
     return str
   }
+
   
-  
+  def traceList(trace: Seq[Unique]) : String = {
+    var str = ""
+    for (Unique(ev, id) <- trace) {
+      str += ev + " " + id + "\n"
+    }
+    return str
+  }
     
   def getDot(g: Graph[Unique, DiEdge]) : String = {
     

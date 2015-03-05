@@ -184,4 +184,8 @@ class ExploredTacker {
       //println(index + ": " + set.size + ": " +  content))
     }
   }
+
+  def clear() = {
+    exploredStack.clear()
+  }
 }
