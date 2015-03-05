@@ -258,8 +258,8 @@ class STSScheduler(var original_trace: EventTrace,
               if (Instrumenter().timerToCancellable contains
                   ((fingerprint.receiver, timer))) {
                 Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
+                timersSentButNotYetDelivered += fingerprint
               }
-              timersSentButNotYetDelivered += fingerprint
             }
           case TimerDelivery(fingerprint) =>
             if (timersSentButNotYetDelivered contains fingerprint) {
