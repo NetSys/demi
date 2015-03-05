@@ -93,7 +93,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   }
   
   def getRootEvent() : Unique = {
-    var root = Unique(MsgEvent("null", "null", null), 0)
+    var root = Unique(RootEvent, 0)
     addGraphNode(root)
     return root
   }
@@ -163,8 +163,8 @@ class DPORwFailures extends Scheduler with LazyLogging {
   mutableTraceIterator(nextTrace) match {
     // All spawn events are ignored.
     case some @ Some(Unique(s: SpawnEvent, id)) => getNextTraceMessage()
-    // All system messages need to ignored.
-    case some @ Some(Unique(t, 0)) => getNextTraceMessage()
+    // Root event needs to be ignored.
+    case some @ Some(Unique(RootEvent, 0)) => getNextTraceMessage()
     case some @ Some(Unique(t, id)) => some
     case None => None
     case _ => throw new Exception("internal error")
@@ -251,7 +251,8 @@ class DPORwFailures extends Scheduler with LazyLogging {
             case None =>  None
           }
 
-        case Some(u @ Unique(WaitQuiescence, _)) => // Look at the pending events to see if such message event exists. 
+        case Some(u @ Unique(WaitQuiescence, _)) => 
+          // Look at the pending events to see if such message event exists. 
           pendingEvents.get(SCHEDULER) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
             case None =>  None
@@ -456,6 +457,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
     
     val parent = parentEvent match {
       case u @ Unique(m: MsgEvent, id) => u
+      case u @ Unique(RootEvent, 0) => u
       case _ => throw new Exception("parent event not a message")
     }
 
@@ -547,6 +549,8 @@ class DPORwFailures extends Scheduler with LazyLogging {
       logger.debug(Console.BLUE + "Current trace: " +
           Util.traceStr(currentTrace) + Console.RESET)
 
+      for (Unique(ev, id) <- currentTrace) 
+        logger.debug(Console.BLUE + " " + id + " " + ev + Console.RESET)
       
       nextTrace.clear()
       
@@ -723,7 +727,9 @@ class DPORwFailures extends Scheduler with LazyLogging {
       // Quiescence is never co-enabled
       case (Unique(WaitQuiescence, _), _) => false
       case (_, Unique(WaitQuiescence, _)) => false
-      //case (_, _) =>
+      // Root event is not coenabled
+      case (Unique(RootEvent, _), _) => false
+      case (_, Unique(RootEvent, _)) => false
       case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
         if (m1.receiver != m2.receiver) 
           return false
