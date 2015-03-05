@@ -42,11 +42,16 @@ object ExperimentSerializer {
   val mcs = "/mcs.bin"
   val stats = "/minimization_stats.json"
 
-  def create_experiment_dir(experiment_name: String) : String = {
+  def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
     var output_dir = ""
     val errToDevNull = BasicIO(false, (out) => output_dir = out, None)
-    val proc = (f"./interposition/src/main/python/setup.py -t -n " + experiment_name).run(errToDevNull)
+    val basename = ("basename " + experiment_name).!!
+    var cmd = "./interposition/src/main/python/setup.py"
+    if (add_timestamp) {
+      cmd = cmd + " -t"
+    }
+    val proc = (cmd + " -n " + basename).run(errToDevNull)
     // Block until the process exits.
     proc.exitValue
     return output_dir.trim
@@ -139,7 +144,7 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
                    violation: ViolationFingerprint) {
     val new_experiment_dir = old_experiment_dir + "_" +
         stats.minimization_strategy + "_" + stats.test_oracle
-    ExperimentSerializer.create_experiment_dir(new_experiment_dir)
+    ExperimentSerializer.create_experiment_dir(new_experiment_dir, add_timestamp=false)
 
     val mcsBuf = JavaSerialization.serialize(mcs.toArray)
     JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
