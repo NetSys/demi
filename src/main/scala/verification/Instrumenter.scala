@@ -318,20 +318,22 @@ class Instrumenter {
     }
   }
 
-  def await_timers(numTimers: Integer) {
+  // Return whether there were any timers to wait for...
+  def await_timers(numTimers: Integer): Boolean = {
     if (numTimers <= 0) {
       throw new IllegalArgumentException("numTimers must be > 0")
     }
     if (registeredCancellableTasks.isEmpty) {
-      throw new RuntimeException("No timers to wait for...")
+      return false
     }
     pendingTimers.set(numTimers)
     awaitTimers.acquire()
+    return true
   }
 
-  def await_timers() {
+  def await_timers(): Boolean = {
     updateCancellables()
-    await_timers(registeredCancellableTasks.size)
+    return await_timers(registeredCancellableTasks.size)
   }
 
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) : Boolean = {

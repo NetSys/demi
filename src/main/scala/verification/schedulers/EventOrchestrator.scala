@@ -114,7 +114,7 @@ class EventOrchestrator[E] {
           if (n < 0) {
             Instrumenter().await_timers
           } else {
-             Instrumenter().await_timers(n)
+            Instrumenter().await_timers(n)
           }
         case Continue(n) =>
           loop = false

@@ -302,9 +302,13 @@ trait ExternalEventInjector[E] {
     started.set(false)
     event_orchestrator.events += Quiescence
     if (numWaitingFor.get() > 0) {
-      Instrumenter().await_timers(1)
-      started.set(true)
-      Instrumenter().start_dispatch()
+      val pendingTimers = Instrumenter().await_timers(1)
+      if (!pendingTimers) {
+        advanceTrace()
+      } else {
+        started.set(true)
+        Instrumenter().start_dispatch()
+      }
     } else if (blockedOnCheckpoint.get()) {
       checkpointSem.release()
     } else if (!event_orchestrator.trace_finished) {
