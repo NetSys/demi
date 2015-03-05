@@ -95,9 +95,10 @@ class STSScheduler(var original_trace: EventTrace,
   // enough, so I'm being conservative.
   val timersSentButNotYetDelivered = new MultiSet[TimerFingerprint]
 
-  // Current set of failure detector messages destined for actors, to be delivered
-  // in the order they arrive. Always prioritized over internal messages.
-  var pendingFDMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+  // Current set of failure detector or CheckpointRequest messages destined for
+  // actors, to be delivered in the order they arrive.
+  // Always prioritized over internal messages.
+  var pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
 
   // Are we currently pausing the ActorSystem in order to invoke Peek()
   var pausing = new AtomicBoolean(false)
@@ -156,7 +157,6 @@ class STSScheduler(var original_trace: EventTrace,
         violationFound = fingerprint.matches(violationFingerprint)
       case _ => None
     }
-    currentlyInjecting.set(false)
     val ret = violationFound match {
       case true => Some(event_orchestrator.events)
       case false => None
@@ -319,10 +319,11 @@ class STSScheduler(var original_trace: EventTrace,
 
     handle_event_produced(snd, rcv, envelope) match {
       case ExternalMessage => {
-        // We assume that the failure detector and the outside world always
+        // We assume that the failure detector / checkpointer and the outside world always
         // have connectivity with all actors, i.e. no failure detector partitions.
-        if (MessageTypes.fromFailureDetector(msg)) {
-          pendingFDMessages += uniq
+        if (MessageTypes.fromFailureDetector(msg) ||
+            MessageTypes.fromCheckpointCollector(msg)) {
+          pendingSystemMessages += uniq
         } else {
           val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                               new Queue[Uniq[(ActorCell, Envelope)]])
@@ -365,14 +366,12 @@ class STSScheduler(var original_trace: EventTrace,
       return None
     }
 
-    // Flush detector messages before proceeding with other messages.
-    if (enableFailureDetector) {
-      send_external_messages()
-       if (!pendingFDMessages.isEmpty) {
-         val uniq = pendingFDMessages.dequeue()
-         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-         return Some(uniq.element)
-       }
+    // Flush checkpoint/fd messages before proceeding with other messages.
+    send_external_messages()
+    if (!pendingSystemMessages.isEmpty) {
+      val uniq = pendingSystemMessages.dequeue()
+      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+      return Some(uniq.element)
     }
 
     // OK, now we first need to get to a good place: it should be the case after
@@ -410,7 +409,7 @@ class STSScheduler(var original_trace: EventTrace,
          messageFingerprinter.fingerprint(timer))
       case _ =>
         // We've broken out of advanceReplay() because of a
-        // BeginWaitQuiescence event, but there were no pendingFDMessages to
+        // BeginWaitQuiescence event, but there were no pendingSystemMessages to
         // send. So, we need to invoke advanceReplay() once again to get us up
         // to a pending MsgEvent.
         schedSemaphore.release
@@ -463,6 +462,7 @@ class STSScheduler(var original_trace: EventTrace,
     }
     assert(started.get)
     started.set(false)
+
     if (blockedOnCheckpoint.get) {
       checkpointSem.release()
       return
@@ -522,7 +522,7 @@ class STSScheduler(var original_trace: EventTrace,
     firstMessage = true
     pendingEvents.clear
     timersSentButNotYetDelivered.clear
-    pendingFDMessages.clear
+    pendingSystemMessages.clear
     pausing = new AtomicBoolean(false)
   }
 }

@@ -74,6 +74,13 @@ object MessageTypes {
       case _ => return false
     }
   }
+
+  def fromCheckpointCollector(m: Any) : Boolean = {
+    m match {
+      case CheckpointRequest => return true
+      case _ => return false
+    }
+  }
 }
 
 object ActorTypes {
