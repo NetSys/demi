@@ -755,8 +755,6 @@ class DPORwFailures extends Scheduler with LazyLogging {
      * 0) They belong to the same receiver.
      * 1) They are co-enabled.
      * 2) Such interleaving hasn't been explored before.
-     * 3) There is not a freeze flag associated with their
-     *    common backtrack index.
      */ 
     for(laterI <- 0 to trace.size - 1) {
       val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
@@ -798,12 +796,10 @@ class DPORwFailures extends Scheduler with LazyLogging {
         //System.exit(0);
       }
   
-      // Find the deepest backtrack value, and make sure
-      // its index is removed from the freeze set.
       val maxIndex = backTrack.keySet.max
-      
-      val (_ @ Unique(_, id1),
-           _ @ Unique(_, id2)) = backTrack(maxIndex).headOption match {
+
+      // If we have finished all explorations from this backtracking point, then remove it.
+      backTrack(maxIndex).headOption match {
         case Some(((u1, u2), eventList)) => (u1, u2)
         case None => 
           backTrack.remove(maxIndex)
@@ -823,8 +819,6 @@ class DPORwFailures extends Scheduler with LazyLogging {
 
     getNext() match {
       case Some((maxIndex, (e1, e2), replayThis)) =>
-        //println(backTrack(maxIndex).head._2.map(x => x.id))
-        
 
         logger.info(Console.RED + "Exploring a new message interleaving " + 
            e1.id + " and " + e2.id  + " at index " + maxIndex + Console.RESET)
