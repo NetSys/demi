@@ -758,16 +758,10 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       for(earlierI <- 0 to laterI - 1) {
         val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, trace) 
         
-        //val sameReceiver = earlierMsg.receiver == laterMsg.receiver
         if ( isCoEnabeled(earlier, later)) {
           
           analyize_dep(earlierI, laterI, trace) match {
             case Some((branchI, needToReplayV)) =>    
-              
-              //logger.info(Console.GREEN +
-              //  "Found a race between " + earlier.id + " and " +
-              //  later.id + " with a common index " + branchI +
-              //  Console.RESET)
               
               // Since we're exploring an already executed trace, we can
               // safely mark the interleaving of (earlier, later) as
