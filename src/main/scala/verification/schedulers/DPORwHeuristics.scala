@@ -38,6 +38,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
+  type Trace = Queue[Unique]
   
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
@@ -56,15 +57,15 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   
   val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
   var invariant : Queue[Unique] = Queue()
-  var exploredTacker = new ExploredTacker
+  var exploredTracker = new ExploredTacker
   
-  val currentTrace = new Queue[Unique]
-  val nextTrace = new Queue[Unique]
+  val currentTrace = new Trace
+  val nextTrace = new Trace
   var parentEvent = getRootEvent
   
   val reachabilityMap = new HashMap[String, Set[String]]
   
-  var post: (Queue[Unique]) => Unit = nullFunPost
+  var post: (Trace) => Unit = nullFunPost
   var done: (Scheduler) => Unit = nullFunDone
   
   var currentQuiescentPeriod = 0
@@ -72,8 +73,29 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   var nextQuiescentPeriod = 0
   var quiescentMarker:Unique = null
 
-  def nullFunPost(trace: Queue[Unique]) : Unit = {}
+  def nullFunPost(trace: Trace) : Unit = {}
   def nullFunDone(s :Scheduler) : Unit = {}
+
+  // Reset state between runs
+  private[this] def reset() = {
+    pendingEvents.clear()
+    parentEvent = getRootEvent
+    currentTrace.clear
+    nextTrace.clear
+    reachabilityMap.clear
+    awaitingQuiescence = false
+    nextQuiescentPeriod = 0
+    quiescentMarker = null
+    currentQuiescentPeriod = 0
+    //depGraph.clear
+    externalEventIdx = 0
+    currentTime = 0
+    interleavingCounter = 0
+    actorNames.clear
+    quiescentPeriod.clear
+    backTrack.clear
+    exploredTracker.clear
+  }
   
   private[this] def awaitQuiescenceUpdate (nextEvent:Unique) = { 
     logger.trace(Console.BLUE + "Beginning to wait for quiescence " + Console.RESET)
@@ -150,7 +172,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   
   
   // When executing a trace, find the next trace event.
-  def mutableTraceIterator( trace: Queue[Unique]) : Option[Unique] =
+  def mutableTraceIterator( trace: Trace) : Option[Unique] =
   trace.isEmpty match {
     case true => return None
     case _ => return Some(trace.dequeue)
@@ -412,11 +434,13 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
         throw new Exception("internal error")
     }
   }
-        
+ 
 
   def run(externalEvents: Seq[ExternalEvent],
-          f1: (Queue[Unique]) => Unit = nullFunPost,
-          f2: (Scheduler) => Unit = nullFunDone) = {
+          f1: (Trace) => Unit = nullFunPost,
+          f2: (Scheduler) => Unit = nullFunDone,
+          initialTrace: Option[Trace] = None) = {
+    reset()
     // Transform the original list of external events,
     // and assign a unique ID to all network events.
     // This is necessary since network events are not
@@ -432,8 +456,11 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     
     post = f1
     done = f2
+    initialTrace match {
+     case Some(tr) => nextTrace ++= tr
+     case _ => nextTrace.clear
+    }
     
-    pendingEvents.clear()
     
     // In the end, reinitialize_system call start_trace.
     instrumenter().reinitialize_system(null, null)
@@ -547,8 +574,14 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       logger.debug(Console.BLUE + "Current trace: " +
           Util.traceStr(currentTrace) + Console.RESET)
 
+      for (Unique(ev, id) <- currentTrace) 
+        logger.debug(Console.BLUE + " " + id + " " + ev + Console.RESET)
+
       
       nextTrace.clear()
+      
+      // Unconditionally post the current trace
+      post(currentTrace)
       
       dpor(currentTrace) match {
         case Some(trace) =>
@@ -556,10 +589,10 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
           
           logger.debug(Console.BLUE + "Next trace:  " + 
               Util.traceStr(nextTrace) + Console.RESET)
+
           
           parentEvent = getRootEvent
 
-          post(currentTrace)
           
           pendingEvents.clear()
           currentTrace.clear
@@ -588,7 +621,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
                              msg: Any): Boolean = {return true}
   
   
-  def getEvent(index: Integer, trace: Queue[Unique]) : Unique = {
+  def getEvent(index: Integer, trace: Trace) : Unique = {
     trace(index) match {
       case u: Unique => u 
       case _ => throw new Exception("internal error not a message")
@@ -596,7 +629,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   }
   
 
-  def dpor(trace: Queue[Unique]) : Option[Queue[Unique]] = {
+  def dpor(trace: Trace) : Option[Trace] = {
     
     interleavingCounter += 1
     val root = getEvent(0, currentTrace)
@@ -614,7 +647,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
      *
      ** @return none
      */
-    def analyize_dep(earlierI: Int, laterI: Int, trace: Queue[Unique]): 
+    def analyize_dep(earlierI: Int, laterI: Int, trace: Trace): 
     Option[(Int, List[Unique])] = {
 
       // Retrieve the actual events.
@@ -622,7 +655,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       val later = getEvent(laterI, trace)
 
       // See if this interleaving has been explored.
-      //val explored = exploredTacker.isExplored((later, earlier))
+      //val explored = exploredTracker.isExplored((later, earlier))
       //if (explored) return None
 
       (earlier.event, later.event) match {
@@ -635,7 +668,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
           val branchI = earlierI
           val needToReplay = List(later, earlier)
             
-          exploredTacker.setExplored(branchI, (earlier, later))
+          exploredTracker.setExplored(branchI, (earlier, later))
 
           return Some((branchI, needToReplay))
           
@@ -649,7 +682,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
             .take(laterI - earlierI)
             .toList :+ earlier
           
-          exploredTacker.setExplored(branchI, (earlier, later))
+          exploredTracker.setExplored(branchI, (earlier, later))
           
           return Some((branchI, needToReplay))
           
@@ -694,7 +727,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
           // events, we need to extract the values.
           val needToReplayV = needToReplay.toList
 
-          exploredTacker.setExplored(branchI, (earlier, later))
+          exploredTracker.setExplored(branchI, (earlier, later))
           
           return Some((branchI, needToReplayV))
 
@@ -798,7 +831,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       val ((e1, e2), replayThis) = backTrack(maxIndex).head
       backTrack(maxIndex).remove((e1, e2))
       
-      exploredTacker.isExplored((e1, e2)) match {
+      exploredTracker.isExplored((e1, e2)) match {
         case true => return getNext()
         case false => return Some((maxIndex, (e1, e2), replayThis))
       }
@@ -814,9 +847,9 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
            e1.id + " and " + e2.id  + " at index " + maxIndex + Console.RESET)
             
         
-        exploredTacker.setExplored(maxIndex, (e1, e2))
-        exploredTacker.trimExplored(maxIndex)
-        exploredTacker.printExplored()
+        exploredTracker.setExplored(maxIndex, (e1, e2))
+        exploredTracker.trimExplored(maxIndex)
+        exploredTracker.printExplored()
         
         // A variable used to figure out if the replay diverged.
         invariant = Queue(e1, e2)
