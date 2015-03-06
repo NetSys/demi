@@ -10,7 +10,7 @@ import java.util.concurrent.Semaphore,
 
 
 object IDGenerator {
-  var uniqueId = new AtomicInteger
+  var uniqueId = new AtomicInteger // DPOR root event is assumed to be ID 0, incrementAndGet ensures starting at 1
 
   def get() : Integer = {
     return uniqueId.incrementAndGet()
@@ -28,8 +28,6 @@ case class Uniq[E](
   var id : Int = IDGenerator.get()
 )
 
-abstract trait Event
-
 // Message delivery -- (not the initial send)
 // N.B., if an event trace was serialized, it's possible that msg is of type
 // MessageFingerprint rather than a whole message!
@@ -42,6 +40,10 @@ case class SpawnEvent(
 case class NetworkPartition(
     first: Set[String], 
     second: Set[String]) extends Event with ExternalEvent
+
+case object RootEvent extends Event
+
+//case object DporQuiescence extends Event with ExternalEvent
 
 
 
@@ -181,5 +183,9 @@ class ExploredTacker {
       //val content = set.map(x => (x._1.id, x._2.id))
       //println(index + ": " + set.size + ": " +  content))
     }
+  }
+
+  def clear() = {
+    exploredStack.clear()
   }
 }
