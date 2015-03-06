@@ -19,7 +19,9 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.HashSet,
        scala.collection.mutable.ArrayBuffer,
        scala.collection.mutable.ArraySeq,
-       scala.collection.mutable.Stack
+       scala.collection.mutable.Stack,
+       scala.collection.mutable.PriorityQueue,
+       scala.math.Ordering
 
 import Function.tupled
 
@@ -54,8 +56,10 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   val depGraph = Graph[Unique, DiEdge]()
 
   val quiescentPeriod = new HashMap[Unique, Int]
-  
-  val backTrack = new HashMap[Int, HashMap[(Unique, Unique), List[Unique]] ]
+
+  // Change the Ordering to try different ordering heuristics, currently exploration is in descending order of depth
+  val backTrack = new PriorityQueue[(Int, (Unique, Unique), List[Unique])]()(
+    Ordering.by[(Int, (Unique, Unique), List[Unique]), Int](_._1))
   var invariant : Queue[Unique] = Queue()
   var exploredTracker = new ExploredTacker
   
@@ -804,8 +808,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
               // Since we're exploring an already executed trace, we can
               // safely mark the interleaving of (earlier, later) as
               // already explored.
-              backTrack.getOrElseUpdate(branchI, new HashMap[(Unique, Unique), List[Unique]])
-              backTrack(branchI)((later, earlier)) = needToReplayV
+              backTrack.enqueue((branchI, (later, earlier), needToReplayV))
               
             case None => // Nothing
           }
@@ -824,20 +827,8 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
         //System.exit(0);
       }
   
-      val maxIndex = backTrack.keySet.max
-      
-      // If we have finished all explorations from this backtracking point, then remove it.
-      backTrack(maxIndex).headOption match {
-        case Some(((u1, u2), eventList)) => (u1, u2)
-        case None => 
-          backTrack.remove(maxIndex)
-          return getNext()
-        case _ => throw new Exception("invalid interleaving event types")
-      }
-      
-      val ((e1, e2), replayThis) = backTrack(maxIndex).head
-      backTrack(maxIndex).remove((e1, e2))
-      
+      val (maxIndex, (e1, e2), replayThis) = backTrack.dequeue
+
       exploredTracker.isExplored((e1, e2)) match {
         case true => return getNext()
         case false => return Some((maxIndex, (e1, e2), replayThis))
@@ -847,7 +838,6 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
 
     getNext() match {
       case Some((maxIndex, (e1, e2), replayThis)) =>
-        //println(backTrack(maxIndex).head._2.map(x => x.id))
         
 
         logger.info(Console.RED + "Exploring a new message interleaving " + 
@@ -860,10 +850,6 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
         
         // A variable used to figure out if the replay diverged.
         invariant = Queue(e1, e2)
-        
-        // Remove the backtrack branch, since we're about explore it now.
-        if (backTrack(maxIndex).isEmpty)
-          backTrack -= maxIndex
         
         // Return all events up to the backtrack index we're interested in
         // and slap on it a new set of events that need to be replayed in
