@@ -84,9 +84,12 @@ class MinimizationStats(val minimization_strategy: String, val test_oracle: Stri
 
   def toJson(): String = {
     val map = new HashMap[String, Any]
-    map("iteration_size") = iterationSize
+    map("iteration_size") = JSONObject(iterationSize.map(
+      pair => pair._1.toString -> pair._2).toMap)
     map("total_replays") = total_replays
     map ++= stats
-    return JSONObject(map.toMap).toString
+    val json = JSONObject(map.toMap).toString()
+    assert(json != "")
+    return json
   }
 }

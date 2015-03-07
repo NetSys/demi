@@ -150,9 +150,10 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
                                   mcsBuf)
 
-    val statsJson = stats.toJson
-    JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.stats,
-                                  statsJson)
+    val statsJson = stats.toJson()
+    JavaSerialization.withPrintWriter(new_experiment_dir, ExperimentSerializer.stats) { pw =>
+      pw.write(statsJson)
+    }
 
     mcs_execution match {
       case Some(event_trace) =>
@@ -268,20 +269,15 @@ object JavaSerialization {
     }
   }
 
-  def writeToFile(filename: String, contents: String) {
-    val file = new File(filename)
-    var pw : PrintWriter = null
+  def withPrintWriter(dir:String, name:String)(f: (PrintWriter) => Any) {
+    val file = new File(dir, name)
+    val writer = new FileWriter(file)
+    val printWriter = new PrintWriter(writer)
     try {
-      val pw = new PrintWriter(file)
-      pw.write(contents)
-    } finally {
-      try {
-        if (pw != null) {
-          pw.close()
-        }
-      } catch {
-        case ioe: IOException => None
-      }
+      f(printWriter)
+    }
+    finally {
+      printWriter.close()
     }
   }
 
