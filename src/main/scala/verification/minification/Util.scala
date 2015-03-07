@@ -36,12 +36,12 @@ object MinificationUtil {
   }
 
   def map_from_iterable[A,B](in: Iterable[(A,B)]) : Map[A,B] = {
-     val dest = collection.mutable.Map[A,B]()
-     for (e @ (k,v) <- in) {
-       dest += e
-     }
+    val dest = collection.mutable.Map[A,B]()
+    for (e @ (k,v) <- in) {
+      dest += e
+    }
 
-     return dest
+    return dest
   }
 }
 
@@ -79,9 +79,8 @@ trait EventDag {
    * Ensure that:
    *  - if a failure or partition is removed, its following recovery is also removed
    *  - if a recovery is removed, its preceding failure or partition is also removed
-   *  - if a Start event is removed, all subsequent Send events destined for
-   *    that node are removed
-   *  - WaitQuiescence and WaitTimer events are never removed
+   *  ? if a Start event is removed, all subsequent Send events destined for
+   *    that node are removed. BROKEN, see TODO below.
    */
   def remove_events(events: Seq[AtomicEvent]) : EventDag
 
@@ -99,13 +98,24 @@ trait EventDag {
    * Return all ExternalEvents, with AtomicEvents expanded.
    */
   def get_all_events() : Seq[ExternalEvent]
+
+  /**
+   * Return get_all_events().length
+   */
+  def length: Int
 }
 
 // Internal utility methods
 object EventDag {
   def remove_events(to_remove: Seq[AtomicEvent], events: Seq[ExternalEvent]) : Seq[ExternalEvent] = {
-    var all_removed = Set(to_remove.map(atomic => atomic.events).flatten: _*)
+    val flattened = to_remove.map(atomic => atomic.events).flatten
+    var all_removed = Set(flattened: _*)
+    assume(flattened.length == all_removed.size)
+    return events.filter(e => !(all_removed contains e))
 
+    // TODO(cs): figure out why the below optimization screws Delta Debugging
+    // up...
+    /*
     // The invariant that failures and recoveries are removed atomically is
     // already ensured by the way AtomicEvents are constructed.
     //
@@ -143,7 +153,9 @@ object EventDag {
       }
     }
 
+    assume(remaining.length + all_removed.size == events.length)
     return remaining
+    */
   }
 }
 
@@ -213,8 +225,6 @@ class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
             }
           }
         }
-        case WaitQuiescence => None
-        case WaitTimers(_) => None
         case _ => atomics = atomics :+ new AtomicEvent(event)
       }
     }
@@ -225,6 +235,7 @@ class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
       atomics = atomics :+ new AtomicEvent(e)
     }
 
+    assume(atomics.map(atomic => atomic.events).flatten.length == given_events.length)
     // Sort by the original index of first element in the event list.
     return atomics.sortBy[Int](a => event_to_idx(a.events(0)))
   }
@@ -232,6 +243,8 @@ class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
   def get_all_events() : Seq[ExternalEvent] = {
     return events
   }
+
+  def length: Int = events.length
 }
 
 /**
@@ -248,10 +261,10 @@ class EventDagView(parent: UnmodifiedEventDag, events: Seq[ExternalEvent]) exten
   }
 
   def union(other: EventDag) : EventDag = {
-    // First remove redundant WaitQuiescence + WaitTimer events, then sort by original
-    // index.
+    // Set isn't strictly necessary, just a sanity check.
     val union = Set((events ++ other.get_all_events): _*).
-                  toList.sortBy[Int](e => parent.event_to_idx(e))
+                     toList.sortBy[Int](e => parent.event_to_idx(e))
+    assume(events.length + other.get_all_events.length == union.length)
     return new EventDagView(parent, union)
   }
 
@@ -262,4 +275,6 @@ class EventDagView(parent: UnmodifiedEventDag, events: Seq[ExternalEvent]) exten
   def get_all_events() : Seq[ExternalEvent] = {
     return events
   }
+
+  def length: Int = events.length
 }

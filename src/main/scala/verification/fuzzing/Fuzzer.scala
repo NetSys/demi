@@ -78,26 +78,18 @@ class Fuzzer(num_events: Integer,
   }
 
   // Note that we don't currently support node recoveries.
-  val currentlyAlive = new RandomizedHashSet[String]
-  for (node <- nodes) {
-    currentlyAlive.insert(node)
-  }
+  var currentlyAlive = new RandomizedHashSet[String]
 
   // N.B., only store one direction of the partition
-  val currentlyPartitioned = new RandomizedHashSet[(String, String)]
-  val currentlyUnpartitioned = new RandomizedHashSet[(String, String)]
-  for (i <- (0 to nodes.length-1)) {
-    for (j <- (i+1 to nodes.length-1)) {
-      currentlyUnpartitioned.insert((nodes(i), nodes(j)))
-    }
-  }
+  var currentlyPartitioned = new RandomizedHashSet[(String, String)]
+  var currentlyUnpartitioned = new RandomizedHashSet[(String, String)]
 
   // Return None if we have no choice, e.g. if we've killed all nodes, and
   // there's nothing interesting left to do in the execution.
   def generateNextEvent() : Option[ExternalEvent] = {
     val nextEventType = weights.getNextEventType(rand.nextDouble())
     nextEventType match {
-      case None => return Some(WaitQuiescence)
+      case None => return Some(WaitQuiescence())
       case Some(cls) =>
         cls match {
           case StableClasses.ClassOfKill =>
@@ -139,13 +131,14 @@ class Fuzzer(num_events: Integer,
   }
 
   def generateFuzzTest() : Seq[ExternalEvent] = {
+    reset()
     val fuzzTest = new ListBuffer[ExternalEvent] ++ prefix
     // Ensure that we don't inject two WaitQuiescense's in a row.
     var justInjectedWaitQuiescence = false
 
     def okToInject(event: Option[ExternalEvent]) : Boolean = {
       event match {
-        case Some(WaitQuiescence) => return !justInjectedWaitQuiescence
+        case Some(WaitQuiescence()) => return !justInjectedWaitQuiescence
         case _ => return true
       }
     }
@@ -158,7 +151,7 @@ class Fuzzer(num_events: Integer,
       nextEvent match {
         case Some(event) =>
           event match {
-            case WaitQuiescence =>
+            case WaitQuiescence() =>
               justInjectedWaitQuiescence = true
             case _ => None
               justInjectedWaitQuiescence = false
@@ -168,5 +161,20 @@ class Fuzzer(num_events: Integer,
       }
     }
     return fuzzTest
+  }
+
+  def reset() {
+    currentlyAlive = new RandomizedHashSet[String]
+    for (node <- nodes) {
+      currentlyAlive.insert(node)
+    }
+
+    currentlyPartitioned = new RandomizedHashSet[(String, String)]
+    currentlyUnpartitioned = new RandomizedHashSet[(String, String)]
+    for (i <- (0 to nodes.length-1)) {
+      for (j <- (i+1 to nodes.length-1)) {
+        currentlyUnpartitioned.insert((nodes(i), nodes(j)))
+      }
+    }
   }
 }

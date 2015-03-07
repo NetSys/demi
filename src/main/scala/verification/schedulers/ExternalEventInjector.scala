@@ -96,12 +96,15 @@ trait ExternalEventInjector[E] {
   // external events.
   var numWaitingFor = new AtomicInteger(0)
 
-  // Enqueue an external message for future delivery
+  // Whether populateActors has been invoked.
+  var alreadyPopulated = false
+
+    // Enqueue an external message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
       enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
     } else {
-      throw new IllegalArgumentException("Unknown receiver " + receiver)
+      println("WARNING! Unknown receiver " + receiver)
     }
   }
 
@@ -146,6 +149,7 @@ trait ExternalEventInjector[E] {
   // give the names and props of all actors that will eventually appear in the
   // execution.
   def populateActorSystem(actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
+    alreadyPopulated = true
     for ((props, name) <- actorNamePropPairs) {
       // Just start and isolate all actors we might eventually care about
       Instrumenter().actorSystem.actorOf(props, name)
@@ -164,18 +168,13 @@ trait ExternalEventInjector[E] {
     if (_enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
-    // We begin by starting all actors at the beginning of time, just mark them as
-    // isolated (i.e., unreachable). Later, when we replay the `Start` event,
-    // we unisolate the actor.
-    for (t <- event_orchestrator.trace) {
-      t match {
-        case Start (propCtor, name) =>
-          // Just start and isolate all actors we might eventually care about [top-level actors]
-          Instrumenter().actorSystem.actorOf(propCtor(), name)
-          event_orchestrator.isolate_node(name)
-        case _ =>
-          None
-      }
+
+    if (!alreadyPopulated) {
+      populateActorSystem(_trace flatMap {
+        case SpawnEvent(_,props,name,_) => Some((props, name))
+        case Start(propCtor,name) => Some((propCtor(), name))
+        case _ => None
+      })
     }
 
     currentlyInjecting.set(true)
@@ -196,7 +195,7 @@ trait ExternalEventInjector[E] {
     started.set(true)
     event_orchestrator.inject_until_quiescence(enqueue_message)
     if (!event_orchestrator.trace_finished) {
-      event_orchestrator.current_event match {
+      event_orchestrator.previous_event match {
         case Continue(n) => numWaitingFor.set(n)
         case _ => None
       }
@@ -298,17 +297,27 @@ trait ExternalEventInjector[E] {
     event_orchestrator.events += ChangeContext(rcv)
   }
 
-  def handle_quiescence () {
+  def handle_quiescence(): Unit = {
     assert(started.get)
     started.set(false)
     event_orchestrator.events += Quiescence
     if (numWaitingFor.get() > 0) {
-      Instrumenter().await_timers(1)
-      started.set(true)
-      Instrumenter().start_dispatch()
+      val pendingTimers = Instrumenter().await_timers(1)
+      if (!pendingTimers) {
+        // Nothing to wait for.
+        // Fall through to next if/else block.
+        numWaitingFor.set(0)
+      } else {
+        started.set(true)
+        Instrumenter().start_dispatch()
+        return
+      }
     } else if (blockedOnCheckpoint.get()) {
       checkpointSem.release()
-    } else if (!event_orchestrator.trace_finished) {
+      return
+    }
+
+    if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       advanceTrace()
     } else {
@@ -322,6 +331,7 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_shutdown () {
+    alreadyPopulated = false
     Instrumenter().restart_system
     shutdownSem.acquire
   }
@@ -362,6 +372,7 @@ trait ExternalEventInjector[E] {
     enqueuedExternalMessages = new MultiSet[Any]
     messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
     numWaitingFor = new AtomicInteger(0)
+    alreadyPopulated = false
     println("state reset.")
   }
 }

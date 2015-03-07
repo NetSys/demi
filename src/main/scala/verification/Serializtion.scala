@@ -12,6 +12,10 @@ import java.io._
 import java.nio._
 import scala.io._
 
+
+// Note: in general, try to avoid anonymous functions when writing
+// Runner.scala files. This makes deseralization of closures brittle.
+
 trait MessageSerializer {
   def serialize(msg: Any): ByteBuffer
 }
@@ -35,23 +39,30 @@ object ExperimentSerializer {
   val event_trace = "/event_trace.bin"
   val original_externals = "/original_externals.bin"
   val violation = "/violation.bin"
-}
+  val mcs = "/mcs.bin"
+  val stats = "/minimization_stats.json"
 
-class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_serializer: MessageSerializer) {
-
-  private[this] def create_experiment_dir(experiment_name: String) : String = {
+  def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
     var output_dir = ""
     val errToDevNull = BasicIO(false, (out) => output_dir = out, None)
-    val proc = (f"./interposition/src/main/python/setup.py -t -n " + experiment_name).run(errToDevNull)
+    val basename = ("basename " + experiment_name).!!
+    var cmd = "./interposition/src/main/python/setup.py"
+    if (add_timestamp) {
+      cmd = cmd + " -t"
+    }
+    val proc = (cmd + " -n " + basename).run(errToDevNull)
     // Block until the process exits.
     proc.exitValue
     return output_dir.trim
   }
+}
+
+class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_serializer: MessageSerializer) {
 
   def record_experiment(experiment_name: String, trace: EventTrace,
                         violation: ViolationFingerprint) : String = {
-    val output_dir = create_experiment_dir(experiment_name)
+    val output_dir = ExperimentSerializer.create_experiment_dir(experiment_name)
     // We store the actor's names and props separately (reduntantly), so that
     // we can properly deserialize ActorRefs later. (When deserializing
     // ActorRefs, we need access to an ActorSystem with all the actors already booted,
@@ -59,6 +70,12 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     // corresponding actors in the new ActorSystem. We therefore first boot the
     // system with all these actors created, and then deserialize the rest of the
     // events.)
+    record_experiment_known_dir(output_dir, trace, violation)
+    return output_dir
+  }
+
+  def record_experiment_known_dir(output_dir: String, trace: EventTrace,
+                                  violation: ViolationFingerprint) {
     val actorPropNamePairs = trace.events.flatMap {
       case SpawnEvent(_,props,name,_) => Some((props, name))
       case _ => None
@@ -119,8 +136,30 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     val externalBuf = message_serializer.serialize(trace.original_externals)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.original_externals,
                                   externalBuf)
+  }
 
-    return output_dir
+  def serializeMCS(old_experiment_dir: String, mcs: Seq[ExternalEvent],
+                   stats: MinimizationStats,
+                   mcs_execution: Option[EventTrace],
+                   violation: ViolationFingerprint) {
+    val new_experiment_dir = old_experiment_dir + "_" +
+        stats.minimization_strategy + "_" + stats.test_oracle
+    ExperimentSerializer.create_experiment_dir(new_experiment_dir, add_timestamp=false)
+
+    val mcsBuf = JavaSerialization.serialize(mcs.toArray)
+    JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
+                                  mcsBuf)
+
+    val statsJson = stats.toJson()
+    JavaSerialization.withPrintWriter(new_experiment_dir, ExperimentSerializer.stats) { pw =>
+      pw.write(statsJson)
+    }
+
+    mcs_execution match {
+      case Some(event_trace) =>
+        record_experiment_known_dir(new_experiment_dir, event_trace, violation)
+      case None => None
+    }
   }
 }
 
@@ -227,6 +266,18 @@ object JavaSerialization {
       } catch {
         case ioe: IOException => None
       }
+    }
+  }
+
+  def withPrintWriter(dir:String, name:String)(f: (PrintWriter) => Any) {
+    val file = new File(dir, name)
+    val writer = new FileWriter(file)
+    val printWriter = new PrintWriter(writer)
+    try {
+      f(printWriter)
+    }
+    finally {
+      printWriter.close()
     }
   }
 

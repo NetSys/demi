@@ -26,14 +26,28 @@ import java.util.Random
  * the execution. Otherwise, checks the invariant every
  * invariant_check_interval message deliveries.
  *
+ * max_executions determines how many executions we will try before giving
+ * up.
+ *
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, invariant_check_interval: Int, disableCheckpointing: Boolean)
+class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
+                      invariant_check_interval: Int,
+                      disableCheckpointing: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_interleavings: Int) = this(max_interleavings, true, 0, false)
-  def this(max_interleavings: Int, enableFailureDetector: Boolean) =
-      this(max_interleavings, enableFailureDetector, 0, false)
+  def this(max_executions: Int) = this(max_executions, true, 0, false)
+  def this(max_executions: Int, enableFailureDetector: Boolean) =
+      this(max_executions, enableFailureDetector, 0, false)
+
+  def getName: String = "RandomScheduler"
+
+  // Allow the user to place a bound on how many messages are delivered.
+  // Useful for dealing with non-terminating systems.
+  var maxMessages = Int.MaxValue
+  def setMaxMessages(_maxMessages: Int) = {
+    maxMessages = _maxMessages
+  }
 
   var test_invariant : Invariant = null
 
@@ -44,7 +58,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
   }
 
   if (!disableCheckpointing) {
-     enableCheckpointing()
+    enableCheckpointing()
   }
 
   // Current set of enabled events.
@@ -73,6 +87,8 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
 
   // what was the last value of messagesScheduledSoFar we took a checkpoint at.
   var lastCheckpoint = 0
+
+  var stats: MinimizationStats = null
 
   /**
    * If we're looking for a specific violation, return None if the given
@@ -105,7 +121,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
    *
    * Returns a trace of the internal and external events observed if a failing
    * execution was found, along with a `fingerprint` of the safety violation.
-   * otherwise returns None if no failure was triggered within max_interleavings.
+   * otherwise returns None if no failure was triggered within max_executions.
    *
    * Callers should call shutdown() sometime after this method returns if they
    * want to invoke any other methods.
@@ -120,7 +136,8 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
    * if looking_for is not None, only look for an invariant violation that
    * matches looking_for
    */
-  def explore (_trace: Seq[ExternalEvent], _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
+  def explore (_trace: Seq[ExternalEvent],
+               _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -131,9 +148,12 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
 
-    for (i <- 1 to max_interleavings) {
+    for (i <- 1 to max_executions) {
       println("Trying random interleaving " + i)
       event_orchestrator.events.setOriginalExternalEvents(_trace)
+      if (stats != null) {
+        stats.increment_replays()
+      }
       val event_trace = execute_trace(_trace)
 
       // If the violation has already been found, return.
@@ -155,7 +175,7 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
           }
       }
 
-      if (i != max_interleavings) {
+      if (i != max_executions) {
         // 'Tis a lesson you should heed: Try, try, try again.
         // If at first you don't succeed: Try, try, try again
         reset_all_state
@@ -218,6 +238,13 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
         None
     }
 
+    // Also check if we've exceeded our message limit
+    if (messagesScheduledSoFar > maxMessages) {
+      numWaitingFor.set(0)
+      event_orchestrator.finish_early
+      return None
+    }
+
     // Otherwise, see if it's time to check the invariant violation.
     if (invariant_check_interval > 0 &&
         (messagesScheduledSoFar % invariant_check_interval) == 0 &&
@@ -254,6 +281,9 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
     }
 
     messagesScheduledSoFar += 1
+    if (messagesScheduledSoFar == Int.MaxValue) {
+      messagesScheduledSoFar = 1
+    }
     val uniq = pendingInternalEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
     return Some(uniq.element)
@@ -309,11 +339,19 @@ class RandomScheduler(max_interleavings: Int, enableFailureDetector: Boolean, in
     lastCheckpoint = 0
   }
 
-  def test(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Boolean = {
+  def test(events: Seq[ExternalEvent],
+           violation_fingerprint: ViolationFingerprint,
+           _stats: MinimizationStats) : Option[EventTrace] = {
+    stats = _stats
     Instrumenter().scheduler = this
     val tuple_option = explore(events, Some(violation_fingerprint))
     reset_all_state
     // test passes if we were unable to find a failure.
-    return tuple_option == None
+    tuple_option match {
+      case Some((trace, violation)) =>
+        return Some(trace)
+      case None =>
+        return None
+    }
   }
 }

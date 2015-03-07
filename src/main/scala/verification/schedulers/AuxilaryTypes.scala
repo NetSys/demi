@@ -4,31 +4,47 @@ import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{Envelope}
 
 // External events used to specify a trace
-abstract trait ExternalEvent
+abstract class ExternalEvent {
+  val _id : Int = IDGenerator.get()
+
+  def toStringWithId: String = "e"+_id+":"+toString()
+
+  override def equals(other: Any): Boolean = {
+    if (other.isInstanceOf[ExternalEvent]) {
+      return _id == other.asInstanceOf[ExternalEvent]._id
+    } else {
+      return false
+    }
+  }
+
+  override def hashCode: Int = {
+    return _id
+  }
+}
 abstract trait Event
 
-final case class Start (propCtor: () => Props, name: String) extends Event with ExternalEvent
-final case class Kill (name: String) extends Event with ExternalEvent {}
+final case class Start (propCtor: () => Props, name: String) extends ExternalEvent with Event
+final case class Kill (name: String) extends ExternalEvent with Event {}
 // Allow the client to late-bind the construction of the message. Invoke the
 // function at the point that the Send is about to be injected.
-final case class Send (name: String, messageCtor: () => Any) extends Event with ExternalEvent
-final case object WaitQuiescence extends Event with ExternalEvent
+final case class Send (name: String, messageCtor: () => Any) extends ExternalEvent with Event
+final case class WaitQuiescence() extends ExternalEvent with Event
 // Wait for numTimers currently queued timers to be scheduled. numTimers can be set to
 // -1 to wait for all currently queued timers.
-final case class WaitTimers(numTimers: Integer) extends Event with ExternalEvent
+final case class WaitTimers(numTimers: Integer) extends ExternalEvent with Event
 // Bidirectional partitions.
-final case class Partition (a: String, b: String) extends Event with ExternalEvent
-final case class UnPartition (a: String, b: String) extends Event with ExternalEvent
+final case class Partition (a: String, b: String) extends ExternalEvent with Event
+final case class UnPartition (a: String, b: String) extends ExternalEvent with Event
 // Continue scheduling numSteps internal events. Whenver we arrive at
 // quiescence, wait for the next timer, then wait for quiescence, etc. until
 // numSteps messages have been sent.
-final case class Continue(numSteps: Integer) extends Event with ExternalEvent
+final case class Continue(numSteps: Integer) extends ExternalEvent with Event
 
 // Internal events in addition to those defined in ../AuxilaryTypes
 // MsgSend is the initial send, not the delivery
 // N.B., if an event trace was serialized, it's possible that msg is of type
 // MessageFingerprint rather than a whole message!
-final case class MsgSend (sender: String, 
+final case class MsgSend (sender: String,
                 receiver: String, msg: Any) extends Event
 final case class KillEvent (actor: String) extends Event 
 final case class PartitionEvent (endpoints: (String, String)) extends Event

@@ -67,8 +67,19 @@ class EventOrchestrator[E] {
     traceIdx += 1
   }
 
+  def previous_event(): E = {
+    if (traceIdx - 0 < 0) {
+      throw new IllegalStateException("No previous event..")
+    }
+    trace(traceIdx - 1)
+  }
+
   def trace_finished() : Boolean = {
     return traceIdx >= trace.size
+  }
+
+  def finish_early() = {
+    traceIdx = trace.size
   }
 
   // A bit of a misnomer: current *trace* event, not current recorded event.
@@ -107,14 +118,14 @@ class EventOrchestrator[E] {
           trigger_partition(a,b)
         case UnPartition (a, b) =>
           trigger_unpartition(a,b)
-        case WaitQuiescence =>
+        case WaitQuiescence() =>
           events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence
         case WaitTimers(n) =>
           if (n < 0) {
             Instrumenter().await_timers
           } else {
-             Instrumenter().await_timers(n)
+            Instrumenter().await_timers(n)
           }
         case Continue(n) =>
           loop = false

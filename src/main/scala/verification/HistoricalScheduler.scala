@@ -5,6 +5,10 @@ import akka.actor.FSM.Timer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.Queue
 
+object HistoricalScheduler {
+  type EventMapper = (Event) => Option[Event]
+}
+
 // A mix-in for any scheduler that somehow depends on recorded events.
 // Primarily useful for application runners to make updates to recorded
 // events. Those update may be needed in order to avoid

@@ -78,7 +78,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
   private[this] def awaitQuiescenceUpdate (nextEvent:Unique) = { 
     logger.trace(Console.BLUE + "Beginning to wait for quiescence " + Console.RESET)
     nextEvent match {
-      case Unique(WaitQuiescence, id) =>
+      case Unique(WaitQuiescence(), id) =>
         awaitingQuiescence = true
         nextQuiescentPeriod = id
         quiescentMarker = nextEvent
@@ -221,7 +221,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
               id + Console.RESET)
           Some(par)
 
-        case Some(qui @ (Unique(WaitQuiescence, id), _, _)) =>
+        case Some(qui @ (Unique(WaitQuiescence(), id), _, _)) =>
           logger.trace( Console.GREEN + "Now playing the high level quiescence event " +
               id + Console.RESET)
           Some(qui)
@@ -251,7 +251,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
             case None =>  None
           }
 
-        case Some(u @ Unique(WaitQuiescence, _)) => 
+        case Some(u @ Unique(WaitQuiescence(), _)) => 
           // Look at the pending events to see if such message event exists. 
           pendingEvents.get(SCHEDULER) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
@@ -292,7 +292,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
                 + part1 + " <-> " + part2 + ")" + Console.RESET )
             Some((u, null, null))
 
-          case Some((u @ Unique(WaitQuiescence, id), _, _)) =>
+          case Some((u @ Unique(WaitQuiescence(), id), _, _)) =>
             logger.trace( Console.GREEN + "Replaying the exact message: Quiescence: (" 
                 + id +  ")" + Console.RESET )
             Some((u, null, null))
@@ -339,7 +339,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
         currentTrace += nextEvent
         return schedule_new_message()
 
-      case Some((nextEvent @ Unique(WaitQuiescence, nID), _, _)) =>
+      case Some((nextEvent @ Unique(WaitQuiescence(), nID), _, _)) =>
         awaitQuiescenceUpdate(nextEvent)
         return schedule_new_message()
       case _ => return None
@@ -388,7 +388,7 @@ class DPORwFailures extends Scheduler with LazyLogging {
           pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
           addGraphNode(uniq)
        
-        case event @ Unique(WaitQuiescence, _) =>
+        case event @ Unique(WaitQuiescence(), _) =>
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((event, null, null))
           addGraphNode(event)
@@ -426,8 +426,8 @@ class DPORwFailures extends Scheduler with LazyLogging {
       case par: NetworkPartition => 
         val unique = Unique(par)
         unique
-      case WaitQuiescence =>
-        Unique(WaitQuiescence)
+      case WaitQuiescence() =>
+        Unique(WaitQuiescence())
       case other => other
     } }
     
@@ -725,8 +725,8 @@ class DPORwFailures extends Scheduler with LazyLogging {
       case (Unique(p : NetworkPartition, _), _) => true
       case (_, Unique(p : NetworkPartition, _)) => true
       // Quiescence is never co-enabled
-      case (Unique(WaitQuiescence, _), _) => false
-      case (_, Unique(WaitQuiescence, _)) => false
+      case (Unique(WaitQuiescence(), _), _) => false
+      case (_, Unique(WaitQuiescence(), _)) => false
       // Root event is not coenabled
       case (Unique(RootEvent, _), _) => false
       case (_, Unique(RootEvent, _)) => false

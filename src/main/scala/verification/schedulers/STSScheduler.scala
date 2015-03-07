@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
-// TODO(cs): we invoke advanceReplay one to many times when peek is enabled. I
+// TODO(cs): we invoke advanceReplay one too many times when peek is enabled. I
 // believe two threads are waiting on schedSemaphore, and both call into
 // advanceReplay. For now it looks like the redundant calls into advanceReplay are a no-op,
 // but it's possible that this might trigger a bug.
@@ -66,13 +66,12 @@ object STSScheduler {
 class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
                    messageFingerprinter: MessageFingerprinter,
-                   populateActors: Boolean,
                    enableFailureDetector:Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
-  assume(!original_trace.isEmpty)
-
   def this(original_trace: EventTrace) =
-      this(original_trace, false, new BasicFingerprinter, true, true)
+      this(original_trace, false, new BasicFingerprinter, true)
+
+  def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 
   enableCheckpointing()
 
@@ -82,7 +81,7 @@ class STSScheduler(var original_trace: EventTrace,
 
   var test_invariant : Invariant = null
 
-  // Have we started off the execution yet?
+  // Have we not started off the execution yet?
   private[this] var firstMessage = true
 
   // Current set of enabled events. Includes external messages, but not
@@ -99,9 +98,10 @@ class STSScheduler(var original_trace: EventTrace,
   // enough, so I'm being conservative.
   val timersSentButNotYetDelivered = new MultiSet[TimerFingerprint]
 
-  // Current set of failure detector messages destined for actors, to be delivered
-  // in the order they arrive. Always prioritized over internal messages.
-  var pendingFDMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+  // Current set of failure detector or CheckpointRequest messages destined for
+  // actors, to be delivered in the order they arrive.
+  // Always prioritized over internal messages.
+  var pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
 
   // Are we currently pausing the ActorSystem in order to invoke Peek()
   var pausing = new AtomicBoolean(false)
@@ -109,7 +109,9 @@ class STSScheduler(var original_trace: EventTrace,
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent],
-            violationFingerprint: ViolationFingerprint) : Boolean = {
+            violationFingerprint: ViolationFingerprint,
+            stats: MinimizationStats) : Option[EventTrace] = {
+    assume(!original_trace.isEmpty)
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -117,12 +119,19 @@ class STSScheduler(var original_trace: EventTrace,
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
+    // We only ever replay once
+    if (stats != null) {
+      stats.increment_replays()
+    }
 
     if (enableFailureDetector) {
       fd.startFD(instrumenter.actorSystem)
     }
+    if (_enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
+    }
 
-    if (populateActors) {
+    if (!alreadyPopulated) {
       populateActorSystem(original_trace.getEvents flatMap {
         case SpawnEvent(_,props,name,_) => Some((props, name))
         case _ => None
@@ -154,8 +163,12 @@ class STSScheduler(var original_trace: EventTrace,
         violationFound = fingerprint.matches(violationFingerprint)
       case _ => None
     }
-    shutdown()
-    return !violationFound
+    val ret = violationFound match {
+      case true => Some(event_orchestrator.events)
+      case false => None
+    }
+    reset_all_state
+    return ret
   }
 
   // Should only ever be invoked by notify_quiescence, after we have paused
@@ -190,12 +203,24 @@ class STSScheduler(var original_trace: EventTrace,
     val peeker = new IntervalPeekScheduler(
       expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
     peeker.eventMapper = eventMapper
+
+    // N.B. "checkpoint" here means checkpoint of the network's state, as
+    // opposed to a checkpoint of the applications state for checking
+    // invariants
     Instrumenter().scheduler = peeker
     // N.B. "checkpoint" here means checkpoint of the network's state, as
     // opposed to a checkpoint of the applications state for checking
     // invariants
     val checkpoint = Instrumenter().checkpoint()
     println("Peek()'ing")
+    // Make sure to create all actors, not just those with Start events.
+    // Prevents tellEnqueue issues.
+    val spawns = original_trace.getEvents flatMap {
+       case SpawnEvent(_,props,name,_) => Some((props, name))
+       case _ => None
+    }
+    assert(spawns.toSet.size == spawns.length)
+    peeker.populateActorSystem(spawns)
     val prefix = peeker.peek(event_orchestrator.events)
     peeker.shutdown
     println("Restoring checkpoint")
@@ -208,7 +233,7 @@ class STSScheduler(var original_trace: EventTrace,
         println("Found prefix!")
         event_orchestrator.prepend(lst)
       case None =>
-        println("Ignoring message" + msgEvent)
+        println("No prefix found. Ignoring message" + msgEvent)
         event_orchestrator.trace_advanced
     }
   }
@@ -244,8 +269,12 @@ class STSScheduler(var original_trace: EventTrace,
           case TimerSend(fingerprint) =>
             if (scheduledFSMTimers contains fingerprint) {
               val timer = scheduledFSMTimers(fingerprint)
-              Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
-              timersSentButNotYetDelivered += fingerprint
+              // It may have been cancelled:
+              if (Instrumenter().timerToCancellable contains
+                  ((fingerprint.receiver, timer))) {
+                Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
+                timersSentButNotYetDelivered += fingerprint
+              }
             }
           case TimerDelivery(fingerprint) =>
             if (timersSentButNotYetDelivered contains fingerprint) {
@@ -312,10 +341,11 @@ class STSScheduler(var original_trace: EventTrace,
 
     handle_event_produced(snd, rcv, envelope) match {
       case ExternalMessage => {
-        // We assume that the failure detector and the outside world always
+        // We assume that the failure detector / checkpointer and the outside world always
         // have connectivity with all actors, i.e. no failure detector partitions.
-        if (MessageTypes.fromFailureDetector(msg)) {
-          pendingFDMessages += uniq
+        if (MessageTypes.fromFailureDetector(msg) ||
+            MessageTypes.fromCheckpointCollector(msg)) {
+          pendingSystemMessages += uniq
         } else {
           val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                               new Queue[Uniq[(ActorCell, Envelope)]])
@@ -358,14 +388,12 @@ class STSScheduler(var original_trace: EventTrace,
       return None
     }
 
-    // Flush detector messages before proceeding with other messages.
-    if (enableFailureDetector) {
-      send_external_messages()
-       if (!pendingFDMessages.isEmpty) {
-         val uniq = pendingFDMessages.dequeue()
-         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-         return Some(uniq.element)
-       }
+    // Flush checkpoint/fd messages before proceeding with other messages.
+    send_external_messages()
+    if (!pendingSystemMessages.isEmpty) {
+      val uniq = pendingSystemMessages.dequeue()
+      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+      return Some(uniq.element)
     }
 
     // OK, now we first need to get to a good place: it should be the case after
@@ -403,7 +431,7 @@ class STSScheduler(var original_trace: EventTrace,
          messageFingerprinter.fingerprint(timer))
       case _ =>
         // We've broken out of advanceReplay() because of a
-        // BeginWaitQuiescence event, but there were no pendingFDMessages to
+        // BeginWaitQuiescence event, but there were no pendingSystemMessages to
         // send. So, we need to invoke advanceReplay() once again to get us up
         // to a pending MsgEvent.
         schedSemaphore.release
@@ -456,6 +484,12 @@ class STSScheduler(var original_trace: EventTrace,
     }
     assert(started.get)
     started.set(false)
+
+    if (blockedOnCheckpoint.get) {
+      checkpointSem.release()
+      return
+    }
+
     if (!event_orchestrator.trace_finished) {
       throw new Exception("Failed to find messages to send to finish the trace!")
     } else {
@@ -502,5 +536,15 @@ class STSScheduler(var original_trace: EventTrace,
     // timer events, and ignore new timer events. IntervalPeekScheduler
     // explores unexpected timer events on our behalf.
     return false
+  }
+
+  override def reset_all_state() {
+    super.reset_all_state
+    reset_state
+    firstMessage = true
+    pendingEvents.clear
+    timersSentButNotYetDelivered.clear
+    pendingSystemMessages.clear
+    pausing = new AtomicBoolean(false)
   }
 }

@@ -3,12 +3,17 @@ package akka.dispatch.verification
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.HashSet
 
-class LeftToRightRemoval (oracle: TestOracle) extends Minimizer {
+class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
+  def this(oracle: TestOracle) = this(oracle, true)
+  val stats = new MinimizationStats("LeftToRightRemoval", oracle.getName)
+
   def minimize(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
     // First check if the initial trace violates the exception
-    println("Checking if unmodified trace triggers violation...")
-    if (oracle.test(events, violation_fingerprint)) {
-      throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+    if (checkUnmodifed) {
+      println("Checking if unmodified trace triggers violation...")
+      if (oracle.test(events, violation_fingerprint, stats) == None) {
+        throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+      }
     }
 
     var dag : EventDag = new UnmodifiedEventDag(events)
@@ -22,7 +27,7 @@ class LeftToRightRemoval (oracle: TestOracle) extends Minimizer {
       tested_events += event
       val new_dag = dag.remove_events(List(event))
 
-      if (oracle.test(new_dag.get_all_events, violation_fingerprint)) {
+      if (oracle.test(new_dag.get_all_events, violation_fingerprint, stats) == None) {
         println("passes")
         // Move on to the next event to test
         events_to_test = events_to_test.slice(1, events_to_test.length)
@@ -36,6 +41,10 @@ class LeftToRightRemoval (oracle: TestOracle) extends Minimizer {
     }
 
     return dag.get_all_events
+  }
+
+  def verify_mcs(mcs: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint): Option[EventTrace] = {
+    return oracle.test(mcs, violation_fingerprint, new MinimizationStats("NOP", "NOP"))
   }
 }
 

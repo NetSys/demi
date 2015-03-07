@@ -1,8 +1,12 @@
 package akka.dispatch.verification
-// TODO(cs): put me in a different package?
 
-class DDMin (oracle: TestOracle) extends Minimizer {
+class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
+  def this(oracle: TestOracle) = this(oracle, true)
+
   var violation_fingerprint : ViolationFingerprint = null
+  val stats = new MinimizationStats("DDMin", oracle.getName)
+  var original_num_events = 0
+  var total_inputs_pruned = 0
 
   // Taken from the 1999 version of delta debugging:
   //   https://www.st.cs.uni-saarland.de/publications/files/zeller-esec-1999.pdf
@@ -14,14 +18,31 @@ class DDMin (oracle: TestOracle) extends Minimizer {
     violation_fingerprint = _violation_fingerprint
 
     // First check if the initial trace violates the exception
-    println("Checking if unmodified trace triggers violation...")
-    if (oracle.test(events, violation_fingerprint)) {
-      throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+    if (checkUnmodifed) {
+      println("Checking if unmodified trace triggers violation...")
+      if (oracle.test(events, violation_fingerprint, stats) == None) {
+        throw new IllegalArgumentException("Unmodified trace does not trigger violation")
+      }
     }
+    stats.reset()
 
     var dag : EventDag = new UnmodifiedEventDag(events)
+    original_num_events = dag.length
     var remainder : EventDag = new UnmodifiedEventDag(List[ExternalEvent]())
-    return ddmin2(dag, remainder).get_all_events
+
+    stats.record_prune_start()
+    val mcs_dag = ddmin2(dag, remainder)
+    val mcs = mcs_dag.get_all_events
+    stats.record_prune_end()
+
+    assert(original_num_events - total_inputs_pruned == mcs.length)
+    // Record the final iteration (fencepost)
+    stats.record_iteration_size(original_num_events - total_inputs_pruned)
+    return mcs
+  }
+
+  def verify_mcs(mcs: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint): Option[EventTrace] = {
+    return oracle.test(mcs, _violation_fingerprint, new MinimizationStats("NOP", "NOP"))
   }
 
   def ddmin2(dag: EventDag, remainder: EventDag): EventDag = {
@@ -31,7 +52,7 @@ class DDMin (oracle: TestOracle) extends Minimizer {
     }
 
     // N.B. we reverse to ensure that we test the left half of events before
-    // the right half of events. Necessary b/c of our use of remove_events().
+    // the right half of events. (b/c of our use of remove_events())
     // Just a matter of convention.
     val splits : Seq[EventDag] =
         MinificationUtil.split_list(dag.get_atomic_events, 2).
@@ -39,12 +60,18 @@ class DDMin (oracle: TestOracle) extends Minimizer {
             map(split => dag.remove_events(split)).reverse
 
     // First, check both halves.
-    for (split <- splits) {
+    for ((split, i) <- splits.zipWithIndex) {
       val union = split.union(remainder)
       println("Checking split")
-      val passes = oracle.test(union.get_all_events, violation_fingerprint)
+      val passes = oracle.test(union.get_all_events, violation_fingerprint, stats) == None
+      // There may have been many replays; record each one's iteration size
+      // from before we invoked test
+      for (i <- (stats.iteration until stats.total_replays)) {
+        stats.record_iteration_size(original_num_events - total_inputs_pruned)
+      }
       if (!passes) {
         println("Split fails. Recursing")
+        total_inputs_pruned += (dag.length - split.length)
         return ddmin2(split, remainder)
       } else {
         println("Split passes.")

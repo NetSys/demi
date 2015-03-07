@@ -39,11 +39,14 @@ case class SpawnEvent(
 
 case class NetworkPartition(
     first: Set[String], 
-    second: Set[String]) extends Event with ExternalEvent
+    second: Set[String]) extends ExternalEvent with Event
+<<<<<<< HEAD
+=======
 
 case object RootEvent extends Event
 
 //case object DporQuiescence extends Event with ExternalEvent
+>>>>>>> bb30afca9a3d21ad695b2ff3d076a0898af51444
 
 
 
@@ -75,6 +78,13 @@ object MessageTypes {
     m match {
       case _: FailureDetectorOnline | _: NodeUnreachable | _: NodeReachable |
            _: ReachableGroup => return true
+      case _ => return false
+    }
+  }
+
+  def fromCheckpointCollector(m: Any) : Boolean = {
+    m match {
+      case CheckpointRequest => return true
       case _ => return false
     }
   }

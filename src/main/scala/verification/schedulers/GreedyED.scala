@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
+// TODO(cs): record total replays in `stats`.
+
 // TODO(cs): make EventTrace immutable so that copying is far more efficient.
 // TODO(cs): I'm fairly sure this code is full of race conditions. Example
 // stack traces:
@@ -39,16 +41,17 @@ import scala.util.control.Breaks._
  */
 class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
                messageFingerprinter: MessageFingerprinter,
-               populateActors: Boolean,
                enableFailureDetector: Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   assume(!original_trace.isEmpty)
   assume(original_trace.original_externals != null)
 
   def this(original_trace: EventTrace) =
-      this(original_trace, -1, new BasicFingerprinter, true, true)
+      this(original_trace, -1, new BasicFingerprinter, true)
   def this(original_trace: EventTrace, execution_bound: Int) =
-      this(original_trace, execution_bound, new BasicFingerprinter, true, true)
+      this(original_trace, execution_bound, new BasicFingerprinter, true)
+
+  def getName: String = "GreedyED"
 
   if (!enableFailureDetector) {
     disableFailureDetector()
@@ -130,7 +133,8 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (_subseq: Seq[ExternalEvent],
-            _violationFingerprint: ViolationFingerprint) : Boolean = {
+            _violationFingerprint: ViolationFingerprint,
+            stats: MinimizationStats) : Option[EventTrace] = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -147,7 +151,7 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
       fd.startFD(instrumenter.actorSystem)
     }
 
-    if (populateActors) {
+    if (!alreadyPopulated) {
       populateActorSystem(original_trace.getEvents flatMap {
         case SpawnEvent(_,props,name,_) => Some((props, name))
         case _ => None
@@ -172,7 +176,12 @@ class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
     currentlyInjecting.set(false)
     shutdown()
     // Somewhat confusing: test passes if we failed to find a violation.
-    return !foundViolation.get
+    if (foundViolation.get) {
+      // TODO(cs): does this get reset throught popPriorityQueue?
+      return Some(event_orchestrator.events)
+    } else {
+      return None
+    }
   }
 
   private[this] def getUnexpected() : Seq[MsgEvent] = {
