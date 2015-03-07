@@ -227,7 +227,7 @@ class STSScheduler(var original_trace: EventTrace,
         println("Found prefix!")
         event_orchestrator.prepend(lst)
       case None =>
-        println("Ignoring message" + msgEvent)
+        println("No prefix found. Ignoring message" + msgEvent)
         event_orchestrator.trace_advanced
     }
   }
