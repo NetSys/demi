@@ -138,17 +138,6 @@ class STSScheduler(var original_trace: EventTrace,
       })
     }
 
-    if (enableFailureDetector) {
-      fd.startFD(instrumenter.actorSystem)
-    }
-
-    if (!alreadyPopulated) {
-      populateActorSystem(original_trace.getEvents flatMap {
-        case SpawnEvent(_,props,name,_) => Some((props, name))
-        case _ => None
-      })
-    }
-
     // We use the original trace as our reference point as we step through the
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
