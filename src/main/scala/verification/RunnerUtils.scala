@@ -4,7 +4,8 @@ package akka.dispatch.verification
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
 
-  def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant) :
+  def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
+           validate_replay:Option[ReplayScheduler]=None) :
         Tuple2[EventTrace, ViolationFingerprint] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -22,9 +23,30 @@ object RunnerUtils {
           println("shutdown successfully")
         case Some((trace, violation)) => {
           println("Found a safety violation!")
-          violationFound = violation
-          traceFound = trace
           sched.shutdown()
+          validate_replay match {
+            case Some(replayer) =>
+              println("Validating replay")
+              Instrumenter().scheduler = replayer
+              var deterministic = true
+              try {
+                replayer.replay(trace.filterCheckpointMessages)
+              } catch {
+                case r: ReplayException =>
+                  println("doesn't replay deterministically...")
+                  deterministic = false
+              } finally {
+                println("finally: Shutting down...")
+                replayer.shutdown()
+              }
+              if (deterministic) {
+                violationFound = violation
+                traceFound = trace
+              }
+            case None =>
+              violationFound = violation
+              traceFound = trace
+          }
         }
       }
     }

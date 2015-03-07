@@ -18,6 +18,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
+class ReplayException(message:String=null, cause:Throwable=null) extends
+      RuntimeException(message, cause)
+
 /**
  * Scheduler that takes a list of both internal and external events (e.g. the
  * return value of PeekScheduler.peek()), and attempts to replay that schedule
@@ -47,11 +50,15 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   // is not perfect.
   private[this] val allSends = new HashMap[(String, String, MessageFingerprint), Int]
 
+  // If != "", there was non-determinism. Have the main thread throw an
+  // exception, so that it can be caught by the caller.
+  private[this] var nonDeterministicErrorMsg = ""
+
   // Given an event trace, try to replay it exactly. Return the events
   // observed in *this* execution, which should in theory be the same as the
   // original.
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
-  def replay (_trace: EventTrace) : EventTrace = {
+  def replay (_trace: EventTrace) : Option[EventTrace] = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -81,7 +88,6 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
           None
       }
     }
-
     val updatedEvents = updateEvents(_trace.getEvents)
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
@@ -94,6 +100,9 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
+    if (nonDeterministicErrorMsg != "") {
+      throw new ReplayException(message=nonDeterministicErrorMsg)
+    }
     return event_orchestrator.events
   }
 
@@ -126,7 +135,9 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
               val timer = scheduledFSMTimers(fingerprint)
               Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
             } else {
-              throw new RuntimeException("Expected TimerSend("+fingerprint+")")
+              throw new RuntimeException(
+                "Internal error: expected scheduledFSMTimers contains " +
+                fingerprint)
             }
           case TimerDelivery(fingerprint) =>
             break
@@ -167,7 +178,9 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
     if (strictChecking) {
       if (!allSends.contains((snd, rcv, fingerprint)) ||
            allSends((snd, rcv, fingerprint)) <= 0) {
-        throw new RuntimeException("Unexpected message " + (snd, rcv, msg))
+        // Have the main thread crash on our behalf (once Quiescence is
+        // reached)
+        nonDeterministicErrorMsg = "Unexpected message " + (snd, rcv, msg)
       }
       allSends((snd, rcv, fingerprint)) = allSends.getOrElse((snd, rcv, fingerprint), 0) - 1
     }
@@ -201,6 +214,9 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+    if (nonDeterministicErrorMsg != "") {
+      return None
+    }
     // First get us to kind of a good place: it should be the case after
     // invoking advanceReplay() that the next event is a MsgEvent or
     // TimerDelivery event.
@@ -256,7 +272,10 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
           for (pending <- pendingEvents.keys) {
             println(pending)
           }
-          throw new RuntimeException("Expected event " + key)
+          // Have the main thread crash on our behalf
+          nonDeterministicErrorMsg = "Expected event " + key
+          schedSemaphore.release
+          return None
         case Some(uniq) => None
           if (!(event_orchestrator.actorToActorRef.values contains uniq.element._1.self)) {
             throw new IllegalStateException("unknown ActorRef: " + uniq.element._1.self)
@@ -271,9 +290,13 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   override def notify_quiescence () {
     assert(started.get)
     started.set(false)
+    if (nonDeterministicErrorMsg != "") {
+      traceSem.release
+    }
     if (!event_orchestrator.trace_finished) {
-      // If waiting for quiescence.
-      throw new Exception("Divergence")
+      // Have the main thread crash on our behalf
+      nonDeterministicErrorMsg = "Divergence"
+      traceSem.release
     } else {
       if (currentlyInjecting.get) {
         // Tell the calling thread we are done
