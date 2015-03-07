@@ -36,45 +36,6 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
        
-class ExploredTacker {
-  
-  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
-
-  
-  def setExplored(index: Int, pair: (Unique, Unique)) =
-  exploredStack.get(index) match {
-    case Some(set) => set += pair
-    case None =>
-      val newElem = new HashSet[(Unique, Unique)] + pair
-      exploredStack(index) = newElem
-  }
-  
-  
-  def isExplored(pair: (Unique, Unique)): Boolean = {
-
-    for ((index, set) <- exploredStack) set.contains(pair) match {
-      case true => return true
-      case false =>
-    }
-
-    return false
-  }
-
-  
-  def trimExplored(index: Int) = {
-    exploredStack = exploredStack.filter { other => other._1 <= index }
-  }
-
-  
-  def printExplored() = {
-    for ((index, set) <- exploredStack) {
-      println(index + ": " + set.size)
-    }
-  }
-
-}
-       
-
 // DPOR scheduler.
 class DPOR extends Scheduler with LazyLogging {
   
