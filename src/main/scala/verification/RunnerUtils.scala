@@ -33,10 +33,9 @@ object RunnerUtils {
                 replayer.replay(trace.filterCheckpointMessages)
               } catch {
                 case r: ReplayException =>
-                  println("doesn't replay deterministically...")
+                  println("doesn't replay deterministically..." + r)
                   deterministic = false
               } finally {
-                println("finally: Shutting down...")
                 replayer.shutdown()
               }
               if (deterministic) {
@@ -91,8 +90,12 @@ object RunnerUtils {
 
     val ddmin = new DDMin(sched, false)
     val mcs = ddmin.minimize(trace.original_externals, violation)
-    println("Validing MCS...")
+    println("Validating MCS...")
     val validated_mcs = ddmin.verify_mcs(mcs, violation)
+    validated_mcs match {
+      case Some(_) => println("MCS Validated!")
+      case None => println("MCS doesn't reproduce bug...")
+    }
     return (mcs, ddmin.stats, validated_mcs, violation)
   }
 
@@ -115,8 +118,12 @@ object RunnerUtils {
 
     val ddmin = new DDMin(sched)
     val mcs = ddmin.minimize(trace.original_externals, violation)
-    println("Validing MCS...")
+    println("Validating MCS...")
     val validated_mcs = ddmin.verify_mcs(mcs, violation)
+    validated_mcs match {
+      case Some(_) => println("MCS Validated!")
+      case None => println("MCS doesn't reproduce bug...")
+    }
     return (mcs, ddmin.stats, validated_mcs, violation)
   }
 }
