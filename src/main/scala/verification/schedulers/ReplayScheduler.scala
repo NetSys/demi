@@ -58,7 +58,7 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
   // observed in *this* execution, which should in theory be the same as the
   // original.
   // Pre: there is a SpawnEvent for every sender and receipient of every SendEvent
-  def replay (_trace: EventTrace) : Option[EventTrace] = {
+  def replay (_trace: EventTrace) : EventTrace = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -292,6 +292,7 @@ class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureD
     started.set(false)
     if (nonDeterministicErrorMsg != "") {
       traceSem.release
+      return
     }
     if (!event_orchestrator.trace_finished) {
       // Have the main thread crash on our behalf

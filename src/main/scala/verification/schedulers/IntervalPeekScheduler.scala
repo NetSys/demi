@@ -78,7 +78,9 @@ object IntervalPeekScheduler {
 class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
                             max_peek_messages: Int,
                             messageFingerprinter: MessageFingerprinter,
-                            enableFailureDetector: Boolean) extends ReplayScheduler {
+                            enableFailureDetector: Boolean) extends
+      ReplayScheduler(messageFingerprinter, enableFailureDetector, false) {
+
   def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) =
       this(expected, lookingFor, 10, new BasicFingerprinter, true)
 
@@ -169,7 +171,7 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     val fingerprintedEvent = MsgEvent(snd, rcv,
       messageFingerprinter.fingerprint(msg))
     if (expected.contains(fingerprintedEvent)) {
-      expected -= event
+      expected -= fingerprintedEvent
     } else if (fingerprintedEvent == lookingFor) {
       foundLookingFor.set(true)
     } else if (!event_orchestrator.crosses_partition(snd, rcv)) {
@@ -197,6 +199,10 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
       getRandomPendingTimer() match {
         case Some((receiver, msg)) =>
           Instrumenter().manuallyHandleTick(receiver, msg)
+          send_external_messages()
+          if (pendingUnexpectedEvents.isEmpty) {
+            return None
+          }
         case None =>
           println("No more events to schedule..")
           return None
