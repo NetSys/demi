@@ -35,6 +35,9 @@ import scala.util.control.Breaks._
 /**
  * Scheduler that takes greedily tries to minimize edit distance from the
  * original execution.
+ *
+ * populateActors: whether to populateActors within test(). If false, you
+ * the caller needs to do it before invoking test().
  */
 class GreedyED(var original_trace: EventTrace, var execution_bound: Int,
                messageFingerprinter: MessageFingerprinter,

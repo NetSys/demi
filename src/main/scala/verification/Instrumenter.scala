@@ -344,6 +344,13 @@ class Instrumenter {
     return true
   }
 
+  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) : Boolean = {
+    if (scheduler != null) {
+      return scheduler.notify_timer_scheduled(sender, receiver, msg)
+    }
+    return true
+  }
+
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,

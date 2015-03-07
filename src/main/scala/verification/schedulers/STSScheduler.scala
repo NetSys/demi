@@ -57,6 +57,9 @@ object STSScheduler {
  * ExternalEvents. Attempts to find a schedule containing the ExternalEvents
  * that triggers a given invariant.
  *
+ * populateActors: whether to populateActors within test(). If false, you
+ * the caller needs to do it before invoking test().
+ *
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
@@ -135,6 +138,17 @@ class STSScheduler(var original_trace: EventTrace,
       })
     }
 
+    if (enableFailureDetector) {
+      fd.startFD(instrumenter.actorSystem)
+    }
+
+    if (populateActors) {
+      populateActorSystem(original_trace.getEvents flatMap {
+        case SpawnEvent(_,props,name,_) => Some((props, name))
+        case _ => None
+      })
+    }
+
     // We use the original trace as our reference point as we step through the
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
@@ -205,6 +219,9 @@ class STSScheduler(var original_trace: EventTrace,
     // opposed to a checkpoint of the applications state for checking
     // invariants
     Instrumenter().scheduler = peeker
+    // N.B. "checkpoint" here means checkpoint of the network's state, as
+    // opposed to a checkpoint of the applications state for checking
+    // invariants
     val checkpoint = Instrumenter().checkpoint()
     println("Peek()'ing")
     // Make sure to create all actors, not just those with Start events.
