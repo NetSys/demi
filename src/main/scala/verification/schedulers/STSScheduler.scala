@@ -200,12 +200,21 @@ class STSScheduler(var original_trace: EventTrace,
     val peeker = new IntervalPeekScheduler(
       expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
     peeker.eventMapper = eventMapper
-    Instrumenter().scheduler = peeker
+
     // N.B. "checkpoint" here means checkpoint of the network's state, as
     // opposed to a checkpoint of the applications state for checking
     // invariants
+    Instrumenter().scheduler = peeker
     val checkpoint = Instrumenter().checkpoint()
     println("Peek()'ing")
+    // Make sure to create all actors, not just those with Start events.
+    // Prevents tellEnqueue issues.
+    val spawns = original_trace.getEvents flatMap {
+       case SpawnEvent(_,props,name,_) => Some((props, name))
+       case _ => None
+    }
+    assert(spawns.toSet.size == spawns.length)
+    peeker.populateActorSystem(spawns)
     val prefix = peeker.peek(event_orchestrator.events)
     peeker.shutdown
     println("Restoring checkpoint")

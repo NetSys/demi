@@ -234,7 +234,7 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
   override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                                       msg: Any): Boolean = {
     handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
-    return doneReplayingPrefix.get()
+    return false
   }
 
   override def shutdown () = {
