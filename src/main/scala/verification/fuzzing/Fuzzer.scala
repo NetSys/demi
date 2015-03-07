@@ -89,7 +89,7 @@ class Fuzzer(num_events: Integer,
   def generateNextEvent() : Option[ExternalEvent] = {
     val nextEventType = weights.getNextEventType(rand.nextDouble())
     nextEventType match {
-      case None => return Some(WaitQuiescence)
+      case None => return Some(WaitQuiescence())
       case Some(cls) =>
         cls match {
           case StableClasses.ClassOfKill =>
@@ -138,7 +138,7 @@ class Fuzzer(num_events: Integer,
 
     def okToInject(event: Option[ExternalEvent]) : Boolean = {
       event match {
-        case Some(WaitQuiescence) => return !justInjectedWaitQuiescence
+        case Some(WaitQuiescence()) => return !justInjectedWaitQuiescence
         case _ => return true
       }
     }
@@ -151,7 +151,7 @@ class Fuzzer(num_events: Integer,
       nextEvent match {
         case Some(event) =>
           event match {
-            case WaitQuiescence =>
+            case WaitQuiescence() =>
               justInjectedWaitQuiescence = true
             case _ => None
               justInjectedWaitQuiescence = false

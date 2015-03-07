@@ -118,7 +118,7 @@ class EventOrchestrator[E] {
           trigger_partition(a,b)
         case UnPartition (a, b) =>
           trigger_unpartition(a,b)
-        case WaitQuiescence =>
+        case WaitQuiescence() =>
           events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence
         case WaitTimers(n) =>

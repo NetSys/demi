@@ -6,6 +6,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
   var violation_fingerprint : ViolationFingerprint = null
   val stats = new MinimizationStats("DDMin", oracle.getName)
   var original_num_events = 0
+  var total_inputs_pruned = 0
 
   // Taken from the 1999 version of delta debugging:
   //   https://www.st.cs.uni-saarland.de/publications/files/zeller-esec-1999.pdf
@@ -24,23 +25,27 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
       }
     }
     stats.reset()
-    original_num_events = events.length
 
     var dag : EventDag = new UnmodifiedEventDag(events)
+    original_num_events = dag.length
     var remainder : EventDag = new UnmodifiedEventDag(List[ExternalEvent]())
+
     stats.record_prune_start()
-    val ret = ddmin2(dag, remainder, 0).get_all_events
+    val mcs_dag = ddmin2(dag, remainder)
+    val mcs = mcs_dag.get_all_events
     stats.record_prune_end()
-    // Make sure to record the final iteration size:
-    stats.record_iteration_size(ret.size)
-    return ret
+
+    assert(original_num_events - total_inputs_pruned == mcs.length)
+    // Record the final iteration (fencepost)
+    stats.record_iteration_size(original_num_events - total_inputs_pruned)
+    return mcs
   }
 
   def verify_mcs(mcs: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint): Option[EventTrace] = {
     return oracle.test(mcs, _violation_fingerprint, new MinimizationStats("NOP", "NOP"))
   }
 
-  def ddmin2(dag: EventDag, remainder: EventDag, total_inputs_pruned: Int): EventDag = {
+  def ddmin2(dag: EventDag, remainder: EventDag): EventDag = {
     if (dag.get_atomic_events.length <= 1) {
       println("base case")
       return dag
@@ -66,8 +71,8 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
       }
       if (!passes) {
         println("Split fails. Recursing")
-        val new_inputs_pruned = if (i == 0) splits(1).length else splits(0).length
-        return ddmin2(split, remainder, total_inputs_pruned + new_inputs_pruned)
+        total_inputs_pruned += (dag.length - split.length)
+        return ddmin2(split, remainder)
       } else {
         println("Split passes.")
       }
@@ -75,10 +80,8 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
 
     // Interference:
     println("Interference")
-    val left = ddmin2(splits(0), splits(1).union(remainder),
-                      total_inputs_pruned)
-    val right = ddmin2(splits(1), splits(0).union(remainder),
-                      total_inputs_pruned)
+    val left = ddmin2(splits(0), splits(1).union(remainder))
+    val right = ddmin2(splits(1), splits(0).union(remainder))
     return left.union(right)
   }
 }

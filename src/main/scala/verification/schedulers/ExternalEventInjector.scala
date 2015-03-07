@@ -104,7 +104,7 @@ trait ExternalEventInjector[E] {
     if (event_orchestrator.actorToActorRef contains receiver) {
       enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
     } else {
-      throw new IllegalArgumentException("Unknown receiver " + receiver)
+      println("WARNING! Unknown receiver " + receiver)
     }
   }
 

@@ -39,7 +39,7 @@ case class SpawnEvent(
 
 case class NetworkPartition(
     first: Set[String], 
-    second: Set[String]) extends Event with ExternalEvent
+    second: Set[String]) extends ExternalEvent with Event
 
 
 
