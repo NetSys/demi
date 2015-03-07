@@ -40,13 +40,10 @@ case class SpawnEvent(
 case class NetworkPartition(
     first: Set[String], 
     second: Set[String]) extends ExternalEvent with Event
-<<<<<<< HEAD
-=======
 
 case object RootEvent extends Event
 
 //case object DporQuiescence extends Event with ExternalEvent
->>>>>>> bb30afca9a3d21ad695b2ff3d076a0898af51444
 
 
 
