@@ -4,11 +4,13 @@ import akka.actor.{ ActorCell, ActorRef, Props }
 import akka.dispatch.{ Envelope }
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.Semaphore
+import java.util.concurrent.Semaphore,
+       scala.collection.mutable.HashMap,
+       scala.collection.mutable.HashSet
 
 
 object IDGenerator {
-  var uniqueId = new AtomicInteger
+  var uniqueId = new AtomicInteger // DPOR root event is assumed to be ID 0, incrementAndGet ensures starting at 1
 
   def get() : Integer = {
     return uniqueId.incrementAndGet()
@@ -26,8 +28,6 @@ case class Uniq[E](
   var id : Int = IDGenerator.get()
 )
 
-abstract trait Event
-
 // Message delivery -- (not the initial send)
 // N.B., if an event trace was serialized, it's possible that msg is of type
 // MessageFingerprint rather than a whole message!
@@ -40,6 +40,13 @@ case class SpawnEvent(
 case class NetworkPartition(
     first: Set[String], 
     second: Set[String]) extends ExternalEvent with Event
+<<<<<<< HEAD
+=======
+
+case object RootEvent extends Event
+
+//case object DporQuiescence extends Event with ExternalEvent
+>>>>>>> bb30afca9a3d21ad695b2ff3d076a0898af51444
 
 
 
@@ -88,6 +95,7 @@ object ActorTypes {
     return name == FailureDetector.fdName || name == CheckpointSink.name
   }
 }
+
 
 trait TellEnqueue {
   def tell()
@@ -153,4 +161,41 @@ class TellEnqueueSemaphore extends Semaphore(1) with TellEnqueue {
   }
 }
 
+class ExploredTacker {
+  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
+  
+  def setExplored(index: Int, pair: (Unique, Unique)) =
+  exploredStack.get(index) match {
+    case Some(set) => set += pair
+    case None =>
+      val newElem = new HashSet[(Unique, Unique)] + pair
+      exploredStack(index) = newElem
+  }
+  
+  def isExplored(pair: (Unique, Unique)): Boolean = {
 
+    for ((index, set) <- exploredStack) set.contains(pair) match {
+      case true => return true
+      case false =>
+    }
+
+    return false
+  }
+  
+  def trimExplored(index: Int) = {
+    exploredStack = exploredStack.filter { other => other._1 <= index }
+  }
+
+  
+  def printExplored() = {
+    for ((index, set) <- exploredStack.toList.sortBy(t => (t._1))) {
+      println(index + ": " + set.size)
+      //val content = set.map(x => (x._1.id, x._2.id))
+      //println(index + ": " + set.size + ": " +  content))
+    }
+  }
+
+  def clear() = {
+    exploredStack.clear()
+  }
+}

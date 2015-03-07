@@ -142,7 +142,7 @@ class STSScheduler(var original_trace: EventTrace,
       fd.startFD(instrumenter.actorSystem)
     }
 
-    if (populateActors) {
+    if (!alreadyPopulated) {
       populateActorSystem(original_trace.getEvents flatMap {
         case SpawnEvent(_,props,name,_) => Some((props, name))
         case _ => None
