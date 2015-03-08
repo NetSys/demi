@@ -135,8 +135,10 @@ object RunnerUtils {
     val sched = new PeekScheduler(false)
     sched.setInvariant(invariant)
     val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    sched.setMaxMessages(trace.size)
 
-    val ddmin = new DDMin(sched)
+    // Don't check unmodified execution, since RR will often fail
+    val ddmin = new DDMin(sched, false)
     val mcs = ddmin.minimize(trace.original_externals, violation)
     println("Validating MCS...")
     val validated_mcs = ddmin.verify_mcs(mcs, violation)

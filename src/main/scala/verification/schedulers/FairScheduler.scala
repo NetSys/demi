@@ -81,4 +81,11 @@ class FairScheduler extends AbstractScheduler {
   override def notify_quiescence () {
     println("No more messages to process " + pendingEvents)
   }
+
+  override def reset_all_state () = {
+    super.reset_all_state
+    index = 0
+    pendingEvents.clear
+    actorQueue.clear
+  }
 }

@@ -240,6 +240,7 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
 
     // Also check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
+      println("Exceeded maxMessages")
       numWaitingFor.set(0)
       event_orchestrator.finish_early
       return None
@@ -271,6 +272,9 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
         case CheckpointRequest => None
         case _ =>
           messagesScheduledSoFar += 1
+          if (messagesScheduledSoFar == Int.MaxValue) {
+            messagesScheduledSoFar = 1
+          }
       }
       return Some(uniq.element)
     }

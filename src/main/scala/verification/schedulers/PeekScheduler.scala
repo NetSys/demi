@@ -30,6 +30,15 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
   def getName: String = "FairScheduler"
 
+  // Allow the user to place a bound on how many messages are delivered.
+  // Useful for dealing with non-terminating systems.
+  var maxMessages = Int.MaxValue
+  def setMaxMessages(_maxMessages: Int) = {
+    maxMessages = _maxMessages
+  }
+
+  var messagesScheduledSoFar = 0
+
   var test_invariant : Invariant = null
 
   enableCheckpointing()
@@ -80,12 +89,28 @@ class PeekScheduler(enableFailureDetector: Boolean)
   }
 
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    send_external_messages
+    // Check if we've exceeded our message limit
+    if (messagesScheduledSoFar > maxMessages) {
+      println("Exceeded maxMessages")
+      numWaitingFor.set(0)
+      event_orchestrator.finish_early
+      return None
+    }
+
+    send_external_messages()
     // FairScheduler gives us round-robin message dispatches.
     val uniq_option = find_message_to_schedule()
     uniq_option match {
       case Some(uniq) =>
         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+        uniq.element._2.message match {
+          case CheckpointRequest => None
+          case _ =>
+            messagesScheduledSoFar += 1
+            if (messagesScheduledSoFar == Int.MaxValue) {
+              messagesScheduledSoFar = 1
+            }
+        }
         return Some(uniq.element)
       case None =>
         return None
@@ -123,6 +148,11 @@ class PeekScheduler(enableFailureDetector: Boolean)
     super[ExternalEventInjector].enqueue_message(receiver, msg)
   }
 
+  override def reset_all_state() = {
+    super.reset_all_state
+    messagesScheduledSoFar = 0
+  }
+
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
            stats: MinimizationStats) : Option[EventTrace] = {
@@ -139,11 +169,16 @@ class PeekScheduler(enableFailureDetector: Boolean)
         violation_found = fingerprint.matches(violation_fingerprint)
       case None => None
     }
-    shutdown()
-    if (violation_found) {
-      return Some(event_orchestrator.events)
-    } else {
-      return None
+    val ret = violation_found match {
+      case true => Some(event_orchestrator.events)
+      case false => None
     }
+
+    // reset ExternalEventInjector
+    reset_state
+    // reset FairScheduler
+    reset_all_state
+
+    return ret
   }
 }
