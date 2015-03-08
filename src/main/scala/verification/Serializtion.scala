@@ -12,7 +12,6 @@ import java.io._
 import java.nio._
 import scala.io._
 
-
 // Note: in general, try to avoid anonymous functions when writing
 // Runner.scala files. This makes deseralization of closures brittle.
 
@@ -160,6 +159,10 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
         record_experiment_known_dir(new_experiment_dir, event_trace, violation)
       case None => None
     }
+
+    // Overwrite actors.bin, to make sure we include all actors, not just
+    // those left in the MCS.
+    ("cp " + old_experiment_dir + ExperimentSerializer.actors + " " + new_experiment_dir).!
   }
 }
 
@@ -174,6 +177,12 @@ class ExperimentDeserializer(results_dir: String) {
     val buf = JavaSerialization.readFromFile(results_dir +
       ExperimentSerializer.violation)
     return message_deserializer.deserialize(buf).asInstanceOf[ViolationFingerprint]
+  }
+
+  def get_mcs(): Seq[ExternalEvent] = {
+    val buf = JavaSerialization.readFromFile(results_dir +
+      ExperimentSerializer.mcs)
+    return JavaSerialization.deserialize[Array[ExternalEvent]](buf)
   }
 
   def get_events(message_deserializer: MessageDeserializer, actorSystem: ActorSystem) : EventTrace = {
