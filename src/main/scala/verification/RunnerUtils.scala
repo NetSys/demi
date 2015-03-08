@@ -126,4 +126,24 @@ object RunnerUtils {
     }
     return (mcs, ddmin.stats, validated_mcs, violation)
   }
+
+  def roundRobinDDMin(experiment_dir: String,
+                      messageFingerprinter: MessageFingerprinter,
+                      messageDeserializer: MessageDeserializer,
+                      invariant: TestOracle.Invariant) :
+        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
+    val sched = new PeekScheduler(false)
+    sched.setInvariant(invariant)
+    val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+
+    val ddmin = new DDMin(sched)
+    val mcs = ddmin.minimize(trace.original_externals, violation)
+    println("Validating MCS...")
+    val validated_mcs = ddmin.verify_mcs(mcs, violation)
+    validated_mcs match {
+      case Some(_) => println("MCS Validated!")
+      case None => println("MCS doesn't reproduce bug...")
+    }
+    return (mcs, ddmin.stats, validated_mcs, violation)
+  }
 }
