@@ -196,7 +196,8 @@ trait ExternalEventInjector[E] {
     event_orchestrator.inject_until_quiescence(enqueue_message)
     if (!event_orchestrator.trace_finished) {
       event_orchestrator.previous_event match {
-        case Continue(n) => numWaitingFor.set(n)
+        case Continue(n) =>
+          numWaitingFor.set(n)
         case _ => None
       }
     }
@@ -302,15 +303,24 @@ trait ExternalEventInjector[E] {
     started.set(false)
     event_orchestrator.events += Quiescence
     if (numWaitingFor.get() > 0) {
-      val pendingTimers = Instrumenter().await_timers(1)
-      if (!pendingTimers) {
-        // Nothing to wait for.
+      Instrumenter().updateCancellables()
+      if (Instrumenter().cancellableToTimer.values.filterNot(
+           { case (receiver, m) => event_orchestrator.inaccessible contains receiver }
+          ).isEmpty) {
+        println("No alive actors with registered timers. Skipping Continue")
         // Fall through to next if/else block.
         numWaitingFor.set(0)
       } else {
-        started.set(true)
-        Instrumenter().start_dispatch()
-        return
+        val pendingTimers = Instrumenter().await_timers(1)
+        if (!pendingTimers) {
+          // Nothing to wait for.
+          // Fall through to next if/else block.
+          numWaitingFor.set(0)
+        } else {
+          started.set(true)
+          Instrumenter().start_dispatch()
+          return
+        }
       }
     } else if (blockedOnCheckpoint.get()) {
       checkpointSem.release()

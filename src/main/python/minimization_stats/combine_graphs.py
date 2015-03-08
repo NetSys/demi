@@ -19,35 +19,42 @@ import string
 import argparse
 import json
 import os
+import sys
 
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser(description="generate a plot")
-  # TODO(cs): generalize to indefinite input files
+  parser = argparse.ArgumentParser(description=(
+  '''Specify any number of minimization_stats.json files to be combined into '''
+  '''a single graph. Usage:\n'''
+  ''' $0 <path to 1st json> <title for 1st json> <path to 2nd json> '''
+  ''' <title for 2nd json> ...'''
+  ))
+  # Need at least one input file to know where to infer where to put the output.
   parser.add_argument('input1', metavar="INPUT1",
                       help='''The first input json file''')
   parser.add_argument('title1', metavar="TITLE1",
                       help='''The title for input1's line''')
-  parser.add_argument('input2', metavar="INPUT2",
-                      help='''The second input json file''')
-  parser.add_argument('title2', metavar="TITLE2",
-                      help='''The title for input2's line''')
-  args = parser.parse_args()
+  args, unknown = parser.parse_known_args()
+  if (len(unknown) % 2) != 0:
+    print >> sys.stderr, "Uneven number of arguments. Need titles!"
+    sys.exit(1)
 
   basename = os.path.basename(args.input1)
-  dirname = os.path.dirname(args.input1)
-  gpi_filename = string.replace(dirname + "combined_" + basename, ".json", ".gpi")
-  output_filename = string.replace(dirname + "combined_" + basename, ".json", ".pdf")
+  dirname = os.path.dirname(os.path.dirname(args.input1))
+  gpi_filename = string.replace(dirname + "/combined_" + basename, ".json", ".gpi")
+  output_filename = string.replace(dirname + "/combined_" + basename, ".json", ".pdf")
+
+  # Turn each adjacent pair of elements into a tuple
+  # http://stackoverflow.com/questions/4628290/pairs-from-single-list
+  pairs = zip(unknown[::2], unknown[1::2])
 
   graph_title = ""
 
   data_info_list = []
-  for input_json, line_title in [(args.input1, args.title1), (args.input2, args.title2)]:
+  for input_json, line_title in [(args.input1, args.title1)] + pairs:
     dat_filename = string.replace(input_json, ".json", ".dat")
     stats = load_json(input_json)
     write_data_file(dat_filename, stats)
     data_info_list.append(DataInfo(title=line_title, filename=dat_filename))
-    if 'prune_duration_seconds' in stats:
-      graph_title += "%s runtime=%.1fs" % (line_title, stats['prune_duration_seconds'])
 
   write_gpi_template(gpi_filename, output_filename, data_info_list, graph_title)
   invoke_gnuplot(gpi_filename)
