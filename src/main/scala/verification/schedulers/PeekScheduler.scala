@@ -17,11 +17,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 // TODO(cs): PeekScheduler should really be parameterized to allow us to try
 // different scheduling strategies (FIFO, round-robin) during Peek.
 
-// TODO(cs): PeekScheduler does not invoke EventTrace.appendMsgSend nor
-// EventTrace.appendMsgEvent, and therefore does not provide a mapping between
-// Send's and their corresponding delivery events. This prevents some
-// optimizations, e.g. EventTrace.filterKnownAbsentInternals.
-
 /**
  * Takes a sequence of ExternalEvents as input, and plays the execution
  * forward in the same way as FairScheduler. While playing forward,
@@ -54,13 +49,15 @@ class PeekScheduler(enableFailureDetector: Boolean)
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
+    val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(ActorCell, Envelope)]])
+    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
       case CheckpointReplyMessage => None
       case _ => {
         if (!crosses_partition(snd, rcv)) {
-          pendingEvents(rcv) = msgs += ((cell, envelope))
+          pendingEvents(rcv) = msgs += uniq
         }
       }
     }
@@ -85,7 +82,14 @@ class PeekScheduler(enableFailureDetector: Boolean)
   override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
     send_external_messages
     // FairScheduler gives us round-robin message dispatches.
-    return super.schedule_new_message()
+    val uniq_option = find_message_to_schedule()
+    uniq_option match {
+      case Some(uniq) =>
+        event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+        return Some(uniq.element)
+      case None =>
+        return None
+    }
   }
 
   override def notify_quiescence () {
