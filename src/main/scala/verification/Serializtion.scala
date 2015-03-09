@@ -8,6 +8,10 @@ import scala.sys.process._
 import scala.sys.process.BasicIO
 import scala.collection.mutable.Queue
 
+import scalax.collection.mutable.Graph,
+       scalax.collection.GraphEdge.DiEdge,
+       scalax.collection.edge.LDiEdge
+
 import java.io._
 import java.nio._
 import scala.io._
@@ -40,6 +44,7 @@ object ExperimentSerializer {
   val violation = "/violation.bin"
   val mcs = "/mcs.bin"
   val stats = "/minimization_stats.json"
+  val depGraph = "/depGraph.bin"
 
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
@@ -60,7 +65,8 @@ object ExperimentSerializer {
 class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_serializer: MessageSerializer) {
 
   def record_experiment(experiment_name: String, trace: EventTrace,
-                        violation: ViolationFingerprint) : String = {
+                        violation: ViolationFingerprint,
+                        depGraph: Option[Graph[Unique, DiEdge]]=None) : String = {
     val output_dir = ExperimentSerializer.create_experiment_dir(experiment_name)
     // We store the actor's names and props separately (reduntantly), so that
     // we can properly deserialize ActorRefs later. (When deserializing
@@ -69,12 +75,14 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     // corresponding actors in the new ActorSystem. We therefore first boot the
     // system with all these actors created, and then deserialize the rest of the
     // events.)
-    record_experiment_known_dir(output_dir, trace, violation)
+    record_experiment_known_dir(output_dir, trace, violation,
+                                depGraph=depGraph)
     return output_dir
   }
 
   def record_experiment_known_dir(output_dir: String, trace: EventTrace,
-                                  violation: ViolationFingerprint) {
+                                  violation: ViolationFingerprint,
+                                  depGraph: Option[Graph[Unique, DiEdge]]=None) {
     val actorPropNamePairs = trace.events.flatMap {
       case SpawnEvent(_,props,name,_) => Some((props, name))
       case _ => None
@@ -135,6 +143,15 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     val externalBuf = message_serializer.serialize(trace.original_externals)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.original_externals,
                                   externalBuf)
+
+    depGraph match {
+      case Some(graph) =>
+        val graphBuf = message_serializer.serialize(graph)
+        JavaSerialization.writeToFile(output_dir + ExperimentSerializer.depGraph,
+                                      graphBuf)
+      case None =>
+        None
+    }
   }
 
   def serializeMCS(old_experiment_dir: String, mcs: Seq[ExternalEvent],
