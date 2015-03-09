@@ -203,6 +203,8 @@ class DPOR extends Scheduler with LazyLogging {
 
           } else {
             val next @ (Unique(MsgEvent(snd, rcv, msg), id), cell, env) = queue.dequeue()
+            logger.trace( Console.GREEN + "Now playing pending: " +
+              "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
             Some(next)
           }
           
