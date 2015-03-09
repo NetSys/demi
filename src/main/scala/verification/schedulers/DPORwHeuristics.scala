@@ -216,7 +216,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     }
     
     
-    // Filter messages belonging to a particular actor.
+    // Find equivalent messages to the one we are currently looking for.
     def equivalentTo(u1: Unique, other: (Unique, ActorCell, Envelope)) : 
     Boolean = (u1, other._1) match {
       
@@ -477,15 +477,15 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     instrumenter().reinitialize_system(null, null)
   }
   
-    /**
-     * Given a message, figure out if we have already seen
-     * it before. We achieve this by consulting the
-     * dependency graph.
-     *
-     * * @param (cell, envelope: Original message context.
-     *
-     * * @return A unique event.
-     */
+  /**
+   * Given a message, figure out if we have already seen
+   * it before. We achieve this by consulting the
+   * dependency graph.
+   *
+   * * @param (cell, envelope: Original message context.
+   *
+   * * @return A unique event.
+   */
   def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
     
     val snd = envelope.sender.path.name
