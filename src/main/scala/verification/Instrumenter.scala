@@ -88,15 +88,15 @@ class Instrumenter {
   def actorSystem () : ActorSystem = {
     if (_actorSystem == null) {
       _actorSystem = ActorSystem("new-system-" + counter)
-      _randoms(_actorSystem) = new Random(0)
+      _random = new Random(0)
       counter += 1
     }
     _actorSystem
   }
 
-  private[this] var _randoms = new HashMap[ActorSystem, Random]
+  private[this] var _random = new Random(0)
   def seededRandom() : Random = {
-    return _randoms(actorSystem())
+    return _random
   }
  
   
@@ -146,7 +146,7 @@ class Instrumenter {
   def reinitialize_system(sys: ActorSystem, argQueue: Queue[Any]) {
     require(scheduler != null)
     _actorSystem = ActorSystem("new-system-" + counter)
-    _randoms(_actorSystem) = new Random(0)
+    _random = new Random(0)
     counter += 1
     
     actorMappings.clear()
