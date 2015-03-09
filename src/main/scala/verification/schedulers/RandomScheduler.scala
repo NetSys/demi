@@ -16,6 +16,9 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Random
 
+import scalax.collection.mutable.Graph,
+       scalax.collection.GraphEdge.DiEdge,
+       scalax.collection.edge.LDiEdge
 
 /**
  * Takes a list of ExternalEvents as input, and explores random interleavings
@@ -47,6 +50,15 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
   var maxMessages = Int.MaxValue
   def setMaxMessages(_maxMessages: Int) = {
     maxMessages = _maxMessages
+  }
+
+  // TODO(cs): put this into ExternalEventInjector?
+  var depGraph = Graph[Unique, DiEdge]()
+  var parentEvent = getRootEvent
+  def getRootEvent : Unique = {
+    var root = Unique(MsgEvent("null", "null", null), 0)
+    depGraph.add(root)
+    return root
   }
 
   var test_invariant : Invariant = null
@@ -185,11 +197,43 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     return None
   }
 
+  // Convert RandomScheduler's Uniq to depGraph's Unique, using the
+  // same id.
+  def getUniqueFromUniq(uniq : Uniq[(ActorCell, Envelope)]) : Unique = {
+    val cell = uniq.element._1
+    val envelope = uniq.element._2
+    val snd = envelope.sender.path.name
+    val rcv = cell.self.path.name
+    val msgEvent = new MsgEvent(snd, rcv, envelope.message)
+    return Unique(msgEvent, id=uniq.id)
+  }
+
+  def updateDepGraph(uniq : Uniq[(ActorCell, Envelope)]) {
+    val newUnique = getUniqueFromUniq(uniq)
+    val parent = parentEvent match {
+      case u @ Unique(m: MsgEvent, id) => u
+      case _ => throw new Exception("parent event not a message")
+    }
+    val inNeighs = depGraph.get(parent).inNeighbors
+
+    val unique =
+      inNeighs.find { x => x.value.event == newUnique.event } match {
+        case Some(x) => x.value
+        case None => newUnique
+        case _ => throw new Exception("wrong type")
+    }
+
+    depGraph.add(unique)
+    depGraph.addEdge(unique, parentEvent)(DiEdge)
+  }
+
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    updateDepGraph(uniq)
+
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
 
     handle_event_produced(snd, rcv, envelope) match {
@@ -276,6 +320,7 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
             messagesScheduledSoFar = 1
           }
       }
+      parentEvent = getUniqueFromUniq(uniq)
       return Some(uniq.element)
     }
 
@@ -290,6 +335,7 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     }
     val uniq = pendingInternalEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+    parentEvent = getUniqueFromUniq(uniq)
     return Some(uniq.element)
   }
 
@@ -341,6 +387,8 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     trace = null
     messagesScheduledSoFar = 0
     lastCheckpoint = 0
+    depGraph = Graph[Unique, DiEdge]()
+    parentEvent = getRootEvent
   }
 
   def test(events: Seq[ExternalEvent],

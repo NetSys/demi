@@ -629,7 +629,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   }
 
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {return true}
+                             msg: Any): Boolean = {return false}
   
   
   def getEvent(index: Integer, trace: Trace) : Unique = {
