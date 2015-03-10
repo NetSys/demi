@@ -76,7 +76,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   var parentEvent = getRootEvent
   var currentDepth = 0
   
-  val reachabilityMap = new HashMap[String, Set[String]]
+  val partitionMap = new HashMap[String, HashSet[String]]
   
   var post: (Trace) => Unit = nullFunPost
   var done: (Graph[Unique, DiEdge]) => Unit = nullFunDone
@@ -95,7 +95,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     currentDepth = 0
     currentTrace.clear
     nextTrace.clear
-    reachabilityMap.clear
+    partitionMap.clear
     awaitingQuiescence = false
     nextQuiescentPeriod = 0
     quiescentMarker = null
@@ -132,7 +132,6 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
       case _ => 
         throw new Exception("Unexpected path")
     }
-    logger.trace("Depth is " + event + " "  + pathLength)
     parentEvent = event
     currentDepth = pathLength + 1
     
@@ -367,14 +366,21 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     result match {
       
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
-      
+        partitionMap.get(snd) match {
+          case Some(set) =>
+            if (set.contains(rcv)) {
+              logger.trace(Console.RED + "Discarding event " + nextEvent + " due to partition ")
+              return schedule_new_message()
+            }
+          case _ =>
+        }
         currentTrace += nextEvent
         setParentEvent(nextEvent)
 
         return Some((cell, env))
         
         
-      case Some((nextEvent @ Unique(par@ NetworkPartition(_, _), nID), _, _)) =>
+      case Some((nextEvent @ Unique(par@ NetworkPartition(first, second), nID), _, _)) =>
 
         // A NetworkPartition event is translated into multiple
         // NodesUnreachable messages which are atomically and
@@ -383,6 +389,13 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         // as the result of NodesUnreachable being received.
         decomposePartitionEvent(par) map tupled(
           (rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
+        
+        for (node  <- first) {
+          partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  second
+        }
+        for (node  <- second) {
+          partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  first
+        }
           
         instrumenter().tellEnqueue.await()
         
@@ -569,6 +582,8 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         // Do not enqueue if bound hit
         if (!should_bound || currentDepth < stop_at_depth) {
           pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
+        } else {
+          logger.debug(Console.RED + "Not adding message because we hit depth bound " + Console.RESET)
         }
         
         logger.debug(Console.BLUE + "New event: " +
@@ -674,7 +689,6 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
                              msg: Any): Boolean = {
     // Assume no one responds to sender on receiving a timer message
     logger.trace("Asking instrumenter to call back to enqueue timer " + receiver + " with msg " + msg)
-    logger.trace(Console.BLUE + "Parent is " + parentEvent + Console.RESET)
     return false
   }
 
