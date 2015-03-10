@@ -7,7 +7,8 @@ import akka.actor.ActorCell,
        akka.actor.ActorRefWithCell,
        akka.actor.Actor,
        akka.actor.PoisonPill,
-       akka.actor.Props
+       akka.actor.Props,
+       akka.actor.FSM.Timer
 
 import akka.dispatch.Envelope,
        akka.dispatch.MessageQueue,
@@ -118,10 +119,10 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     quiescentPeriod(event) = currentQuiescentPeriod
   }
   
+  private[this] val _root = Unique(MsgEvent("null", "null", null), 0)
   def getRootEvent() : Unique = {
-    var root = Unique(MsgEvent("null", "null", null), 0)
-    addGraphNode(root)
-    return root
+    addGraphNode(_root)
+    _root
   }
   
   
@@ -169,8 +170,9 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     started = false
     actorNames.clear
     externalEventIdx = 0
+    parentEvent = getRootEvent
     
-    currentTrace += getRootEvent()
+    currentTrace += getRootEvent
     runExternal()
   }
   
@@ -216,7 +218,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     }
     
     
-    // Filter messages belonging to a particular actor.
+    // Find equivalent messages to the one we are currently looking for.
     def equivalentTo(u1: Unique, other: (Unique, ActorCell, Envelope)) : 
     Boolean = (u1, other._1) match {
       
@@ -406,6 +408,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     
         case Send(rcv, msgCtor) =>
           val ref = instrumenter().actorMappings(rcv)
+          logger.trace(Console.BLUE + " sending " + rcv + " messge " + msgCtor() + Console.RESET)
           instrumenter().actorMappings(rcv) ! msgCtor()
 
         case uniq @ Unique(par : NetworkPartition, id) =>  
@@ -477,21 +480,19 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     instrumenter().reinitialize_system(null, null)
   }
   
-    /**
-     * Given a message, figure out if we have already seen
-     * it before. We achieve this by consulting the
-     * dependency graph.
-     *
-     * * @param (cell, envelope: Original message context.
-     *
-     * * @return A unique event.
-     */
+  /**
+   * Given a message, figure out if we have already seen
+   * it before. We achieve this by consulting the
+   * dependency graph.
+   *
+   * * @param (cell, envelope: Original message context.
+   *
+   * * @return A unique event.
+   */
   def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
-    
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = new MsgEvent(snd, rcv, envelope.message)
-    
     val parent = parentEvent match {
       case u @ Unique(m: MsgEvent, id) => u
       case _ => throw new Exception("parent event not a message")
@@ -529,15 +530,13 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
         val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
         pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
         
-        logger.trace(Console.BLUE + "New event: " +
+        logger.debug(Console.BLUE + "New event: " +
             "(" + msg.sender + " -> " + msg.receiver + ") " +
             id + Console.RESET)
         
         addGraphNode(unique)
         depGraph.addEdge(unique, parentEvent)(DiEdge)
     }
-    
-
 
   }
   

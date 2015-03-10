@@ -25,7 +25,7 @@ trait HistoricalScheduler {
   // events.
   var scheduledFSMTimers = new HashMap[TimerFingerprint, Timer]
 
-  // Invoked by aspectj
+  // Called by scheduler from notify_timer_scheduled 
   def handle_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                              msg: Any, messageFingerprinter: MessageFingerprinter) {
     val snd = if (sender == null) "deadLetters" else sender.path.name
