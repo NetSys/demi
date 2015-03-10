@@ -8,6 +8,7 @@ import akka.actor.ActorCell,
        akka.actor.Actor,
        akka.actor.PoisonPill,
        akka.actor.Props,
+       akka.actor.FSM,
        akka.actor.FSM.Timer
 
 import akka.dispatch.Envelope,
@@ -22,7 +23,8 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.ArraySeq,
        scala.collection.mutable.Stack,
        scala.collection.mutable.PriorityQueue,
-       scala.math.Ordering
+       scala.math.Ordering,
+       scala.reflect.ClassTag
 
 import Function.tupled
 
@@ -37,11 +39,16 @@ import com.typesafe.scalalogging.LazyLogging,
 
 
 // DPOR scheduler.
-class DPORwHeuristics extends Scheduler with LazyLogging {
+class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with LazyLogging {
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
+
+  val (should_bound, stop_at_depth) = depth_bound match {
+    case Some(d) => (true, d)
+    case _ => (false, 0)
+  }
   
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
@@ -67,6 +74,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   val currentTrace = new Trace
   val nextTrace = new Trace
   var parentEvent = getRootEvent
+  var currentDepth = 0
   
   val reachabilityMap = new HashMap[String, Set[String]]
   
@@ -84,7 +92,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   // Reset state between runs
   private[this] def reset() = {
     pendingEvents.clear()
-    parentEvent = getRootEvent
+    currentDepth = 0
     currentTrace.clear
     nextTrace.clear
     reachabilityMap.clear
@@ -100,6 +108,8 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     quiescentPeriod.clear
     backTrack.clear
     exploredTracker.clear
+
+    setParentEvent(getRootEvent)
   }
   
   private[this] def awaitQuiescenceUpdate (nextEvent:Unique) = { 
@@ -112,6 +122,20 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       case _ =>
         throw new Exception("Bad args")
     }
+  }
+
+  private[this] def setParentEvent (event: Unique) {
+    val graphNode = depGraph.get(event)
+    val rootNode = depGraph.get(getRootEvent)
+    val pathLength = graphNode.pathTo(rootNode) match {
+      case Some(p) => p.length
+      case _ => 
+        throw new Exception("Unexpected path")
+    }
+    logger.trace("Depth is " + event + " "  + pathLength)
+    parentEvent = event
+    currentDepth = pathLength + 1
+    
   }
 
   private[this] def addGraphNode (event: Unique) = {
@@ -170,7 +194,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     started = false
     actorNames.clear
     externalEventIdx = 0
-    parentEvent = getRootEvent
+    setParentEvent(getRootEvent)
     
     currentTrace += getRootEvent
     runExternal()
@@ -345,8 +369,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
       
         currentTrace += nextEvent
-        (depGraph get nextEvent)
-        parentEvent = nextEvent
+        setParentEvent(nextEvent)
 
         return Some((cell, env))
         
@@ -498,8 +521,23 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       case _ => throw new Exception("parent event not a message")
     }
 
+    def matchMessage (event: Event) : Boolean = {
+      // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
+      (event, msg) match {
+        case (MsgEvent(s1, r1, Timer(n1, m1, rep1, _)), MsgEvent(s2, r2, Timer(n2, m2, rep2, _))) =>
+          (s1 == s2) && (r1 == r2) && (n1 == n2) && (m1 == m2) && (rep1 == rep2)
+        case (MsgEvent(_, rcv1, m1), MsgEvent(_, rcv2, m2)) =>
+          (ClassTag(m1.getClass).toString, ClassTag(m2.getClass).toString) match {
+            case ("akka.actor.FSM$TimeoutMarker", "akka.actor.FSM$TimeoutMarker") => rcv1 == rcv2
+            case _ => event == msg
+          }
+        case _ =>
+          event == msg
+      }
+    }
+
     val inNeighs = depGraph.get(parent).inNeighbors
-    inNeighs.find { x => x.value.event == msg } match {
+    inNeighs.find { x => matchMessage(x.value.event) } match {
       
       case Some(x) => return x.value
       case None =>
@@ -528,7 +566,10 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       case _ =>
         val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
         val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
-        pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
+        // Do not enqueue if bound hit
+        if (!should_bound || currentDepth < stop_at_depth) {
+          pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
+        }
         
         logger.debug(Console.BLUE + "New event: " +
             "(" + msg.sender + " -> " + msg.receiver + ") " +
@@ -601,7 +642,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
               Util.traceStr(nextTrace) + Console.RESET)
 
           
-          parentEvent = getRootEvent
+          setParentEvent(getRootEvent)
 
           
           pendingEvents.clear()
@@ -619,7 +660,9 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   
   
   def enqueue_message(receiver: String,msg: Any): Unit = {
-    throw new Exception("internal error not a message")
+    logger.trace("Enqueuing timer to " + receiver + " with msg " + msg)
+    instrumenter().actorMappings(receiver) ! msg
+    instrumenter().await_enqueue()
   }
   
   
@@ -628,7 +671,16 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   }
 
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {return false}
+                             msg: Any): Boolean = {
+    // Assume no one responds to sender on receiving a timer message
+    logger.trace("Asking instrumenter to call back to enqueue timer " + receiver + " with msg " + msg)
+    logger.trace(Console.BLUE + "Parent is " + parentEvent + Console.RESET)
+    return false
+  }
+
+  override def notify_after_timer_scheduled (receiver: ActorRef, msg: Any) = {
+    instrumenter().manuallyHandleTick(receiver.path.name, msg)
+  }
   
   
   def getEvent(index: Integer, trace: Trace) : Unique = {
@@ -657,7 +709,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
      *
      ** @return none
      */
-    def analyize_dep(earlierI: Int, laterI: Int, trace: Trace): 
+    def analyze_dep(earlierI: Int, laterI: Int, trace: Trace): 
     Option[(Int, List[Unique])] = {
 
       // Retrieve the actual events.
@@ -801,7 +853,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
         
         if ( isCoEnabeled(earlier, later)) {
           
-          analyize_dep(earlierI, laterI, trace) match {
+          analyze_dep(earlierI, laterI, trace) match {
             case Some((branchI, needToReplayV)) =>    
               
               // Since we're exploring an already executed trace, we can
