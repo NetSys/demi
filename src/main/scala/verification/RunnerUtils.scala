@@ -61,20 +61,21 @@ object RunnerUtils {
   def deserializeExperiment(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
       scheduler: ExternalEventInjector[_] with Scheduler):
-                  Tuple2[EventTrace, ViolationFingerprint] = {
+                  Tuple3[EventTrace, ViolationFingerprint, Option[Graph[Unique, DiEdge]]] = {
     val deserializer = new ExperimentDeserializer(experiment_dir)
     Instrumenter().scheduler = scheduler
     scheduler.populateActorSystem(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
-    return (trace, violation)
+    val dep_graph = deserializer.get_dep_graph()
+    return (trace, violation, dep_graph)
   }
 
   def replayExperiment(experiment_dir: String,
                        messageFingerprinter: MessageFingerprinter,
                        messageDeserializer: MessageDeserializer) : EventTrace = {
     val replayer = new ReplayScheduler(messageFingerprinter, false, false)
-    val (trace, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
+    val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
 
     println("Trying replay:")
     val events = replayer.replay(trace)
@@ -90,7 +91,7 @@ object RunnerUtils {
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new RandomScheduler(1, false, 0, false)
     sched.setInvariant(invariant)
-    val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)
 
     val ddmin = new DDMin(sched, false)
@@ -118,7 +119,7 @@ object RunnerUtils {
       case Some(f) => sched.setEventMapper(f)
       case None => None
     }
-    val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
 
     val ddmin = new DDMin(sched)
@@ -139,7 +140,7 @@ object RunnerUtils {
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new PeekScheduler(false)
     sched.setInvariant(invariant)
-    val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)
 
     // Don't check unmodified execution, since RR will often fail
