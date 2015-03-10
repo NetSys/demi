@@ -1,14 +1,18 @@
 package akka.dispatch.verification
 
+import scalax.collection.mutable.Graph,
+       scalax.collection.GraphEdge.DiEdge,
+       scalax.collection.edge.LDiEdge
 
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            validate_replay:Option[ReplayScheduler]=None) :
-        Tuple2[EventTrace, ViolationFingerprint] = {
+        Tuple3[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
+    var depGraph : Graph[Unique, DiEdge] = null
     while (violationFound == null) {
       val fuzzTest = fuzzer.generateFuzzTest()
       println("Trying: " + fuzzTest)
@@ -23,6 +27,7 @@ object RunnerUtils {
           println("shutdown successfully")
         case Some((trace, violation)) => {
           println("Found a safety violation!")
+          depGraph = sched.depGraph
           sched.shutdown()
           validate_replay match {
             case Some(replayer) =>
@@ -50,7 +55,7 @@ object RunnerUtils {
       }
     }
 
-    return (traceFound, violationFound)
+    return (traceFound, violationFound, depGraph)
   }
 
   def deserializeExperiment(experiment_dir: String,

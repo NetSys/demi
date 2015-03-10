@@ -628,19 +628,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   }
 
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {
-    //logger.debug(Console.RED + "Received timer thing " + msg + Console.RESET)
-    //msg match {
-      //case Timer(name, nestedMsg, repeat, generation) =>
-        //logger.debug(Console.RED + "Received timer thing " + name + nestedMsg + repeat + Console.RESET)
-      //case _ =>
-        //// TODO(cs): not sure this is really necessary! We only need
-        //// scheduledFSMTimers to deal with non-serializability of Timers. As long
-        //// as this msg is serializable, there shouldn't be a problem?
-        //logger.debug(Console.RED + "Warning: Non-akka.FSM.Timers not yet supported:" + msg + Console.RESET)
-    //}
-    return false
-  }
+                             msg: Any): Boolean = {return false}
   
   
   def getEvent(index: Integer, trace: Trace) : Unique = {
