@@ -26,6 +26,14 @@ import scala.collection.mutable.HashSet
 import scala.util.Random
 import scala.util.control.Breaks
 
+class WrappedCancellable (c: Cancellable, inst: Instrumenter) extends Cancellable {
+  def cancel(): Boolean = {
+    c.cancel
+  }
+
+  def isCancelled: Boolean = c.isCancelled
+}
+
 class InstrumenterCheckpoint(
   val actorMappings : HashMap[String, ActorRef],
   val seenActors : HashSet[(ActorSystem, Any)],
@@ -81,6 +89,9 @@ class Instrumenter {
   // How many timers we still have pending until awaitTimer should be
   // released.
   var pendingTimers = new AtomicInteger(0)
+
+  private[dispatch] def cancelTimer (c: Cancellable) = {
+  }
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
