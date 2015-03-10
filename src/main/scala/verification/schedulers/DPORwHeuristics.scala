@@ -7,7 +7,8 @@ import akka.actor.ActorCell,
        akka.actor.ActorRefWithCell,
        akka.actor.Actor,
        akka.actor.PoisonPill,
-       akka.actor.Props
+       akka.actor.Props,
+       akka.actor.FSM.Timer
 
 import akka.dispatch.Envelope,
        akka.dispatch.MessageQueue,
@@ -118,10 +119,10 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     quiescentPeriod(event) = currentQuiescentPeriod
   }
   
+  private[this] val _root = Unique(MsgEvent("null", "null", null), 0)
   def getRootEvent() : Unique = {
-    var root = Unique(MsgEvent("null", "null", null), 0)
-    addGraphNode(root)
-    return root
+    addGraphNode(_root)
+    _root
   }
   
   
@@ -169,8 +170,9 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     started = false
     actorNames.clear
     externalEventIdx = 0
+    parentEvent = getRootEvent
     
-    currentTrace += getRootEvent()
+    currentTrace += getRootEvent
     runExternal()
   }
   
@@ -406,6 +408,7 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
     
         case Send(rcv, msgCtor) =>
           val ref = instrumenter().actorMappings(rcv)
+          logger.trace(Console.BLUE + " sending " + rcv + " messge " + msgCtor() + Console.RESET)
           instrumenter().actorMappings(rcv) ! msgCtor()
 
         case uniq @ Unique(par : NetworkPartition, id) =>  
@@ -487,11 +490,9 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
    * * @return A unique event.
    */
   def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
-    
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = new MsgEvent(snd, rcv, envelope.message)
-    
     val parent = parentEvent match {
       case u @ Unique(m: MsgEvent, id) => u
       case _ => throw new Exception("parent event not a message")
@@ -529,15 +530,13 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
         val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
         pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
         
-        logger.trace(Console.BLUE + "New event: " +
+        logger.debug(Console.BLUE + "New event: " +
             "(" + msg.sender + " -> " + msg.receiver + ") " +
             id + Console.RESET)
         
         addGraphNode(unique)
         depGraph.addEdge(unique, parentEvent)(DiEdge)
     }
-    
-
 
   }
   
@@ -629,7 +628,19 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   }
 
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {return true}
+                             msg: Any): Boolean = {
+    //logger.debug(Console.RED + "Received timer thing " + msg + Console.RESET)
+    //msg match {
+      //case Timer(name, nestedMsg, repeat, generation) =>
+        //logger.debug(Console.RED + "Received timer thing " + name + nestedMsg + repeat + Console.RESET)
+      //case _ =>
+        //// TODO(cs): not sure this is really necessary! We only need
+        //// scheduledFSMTimers to deal with non-serializability of Timers. As long
+        //// as this msg is serializable, there shouldn't be a problem?
+        //logger.debug(Console.RED + "Warning: Non-akka.FSM.Timers not yet supported:" + msg + Console.RESET)
+    //}
+    return false
+  }
   
   
   def getEvent(index: Integer, trace: Trace) : Unique = {
