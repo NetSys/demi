@@ -359,6 +359,9 @@ class Instrumenter {
       throw new RuntimeException("Non-unique timer: "+ receiver + " " + msg)
     }
     timerToCancellable((receiver, msg)) = c
+    if (scheduler != null) {
+      scheduler.notify_after_timer_scheduled(rcv, msg)
+    }
   }
 
   def updateCancellables() {

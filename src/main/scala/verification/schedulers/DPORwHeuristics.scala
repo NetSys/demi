@@ -8,6 +8,7 @@ import akka.actor.ActorCell,
        akka.actor.Actor,
        akka.actor.PoisonPill,
        akka.actor.Props,
+       akka.actor.FSM,
        akka.actor.FSM.Timer
 
 import akka.dispatch.Envelope,
@@ -22,7 +23,8 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.ArraySeq,
        scala.collection.mutable.Stack,
        scala.collection.mutable.PriorityQueue,
-       scala.math.Ordering
+       scala.math.Ordering,
+       scala.reflect.ClassTag
 
 import Function.tupled
 
@@ -498,8 +500,23 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
       case _ => throw new Exception("parent event not a message")
     }
 
+    def matchMessage (event: Event) : Boolean = {
+      // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
+      (event, msg) match {
+        case (MsgEvent(s1, r1, Timer(n1, m1, rep1, _)), MsgEvent(s2, r2, Timer(n2, m2, rep2, _))) =>
+          (s1 == s2) && (r1 == r2) && (n1 == n2) && (m1 == m2) && (rep1 == rep2)
+        case (MsgEvent(_, rcv1, m1), MsgEvent(_, rcv2, m2)) =>
+          (ClassTag(m1.getClass).toString, ClassTag(m2.getClass).toString) match {
+            case ("akka.actor.FSM$TimeoutMarker", "akka.actor.FSM$TimeoutMarker") => rcv1 == rcv2
+            case _ => event == msg
+          }
+        case _ =>
+          event == msg
+      }
+    }
+
     val inNeighs = depGraph.get(parent).inNeighbors
-    inNeighs.find { x => x.value.event == msg } match {
+    inNeighs.find { x => matchMessage(x.value.event) } match {
       
       case Some(x) => return x.value
       case None =>
@@ -619,7 +636,9 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
   
   
   def enqueue_message(receiver: String,msg: Any): Unit = {
-    throw new Exception("internal error not a message")
+    logger.info("Enqueuing timer to " + receiver + " with msg " + msg)
+    instrumenter().actorMappings(receiver) ! msg
+    instrumenter().await_enqueue()
   }
   
   
@@ -629,17 +648,13 @@ class DPORwHeuristics extends Scheduler with LazyLogging {
 
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                              msg: Any): Boolean = {
-    //logger.debug(Console.RED + "Received timer thing " + msg + Console.RESET)
-    //msg match {
-      //case Timer(name, nestedMsg, repeat, generation) =>
-        //logger.debug(Console.RED + "Received timer thing " + name + nestedMsg + repeat + Console.RESET)
-      //case _ =>
-        //// TODO(cs): not sure this is really necessary! We only need
-        //// scheduledFSMTimers to deal with non-serializability of Timers. As long
-        //// as this msg is serializable, there shouldn't be a problem?
-        //logger.debug(Console.RED + "Warning: Non-akka.FSM.Timers not yet supported:" + msg + Console.RESET)
-    //}
+    // Assume no one responds to sender on receiving a timer message
+    logger.info("Asking instrumenter to call back to enqueue timer " + receiver + " with msg " + msg)
     return false
+  }
+
+  override def notify_after_timer_scheduled (receiver: ActorRef, msg: Any) = {
+    instrumenter().manuallyHandleTick(receiver.path.name, msg)
   }
   
   

@@ -68,6 +68,10 @@ trait Scheduler {
   // not, return a no-op cancellable to the application).
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                              msg: Any) : Boolean
+  // Called whenever actorSystem.scheduler.schedule() is invoked by the
+  // application.
+  def notify_after_timer_scheduled(receiver: ActorRef,
+                             msg: Any) = {}
   // Interface for (safely) sending external messages
   def enqueue_message(receiver: String, msg: Any)
   // Shut down the actor system.
