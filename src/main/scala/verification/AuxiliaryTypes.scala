@@ -41,6 +41,10 @@ case class NetworkPartition(
     first: Set[String], 
     second: Set[String]) extends ExternalEvent with Event
 
+case class NetworkUnpartition(
+    first: Set[String], 
+    second: Set[String]) extends ExternalEvent with Event
+
 case object RootEvent extends Event
 
 //case object DporQuiescence extends Event with ExternalEvent
@@ -60,7 +64,10 @@ case class NodesUnreachable(actors: Set[String]) extends FDMessage with Event
 
 
 // A new node is now reachable, either because a partition healed or an actor spawned.
-case class NodeReachable(actor: String) extends FDMessage
+case class NodeReachable(actor: String) extends FDMessage with Event
+//
+// A new node is now reachable, either because a partition healed or an actor spawned.
+case class NodesReachable(actors: Set[String]) extends FDMessage with Event
 
 // Query the failure detector for currently reachable actors.
 case object QueryReachableGroup extends FDMessage

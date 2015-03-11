@@ -99,7 +99,6 @@ class Instrumenter {
     if (cancellableToTimer contains c) {
       removeCancellable(c)
     }
-    println("Cancelling timer " + rcv.path.name + " " + msg)
     if (scheduler != null) {
       scheduler.notify_timer_cancel(rcv, msg)
     }
@@ -374,7 +373,6 @@ class Instrumenter {
     if (ongoingTimer) {
       ongoingCancellableTasks += c
     }
-    println(c)
     cancellableToTimer(c) = ((receiver, msg))
     // TODO(cs): for now, assume that msg's are unique. Don't assume that.
     if (timerToCancellable contains (receiver, msg)) {
