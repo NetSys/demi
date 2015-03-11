@@ -74,6 +74,7 @@ trait Scheduler {
                              msg: Any) = {}
   // Called when timer is cancelled
   def notify_timer_cancel(receiver: ActorRef, msg: Any) = {}
+  
   // Interface for (safely) sending external messages
   def enqueue_message(receiver: String, msg: Any)
   // Shut down the actor system.
