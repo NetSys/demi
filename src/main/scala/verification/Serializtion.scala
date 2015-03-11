@@ -146,6 +146,7 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
 
     depGraph match {
       case Some(graph) =>
+        // TODO(cs): only serialize fingerprints
         val graphBuf = message_serializer.serialize(graph)
         JavaSerialization.writeToFile(output_dir + ExperimentSerializer.depGraph,
                                       graphBuf)

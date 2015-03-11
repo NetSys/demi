@@ -42,8 +42,10 @@ import com.typesafe.scalalogging.LazyLogging,
 
 
 // DPOR scheduler.
-class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
-  def this() = this(false, None)
+class DPORwHeuristics(enableCheckpointing: Boolean,
+  messageFingerprinter: MessageFingerprinter,
+  depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
+  def this() = this(false, new BasicFingerprinter, None)
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
@@ -654,32 +656,22 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
    * it before. We achieve this by consulting the
    * dependency graph.
    *
-   * * @param (cell, envelope: Original message context.
+   * * @param (cell, envelope): Original message context.
    *
    * * @return A unique event.
    */
   def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msg = new MsgEvent(snd, rcv, envelope.message)
+    val msg = new MsgEvent(snd, rcv,
+      messageFingerprinter.fingerprint(envelope.message))
     val parent = parentEvent match {
       case u @ Unique(m: MsgEvent, id) => u
       case _ => throw new Exception("parent event not a message")
     }
 
     def matchMessage (event: Event) : Boolean = {
-      // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
-      (event, msg) match {
-        case (MsgEvent(s1, r1, Timer(n1, m1, rep1, _)), MsgEvent(s2, r2, Timer(n2, m2, rep2, _))) =>
-          (s1 == s2) && (r1 == r2) && (n1 == n2) && (m1 == m2) && (rep1 == rep2)
-        case (MsgEvent(_, rcv1, m1), MsgEvent(_, rcv2, m2)) =>
-          (ClassTag(m1.getClass).toString, ClassTag(m2.getClass).toString) match {
-            case ("akka.actor.FSM$TimeoutMarker", "akka.actor.FSM$TimeoutMarker") => rcv1 == rcv2
-            case _ => event == msg
-          }
-        case _ =>
-          event == msg
-      }
+      return event == msg
     }
 
     val inNeighs = depGraph.get(parent).inNeighbors
