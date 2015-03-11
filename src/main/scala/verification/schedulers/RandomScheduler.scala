@@ -2,6 +2,9 @@ package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
 import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.FSM,
+       akka.actor.FSM.Timer
+
 
 import akka.dispatch.Envelope
 
@@ -11,6 +14,7 @@ import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Set
 import scala.collection.mutable.HashSet
 import scala.collection.mutable.ArrayBuffer
+import scala.reflect.ClassTag
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -54,12 +58,14 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
 
   // TODO(cs): put this into ExternalEventInjector?
   var depGraph = Graph[Unique, DiEdge]()
-  var parentEvent = getRootEvent
-  def getRootEvent : Unique = {
-    var root = Unique(MsgEvent("null", "null", null), 0)
-    depGraph.add(root)
-    return root
+  private[this] val _root = Unique(MsgEvent("null", "null", null), 0)
+  def getRootEvent() : Unique = {
+    addGraphNode(_root)
+    return _root
   }
+
+  var parentEvent = getRootEvent()
+  assert(parentEvent != null)
 
   var test_invariant : Invariant = null
 
@@ -125,6 +131,80 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
             }
         }
     }
+  }
+
+  private[this] def setParentEvent (event: Unique) {
+    assert(event != null)
+    val graphNode = depGraph.get(event)
+    val rootNode = depGraph.get(getRootEvent())
+    // val pathLength = graphNode.pathTo(rootNode) match {
+    //   case Some(p) => p.length
+    //   case _ =>
+    //     throw new Exception("Unexpected path")
+    // }
+    parentEvent = event
+  }
+
+  private[this] def addGraphNode (event: Unique) = {
+    depGraph.add(event)
+  }
+
+  // Convert RandomScheduler's Uniq to depGraph's Unique, using the
+  // same id.
+  def getUniqueFromUniq(uniq : Uniq[(ActorCell, Envelope)]) : Unique = {
+    val cell = uniq.element._1
+    val envelope = uniq.element._2
+    val snd = envelope.sender.path.name
+    val rcv = cell.self.path.name
+    val msgEvent = new MsgEvent(snd, rcv, envelope.message)
+    return Unique(msgEvent, id=uniq.id)
+  }
+
+  /**
+   * Given a message, figure out if we have already seen
+   * it before. We achieve this by consulting the
+   * dependency graph.
+   *
+   * * @param (cell, envelope): Original message context.
+   */
+  // TODO(cs): redundant with DPORwHeuristics.
+  def updateDepGraph(uniq : Uniq[(ActorCell, Envelope)]) {
+    val newUnique = getUniqueFromUniq(uniq)
+    val parent = parentEvent match {
+      case u @ Unique(m: MsgEvent, id) => u
+      case _ => throw new Exception("parent event not a message:" + parentEvent)
+    }
+    val inNeighs = depGraph.get(parent).inNeighbors
+
+    def matchMessage (event: Event) : Boolean = {
+      // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
+      return (event, newUnique.event) match {
+        case (MsgEvent(s1, r1, Timer(n1, m1, rep1, _)), MsgEvent(s2, r2, Timer(n2, m2, rep2, _))) =>
+          (s1 == s2) && (r1 == r2) && (n1 == n2) && (m1 == m2) && (rep1 == rep2)
+        case (MsgEvent(_, rcv1, m1), MsgEvent(_, rcv2, m2)) =>
+          (ClassTag(m1.getClass).toString, ClassTag(m2.getClass).toString) match {
+            case ("akka.actor.FSM$TimeoutMarker", "akka.actor.FSM$TimeoutMarker") => rcv1 == rcv2
+            case _ => event == newUnique.event
+          }
+        case _ =>
+          event == newUnique.event
+      }
+    }
+
+    val unique =
+      inNeighs.find { x => matchMessage(x.value.event) } match {
+        case Some(x) =>
+          // Ensure that the id's match in the future, by mutating uniq
+          // TODO(cs): not sure this is completely correct
+          uniq.id = x.value.id
+          x.value
+        case None =>
+          newUnique
+        case _ => throw new Exception("wrong type")
+    }
+
+    addGraphNode(unique)
+    depGraph.addEdge(unique, parentEvent)(DiEdge)
   }
 
   /**
@@ -197,52 +277,23 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     return None
   }
 
-  // Convert RandomScheduler's Uniq to depGraph's Unique, using the
-  // same id.
-  def getUniqueFromUniq(uniq : Uniq[(ActorCell, Envelope)]) : Unique = {
-    val cell = uniq.element._1
-    val envelope = uniq.element._2
-    val snd = envelope.sender.path.name
-    val rcv = cell.self.path.name
-    val msgEvent = new MsgEvent(snd, rcv, envelope.message)
-    return Unique(msgEvent, id=uniq.id)
-  }
-
-  def updateDepGraph(uniq : Uniq[(ActorCell, Envelope)]) {
-    val newUnique = getUniqueFromUniq(uniq)
-    val parent = parentEvent match {
-      case u @ Unique(m: MsgEvent, id) => u
-      case _ => throw new Exception("parent event not a message")
-    }
-    val inNeighs = depGraph.get(parent).inNeighbors
-
-    val unique =
-      inNeighs.find { x => x.value.event == newUnique.event } match {
-        case Some(x) => x.value
-        case None => newUnique
-        case _ => throw new Exception("wrong type")
-    }
-
-    depGraph.add(unique)
-    depGraph.addEdge(unique, parentEvent)(DiEdge)
-  }
-
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
-    updateDepGraph(uniq)
 
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
 
     handle_event_produced(snd, rcv, envelope) match {
       case InternalMessage => {
+        updateDepGraph(uniq)
         if (!crosses_partition(snd, rcv)) {
           pendingInternalEvents.insert(uniq)
         }
       }
       case ExternalMessage => {
+        updateDepGraph(uniq)
         // We assume that the failure detector and the outside world always
         // have connectivity with all actors, i.e. no failure detector partitions.
         pendingExternalEvents += uniq
@@ -320,7 +371,9 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
             messagesScheduledSoFar = 1
           }
       }
-      parentEvent = getUniqueFromUniq(uniq)
+      val unique = getUniqueFromUniq(uniq)
+      (depGraph get unique)
+      setParentEvent(unique)
       return Some(uniq.element)
     }
 
@@ -335,7 +388,10 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     }
     val uniq = pendingInternalEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-    parentEvent = getUniqueFromUniq(uniq)
+
+    val unique = getUniqueFromUniq(uniq)
+    (depGraph get unique)
+    setParentEvent(unique)
     return Some(uniq.element)
   }
 
@@ -388,7 +444,7 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     messagesScheduledSoFar = 0
     lastCheckpoint = 0
     depGraph = Graph[Unique, DiEdge]()
-    parentEvent = getRootEvent
+    setParentEvent(getRootEvent())
   }
 
   def test(events: Seq[ExternalEvent],
