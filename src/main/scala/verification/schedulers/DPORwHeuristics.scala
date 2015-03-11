@@ -473,8 +473,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     
         case Start(propsCtor, name) => 
           // If not already started:
-          if (instrumenter().actorSystem().actorFor("/user/"+name) ==
-              instrumenter().actorSystem().deadLetters) {
+          if (!(instrumenter().actorMappings contains name)) {
             instrumenter().actorSystem().actorOf(propsCtor(), name)
           }
           // TODO(cs): unisolate this node.
