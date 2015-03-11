@@ -545,11 +545,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
-    // TODO(cs): Partition all actors from eachother, once we support
-    // UnPartitions.
-    // actorNames.map(name =>
-    //   partitionMap(name) = partitionMap.getOrElse(node, new HashSet[String]) ++ actorNames
-    // )
+    actorNames.map(name =>
+      partitionMap(name) = partitionMap.getOrElse(name,
+        new HashSet[String]) ++ actorNames
+    )
   }
   
   def runExternal() = {
@@ -561,11 +560,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       event match {
     
         case Start(propsCtor, name) => 
-          // If not already started:
+          // If not already started: start it and unisolate it
           if (!(instrumenter().actorMappings contains name)) {
             instrumenter().actorSystem().actorOf(propsCtor(), name)
+            partitionMap(name) = new HashSet[String]
           }
-          // TODO(cs): unisolate this node.
     
         case Send(rcv, msgCtor) =>
           val ref = instrumenter().actorMappings(rcv)
@@ -592,7 +591,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         // A unique ID needs to be associated with all network events.
         case par : NetworkPartition => throw new Exception("internal error")
         case par : NetworkUnpartition => throw new Exception("internal error")
-        case _ => throw new Exception("unsuported external event")
+        case _ => throw new Exception("unsuported external event " + event)
       }
       externalEventIdx += 1
     }

@@ -203,28 +203,48 @@ object RunnerUtils {
         // TODO(cs): does DPOR assume that system messages all have id=0? see
         // getNextTraceMessage
         Some(Unique(m.m, m.id))
+      case m: MsgEvent =>
+        Some(Unique(m))
       case KillEvent(actor) =>
         Some(Unique(NetworkPartition(Set(actor), allActorsSet)))
       case PartitionEvent((a,b)) =>
-        None
-        // XXX verify no subsequent UnPartitionEvents
-        // NetworkPartition(Set(a), Set(b))
+        Some(Unique(NetworkPartition(Set(a), Set(b))))
       case UnPartitionEvent((a,b)) =>
-        None // XXX
+        Some(Unique(NetworkUnpartition(Set(a), Set(b))))
       case Quiescence => None
       case ChangeContext(_) => None
       case UniqueMsgSend(_, _) => None
+      case MsgSend(_, _, _) => None
       case TimerSend(_) => None
       case TimerDelivery(_) => None // XXX
     }
 
     sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
 
+    // TODO(cs): if delta debugging decides to remove a partition/kill, should
+    // we also remove the partition/kill from intitialTrace? i.e., it's possible
+    // there will be NetworkPartitions as part of initialTrace even when no
+    // NetworkPartition has been specified as an external event for DPOR...
+    // Not sure if that's a problem. Maybe it's fine: hopefully DPOR will just realize
+    // that it's diverging
+    val filtered_externals = trace.original_externals flatMap {
+      case s: Start => Some(s)
+      case s: Send => Some(s)
+      case w: WaitQuiescence => Some(w)
+      case Kill(name) =>
+        Some(NetworkPartition(Set(name), allActorsSet))
+      case Partition(a,b) =>
+        Some(NetworkPartition(Set(a), Set(b)))
+      case UnPartition(a,b) =>
+        Some(NetworkUnpartition(Set(a), Set(b)))
+      case _ => None
+    }
+
     // Don't check unmodified execution, since it might take too long
     // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
     val ddmin = new DDMin(sched, false)
     // TODO(cs): do we need to specify f1, f2 (args to DPOR.run)?
-    val mcs = ddmin.minimize(trace.original_externals, violation)
+    val mcs = ddmin.minimize(filtered_externals, violation)
     // TODO(cs): write a verify_mcs method that uses Replayer instead of
     // TestOracle.
     val verified_mcs = None
