@@ -61,20 +61,21 @@ object RunnerUtils {
   def deserializeExperiment(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
       scheduler: ExternalEventInjector[_] with Scheduler):
-                  Tuple2[EventTrace, ViolationFingerprint] = {
+                  Tuple3[EventTrace, ViolationFingerprint, Option[Graph[Unique, DiEdge]]] = {
     val deserializer = new ExperimentDeserializer(experiment_dir)
     Instrumenter().scheduler = scheduler
     scheduler.populateActorSystem(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
-    return (trace, violation)
+    val dep_graph = deserializer.get_dep_graph()
+    return (trace, violation, dep_graph)
   }
 
   def replayExperiment(experiment_dir: String,
                        messageFingerprinter: MessageFingerprinter,
                        messageDeserializer: MessageDeserializer) : EventTrace = {
     val replayer = new ReplayScheduler(messageFingerprinter, false, false)
-    val (trace, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
+    val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
 
     println("Trying replay:")
     val events = replayer.replay(trace)
@@ -90,7 +91,7 @@ object RunnerUtils {
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new RandomScheduler(1, false, 0, false)
     sched.setInvariant(invariant)
-    val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)
 
     val ddmin = new DDMin(sched, false)
@@ -118,7 +119,7 @@ object RunnerUtils {
       case Some(f) => sched.setEventMapper(f)
       case None => None
     }
-    val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
 
     val ddmin = new DDMin(sched)
@@ -139,7 +140,7 @@ object RunnerUtils {
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new PeekScheduler(false)
     sched.setInvariant(invariant)
-    val (trace, violation) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
+    val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)
 
     // Don't check unmodified execution, since RR will often fail
@@ -152,5 +153,68 @@ object RunnerUtils {
       case None => println("MCS doesn't reproduce bug...")
     }
     return (mcs, ddmin.stats, validated_mcs, violation)
+  }
+
+  def editDistanceDporDDMin(experiment_dir: String,
+                            messageFingerprinter: MessageFingerprinter,
+                            messageDeserializer: MessageDeserializer,
+                            invariant: TestOracle.Invariant) :
+        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
+    val sched = new DPORwHeuristics
+    Instrumenter().scheduler = sched
+    val deserializer = new ExperimentDeserializer(experiment_dir)
+    sched.setActorNameProps(deserializer.get_actors)
+    val violation = deserializer.get_violation(messageDeserializer)
+    val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val dep_graph = deserializer.get_dep_graph()
+    sched.setDepthBound(trace.size)
+    sched.setInvariant(invariant)
+
+    // Convert to a format that DPOR will understand
+    var allActors = trace flatMap {
+      case SpawnEvent(_,_,name,_) => Some(name)
+      case _ => None
+    }
+    // Verify crash-stop, not crash-recovery
+    val allActorsSet = allActors.toSet
+    assert(allActors.size == allActorsSet.size)
+
+    // DPOR's initialTrace argument contains only Unique SpawnEvents, MsgEvents,
+    // NetworkPartitions, and WaitQuiescence events.
+    val initialTrace = trace.filterFailureDetectorMessages.filterCheckpointMessages flatMap {
+      case s: SpawnEvent =>
+        // DPOR ignores Spawns
+        None
+      case BeginWaitQuiescence =>
+        Some(Unique(WaitQuiescence()))
+      case m: UniqueMsgEvent =>
+        // TODO(cs): verify that timers and Send()s are matched correctly by DPOR
+        // TODO(cs): does DPOR assume that system messages all have id=0? see
+        // getNextTraceMessage
+        Some(Unique(m.m, m.id))
+      case KillEvent(actor) =>
+        Some(NetworkPartition(Set(actor), allActorsSet))
+      case PartitionEvent((a,b)) =>
+        None
+        // XXX verify no subsequent UnPartitionEvents
+        // NetworkPartition(Set(a), Set(b))
+      case UnPartitionEvent((a,b)) =>
+        None // XXX
+      case Quiescence => None
+      case ChangeContext(_) => None
+      case UniqueMsgSend(_, _) => None
+      case TimerSend(_) => None
+      case TimerDelivery(_) => None // XXX
+    }
+
+    // Don't check unmodified execution, since it might take too long
+    // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
+    val ddmin = new DDMin(sched, false)
+    // TODO(cs): do we need to specify f1, f2 (args to DPOR.run)?
+    val mcs = ddmin.minimize(trace.original_externals, violation)
+    // TODO(cs): write a verify_mcs method that uses Replayer instead of
+    // TestOracle.
+    val verified_mcs = null
+    return (mcs, ddmin.stats, verified_mcs, violation)
   }
 }

@@ -202,6 +202,16 @@ class ExperimentDeserializer(results_dir: String) {
     return JavaSerialization.deserialize[Array[ExternalEvent]](buf)
   }
 
+  def get_dep_graph(): Option[Graph[Unique, DiEdge]] = {
+    val file = results_dir + ExperimentSerializer.depGraph
+    if (new java.io.File(file).exists) {
+      val buf = JavaSerialization.readFromFile(file)
+      val graph = JavaSerialization.deserialize[Graph[Unique, DiEdge]](buf)
+      return Some(graph)
+    }
+    return None
+  }
+
   def get_events(message_deserializer: MessageDeserializer, actorSystem: ActorSystem) : EventTrace = {
     val buf = JavaSerialization.readFromFile(results_dir +
       ExperimentSerializer.event_trace)
