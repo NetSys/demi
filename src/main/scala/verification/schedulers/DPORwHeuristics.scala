@@ -190,6 +190,14 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
     queue ++= event.second.map { x => (x, NodesUnreachable(event.first)) }
     return queue
   }
+
+  def decomposeUnPartitionEvent(event: NetworkUnpartition) : Queue[(String, NodesReachable)] = {
+    val queue = new Queue[(String, NodesReachable)]
+    queue ++= event.first.map { x => (x, NodesReachable(event.second)) }
+    queue ++= event.second.map { x => (x, NodesReachable(event.first)) }
+    return queue
+  }
+  
   
   
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef) : Boolean =
@@ -311,6 +319,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
               id + Console.RESET)
           Some(par)
 
+        case Some(par @ (Unique(NetworkUnpartition(part1, part2), id), _, _)) =>
+          logger.trace( Console.GREEN + "Now playing the high level partition event " +
+              id + Console.RESET)
+          Some(par)
+
         case Some(qui @ (Unique(WaitQuiescence(), id), _, _)) =>
           logger.trace( Console.GREEN + "Now playing the high level quiescence event " +
               id + Console.RESET)
@@ -334,6 +347,14 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
           }
           
         case Some(u @ Unique(NetworkPartition(_, _), id)) =>
+          
+          // Look at the pending events to see if such message event exists. 
+          pendingEvents.get(SCHEDULER) match {
+            case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
+            case None =>  None
+          }
+          
+        case Some(u @ Unique(NetworkUnpartition(_, _), id)) =>
           
           // Look at the pending events to see if such message event exists. 
           pendingEvents.get(SCHEDULER) match {
@@ -381,6 +402,12 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
                 + part1 + " <-> " + part2 + ")" + Console.RESET )
             Some((u, null, null))
 
+          case Some((u @ Unique(NetworkUnpartition(part1, part2), id), _, _)) =>
+            logger.trace( Console.GREEN + "Replaying the exact message: Unpartition: (" 
+                + part1 + " <-> " + part2 + ")" + Console.RESET )
+            Some((u, null, null))
+
+
           case Some((u @ Unique(WaitQuiescence(), id), _, _)) =>
             logger.trace( Console.GREEN + "Replaying the exact message: Quiescence: (" 
                 + id +  ")" + Console.RESET )
@@ -421,19 +448,48 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
         
       case Some((nextEvent @ Unique(par@ NetworkPartition(first, second), nID), _, _)) =>
 
+        // FIXME: We cannot send NodesUnreachable messages to FSM: in response to an unexpected message,
+        // an FSM cancels and then restart a timer. This means that we cannot actually make this assumption
+        // below
+        //
         // A NetworkPartition event is translated into multiple
         // NodesUnreachable messages which are atomically and
         // and invisibly consumed by all relevant parties.
         // Important: no messages are allowed to be dispatched
         // as the result of NodesUnreachable being received.
-        decomposePartitionEvent(par) map tupled(
-          (rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
+        //decomposePartitionEvent(par) map tupled(
+          //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
         
         for (node  <- first) {
           partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  second
         }
         for (node  <- second) {
           partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  first
+        }
+          
+        instrumenter().tellEnqueue.await()
+        
+        currentTrace += nextEvent
+        return schedule_new_message()
+
+      case Some((nextEvent @ Unique(par@ NetworkUnpartition(first, second), nID), _, _)) =>
+        // FIXME: We cannot send NodesUnreachable messages to FSM: in response to an unexpected message,
+        // an FSM cancels and then restart a timer. This means that we cannot actually make this assumption
+        // below
+        //decomposeUnPartitionEvent(par) map tupled(
+          //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
+
+        for (node  <- first) {
+          partitionMap.get(node) match {
+            case Some(set) => set --= second
+            case _ =>
+          }
+        }
+        for (node  <- second) {
+          partitionMap.get(node) match {
+            case Some(set) => set --= first
+            case _ =>
+          }
         }
           
         instrumenter().tellEnqueue.await()
@@ -518,6 +574,12 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
           addGraphNode(uniq)
+
+        case uniq @ Unique(par : NetworkUnpartition, id) =>  
+          val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
+          pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
+          addGraphNode(uniq)
+       
        
         case event @ Unique(WaitQuiescence(), _) =>
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
@@ -527,6 +589,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
 
         // A unique ID needs to be associated with all network events.
         case par : NetworkPartition => throw new Exception("internal error")
+        case par : NetworkUnpartition => throw new Exception("internal error")
         case _ => throw new Exception("unsuported external event")
       }
       externalEventIdx += 1
@@ -558,6 +621,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
     // part of the dependency graph.
     externalEventList = externalEvents.map { e => e match {
       case par: NetworkPartition => 
+        val unique = Unique(par)
+        unique
+      case par: NetworkUnpartition => 
         val unique = Unique(par)
         unique
       case WaitQuiescence() =>
@@ -647,15 +713,17 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
     
       // CheckpointRequests and failure detector messeages are simply enqueued to the priority queued
       // and dispatched at the earliest convenience.
-      case NodesUnreachable | CheckpointRequest =>
+      case NodesReachable | NodesUnreachable | CheckpointRequest =>
         val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, ActorCell, Envelope)])
         pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
-        
+      
       case _ =>
         val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
         val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
         // Do not enqueue if bound hit
         if (!should_bound || currentDepth < stop_at_depth) {
+          logger.trace(Console.BLUE + "Enqueuing event " + cell + " " + envelope + " " + unique + 
+                       " (" + parentEvent + ") " + Console.RESET)
           pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
         } else {
           logger.debug(Console.RED + "Not adding message because we hit depth bound " + Console.RESET)
@@ -787,7 +855,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
   
   
   def enqueue_message(receiver: String,msg: Any): Unit = {
-    logger.trace("Enqueuing timer to " + receiver + " with msg " + msg)
+    logger.trace(Console.BLUE + "Enqueuing timer to " + receiver + " with msg " + msg + Console.RESET)
     instrumenter().actorMappings(receiver) ! msg
     instrumenter().await_enqueue()
   }
@@ -800,7 +868,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                              msg: Any): Boolean = {
     // Assume no one responds to sender on receiving a timer message
-    logger.trace("Asking instrumenter to call back to enqueue timer " + receiver + " with msg " + msg)
     return false
   }
 
@@ -809,7 +876,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
   }
 
   override def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
-    logger.trace("Trying to cancel timer for " + receiver.path.name + " " + msg)
+    logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver.path.name + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, ActorCell, Envelope)): Boolean = {
       u._1 match {
         case Unique(MsgEvent("deadLetters", n, m), _) => ((n == receiver.path.name) && (m == msg))
@@ -870,8 +937,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
         // can simply move it in front of the earlier event.
         // This might cause the earlier event to become disabled,
         // but we have no way of knowing.
-        case (_: MsgEvent,_: NetworkPartition) =>
-          val branchI = earlierI
+        case (_: MsgEvent, _: NetworkPartition) =>
+          val branchI = earlierI - 1
           val needToReplay = List(later, earlier)
             
           exploredTracker.setExplored(branchI, (earlier, later))
@@ -882,6 +949,33 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
         // just after the later event. None of the two event
         // will become disabled in this case.
         case (_: NetworkPartition, _: MsgEvent) => 
+          val branchI = earlierI - 1
+          val needToReplay = currentTrace.clone()
+            .drop(earlierI + 1)
+            .take(laterI - earlierI)
+            .toList :+ earlier
+          
+          exploredTracker.setExplored(branchI, (earlier, later))
+          
+          return Some((branchI, needToReplay))
+        
+          
+        // Since the later event is completely independent, we
+        // can simply move it in front of the earlier event.
+        // This might cause the earlier event to become disabled,
+        // but we have no way of knowing.
+        case (_: MsgEvent, _: NetworkUnpartition) =>
+          val branchI = earlierI - 1
+          val needToReplay = List(later, earlier)
+            
+          exploredTracker.setExplored(branchI, (earlier, later))
+
+          return Some((branchI, needToReplay))
+          
+        // Similarly, we move an earlier independent event
+        // just after the later event. None of the two event
+        // will become disabled in this case.
+        case (_: NetworkUnpartition, _: MsgEvent) => 
           val branchI = earlierI - 1
           val needToReplay = currentTrace.clone()
             .drop(earlierI + 1)
@@ -938,6 +1032,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
           return Some((branchI, needToReplayV))
 
       }
+      return None
 
     }
     
@@ -955,13 +1050,21 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
      ** @return: Boolean 
      */
     def isCoEnabeled(earlier: Unique, later: Unique) : Boolean = (earlier, later) match {
-      
-      // NetworkPartition is always co-enabled with any other event.
-      case (Unique(p : NetworkPartition, _), _) => true
-      case (_, Unique(p : NetworkPartition, _)) => true
       // Quiescence is never co-enabled
       case (Unique(WaitQuiescence(), _), _) => false
       case (_, Unique(WaitQuiescence(), _)) => false
+      // Network partitions and unpartitions with interesection are not coenabled (cheap hack to
+      // prevent us from trying reordering these directly). We need to do something smarter maybe
+      case (Unique(p1: NetworkPartition, _), Unique(p2: NetworkPartition, _)) => false
+      case (Unique(u1: NetworkUnpartition, _), Unique(u2: NetworkUnpartition, _)) => false
+      case (Unique(p1: NetworkPartition, _), Unique(u2: NetworkUnpartition, _)) => false
+      case (Unique(u1: NetworkUnpartition, _), Unique(p2: NetworkPartition, _)) => false
+      // NetworkPartition is always co-enabled with any other event.
+      case (Unique(p : NetworkPartition, _), _) => true
+      case (_, Unique(p : NetworkPartition, _)) => true
+      // NetworkUnpartition is always co-enabled with any other event.
+      case (Unique(p : NetworkUnpartition, _), _) => true
+      case (_, Unique(p : NetworkUnpartition, _)) => true
       //case (_, _) =>
       case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
         if (m1.receiver != m2.receiver) 
@@ -999,7 +1102,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = N
           
           analyze_dep(earlierI, laterI, trace) match {
             case Some((branchI, needToReplayV)) =>    
-              
               // Since we're exploring an already executed trace, we can
               // safely mark the interleaving of (earlier, later) as
               // already explored.
