@@ -181,7 +181,7 @@ class RandomScheduler(max_executions: Int,
 
     def matchMessage (event: Event) : Boolean = {
       // N.B. comparison by message fingerprint, not raw message
-      newUnique.event.asInstanceOf[MsgEvent].msg == event
+      newUnique.event == event
     }
 
     val unique =
