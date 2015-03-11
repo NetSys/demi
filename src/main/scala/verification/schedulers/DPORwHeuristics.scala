@@ -427,13 +427,17 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         
       case Some((nextEvent @ Unique(par@ NetworkPartition(first, second), nID), _, _)) =>
 
+        // FIXME: We cannot send NodesUnreachable messages to FSM: in response to an unexpected message,
+        // an FSM cancels and then restart a timer. This means that we cannot actually make this assumption
+        // below
+        //
         // A NetworkPartition event is translated into multiple
         // NodesUnreachable messages which are atomically and
         // and invisibly consumed by all relevant parties.
         // Important: no messages are allowed to be dispatched
         // as the result of NodesUnreachable being received.
-        decomposePartitionEvent(par) map tupled(
-          (rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
+        //decomposePartitionEvent(par) map tupled(
+          //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
         
         for (node  <- first) {
           partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  second
@@ -448,8 +452,11 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         return schedule_new_message()
 
       case Some((nextEvent @ Unique(par@ NetworkUnpartition(first, second), nID), _, _)) =>
-        decomposeUnPartitionEvent(par) map tupled(
-          (rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
+        // FIXME: We cannot send NodesUnreachable messages to FSM: in response to an unexpected message,
+        // an FSM cancels and then restart a timer. This means that we cannot actually make this assumption
+        // below
+        //decomposeUnPartitionEvent(par) map tupled(
+          //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
 
         for (node  <- first) {
           partitionMap.get(node) match {
@@ -682,6 +689,8 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
         // Do not enqueue if bound hit
         if (!should_bound || currentDepth < stop_at_depth) {
+          logger.trace(Console.BLUE + "Enqueuing event " + cell + " " + envelope + " " + unique + 
+                       " (" + parentEvent + ") " + Console.RESET)
           pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
         } else {
           logger.debug(Console.RED + "Not adding message because we hit depth bound " + Console.RESET)
@@ -776,7 +785,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   
   
   def enqueue_message(receiver: String,msg: Any): Unit = {
-    logger.trace("Enqueuing timer to " + receiver + " with msg " + msg)
+    logger.trace(Console.BLUE + "Enqueuing timer to " + receiver + " with msg " + msg + Console.RESET)
     instrumenter().actorMappings(receiver) ! msg
     instrumenter().await_enqueue()
   }
@@ -789,7 +798,6 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                              msg: Any): Boolean = {
     // Assume no one responds to sender on receiving a timer message
-    logger.trace("Asking instrumenter to call back to enqueue timer " + receiver + " with msg " + msg)
     return false
   }
 
@@ -798,7 +806,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   }
 
   override def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
-    logger.trace("Trying to cancel timer for " + receiver.path.name + " " + msg)
+    logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver.path.name + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, ActorCell, Envelope)): Boolean = {
       u._1 match {
         case Unique(MsgEvent("deadLetters", n, m), _) => ((n == receiver.path.name) && (m == msg))
