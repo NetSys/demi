@@ -40,14 +40,14 @@ import scalax.collection.mutable.Graph,
  * executions that trigger violations.
  */
 class RandomScheduler(max_executions: Int,
-                      messageFingerprinter: MessageFingerprinter,
+                      messageFingerprinter: FingerprintFactory,
                       enableFailureDetector: Boolean,
                       invariant_check_interval: Int,
                       disableCheckpointing: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_executions: Int) = this(max_executions, new BasicFingerprinter, true, 0, false)
+  def this(max_executions: Int) = this(max_executions, new FingerprintFactory, true, 0, false)
   def this(max_executions: Int, enableFailureDetector: Boolean) =
-      this(max_executions, new BasicFingerprinter, enableFailureDetector, 0, false)
+      this(max_executions, new FingerprintFactory, enableFailureDetector, 0, false)
 
   def getName: String = "RandomScheduler"
 

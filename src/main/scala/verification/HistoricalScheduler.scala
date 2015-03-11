@@ -27,7 +27,7 @@ trait HistoricalScheduler {
 
   // Called by scheduler from notify_timer_scheduled 
   def handle_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any, messageFingerprinter: MessageFingerprinter) {
+                             msg: Any, messageFingerprinter: FingerprintFactory) {
     val snd = if (sender == null) "deadLetters" else sender.path.name
     val rcv = if (receiver == null) "deadLetters" else receiver.path.name
     msg match {

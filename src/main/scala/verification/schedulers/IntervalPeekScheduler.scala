@@ -20,7 +20,7 @@ object IntervalPeekScheduler {
   // N.B. enabled should contain non-fingerprinted messages, whereas _expected
   // should contain fingerprinted messages
   def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent],
-                 pendingTimers: Seq[(String, Any)], messageFingerprinter: MessageFingerprinter) : Seq[MsgEvent] = {
+                 pendingTimers: Seq[(String, Any)], messageFingerprinter: FingerprintFactory) : Seq[MsgEvent] = {
     // TODO(cs): consider ordering of expected, rather than treating it as a Set?
     val expected = new MultiSet[MsgEvent] ++ _expected
     def fingerprintAndMatch(e: MsgEvent): Boolean = {
@@ -77,12 +77,12 @@ object IntervalPeekScheduler {
 // of the raw message.
 class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
                             max_peek_messages: Int,
-                            messageFingerprinter: MessageFingerprinter,
+                            messageFingerprinter: FingerprintFactory,
                             enableFailureDetector: Boolean) extends
       ReplayScheduler(messageFingerprinter, enableFailureDetector, false) {
 
   def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) =
-      this(expected, lookingFor, 10, new BasicFingerprinter, true)
+      this(expected, lookingFor, 10, new FingerprintFactory, true)
 
   if (!enableFailureDetector) {
     disableFailureDetector

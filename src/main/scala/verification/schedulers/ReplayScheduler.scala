@@ -30,9 +30,9 @@ class ReplayException(message:String=null, cause:Throwable=null) extends
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler(messageFingerprinter: MessageFingerprinter, enableFailureDetector:Boolean, strictChecking:Boolean)
+class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDetector:Boolean, strictChecking:Boolean)
     extends AbstractScheduler with ExternalEventInjector[Event] with HistoricalScheduler {
-  def this() = this(new BasicFingerprinter, false, false)
+  def this() = this(new FingerprintFactory, false, false)
 
   if (!enableFailureDetector) {
     disableFailureDetector()

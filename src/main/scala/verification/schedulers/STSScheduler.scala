@@ -65,11 +65,11 @@ object STSScheduler {
  */
 class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
-                   messageFingerprinter: MessageFingerprinter,
+                   messageFingerprinter: FingerprintFactory,
                    enableFailureDetector:Boolean) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
   def this(original_trace: EventTrace) =
-      this(original_trace, false, new BasicFingerprinter, true)
+      this(original_trace, false, new FingerprintFactory, true)
 
   def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 

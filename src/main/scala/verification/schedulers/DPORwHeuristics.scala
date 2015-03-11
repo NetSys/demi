@@ -43,9 +43,9 @@ import com.typesafe.scalalogging.LazyLogging,
 
 // DPOR scheduler.
 class DPORwHeuristics(enableCheckpointing: Boolean,
-  messageFingerprinter: MessageFingerprinter,
+  messageFingerprinter: FingerprintFactory,
   depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
-  def this() = this(false, new BasicFingerprinter, None)
+  def this() = this(false, new FingerprintFactory, None)
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"

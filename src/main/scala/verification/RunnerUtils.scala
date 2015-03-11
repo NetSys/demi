@@ -10,7 +10,7 @@ import scalax.collection.mutable.Graph,
 object RunnerUtils {
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
-           messageFingerprinter: MessageFingerprinter,
+           fingerprintFactory: FingerprintFactory,
            validate_replay:Option[ReplayScheduler]=None) :
         Tuple3[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge]] = {
     var violationFound : ViolationFingerprint = null
@@ -20,7 +20,7 @@ object RunnerUtils {
       val fuzzTest = fuzzer.generateFuzzTest()
       println("Trying: " + fuzzTest)
 
-      val sched = new RandomScheduler(1, messageFingerprinter, false, 30, false)
+      val sched = new RandomScheduler(1, fingerprintFactory, false, 30, false)
       sched.setInvariant(invariant)
       Instrumenter().scheduler = sched
       sched.explore(fuzzTest) match {
@@ -75,9 +75,9 @@ object RunnerUtils {
   }
 
   def replayExperiment(experiment_dir: String,
-                       messageFingerprinter: MessageFingerprinter,
+                       fingerprintFactory: FingerprintFactory,
                        messageDeserializer: MessageDeserializer) : EventTrace = {
-    val replayer = new ReplayScheduler(messageFingerprinter, false, false)
+    val replayer = new ReplayScheduler(fingerprintFactory, false, false)
     val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
 
     println("Trying replay:")
@@ -88,11 +88,11 @@ object RunnerUtils {
   }
 
   def randomDDMin(experiment_dir: String,
-                  messageFingerprinter: MessageFingerprinter,
+                  fingerprintFactory: FingerprintFactory,
                   messageDeserializer: MessageDeserializer,
                   invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new RandomScheduler(1, messageFingerprinter, false, 0, false)
+    val sched = new RandomScheduler(1, fingerprintFactory, false, 0, false)
     sched.setInvariant(invariant)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)
@@ -109,14 +109,14 @@ object RunnerUtils {
   }
 
   def stsSchedDDMin(experiment_dir: String,
-                    messageFingerprinter: MessageFingerprinter,
+                    fingerprintFactory: FingerprintFactory,
                     messageDeserializer: MessageDeserializer,
                     allowPeek: Boolean,
                     invariant: TestOracle.Invariant,
                     event_mapper: Option[HistoricalScheduler.EventMapper]) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(new EventTrace, allowPeek,
-        messageFingerprinter, false)
+        fingerprintFactory, false)
     sched.setInvariant(invariant)
     event_mapper match {
       case Some(f) => sched.setEventMapper(f)
@@ -137,7 +137,7 @@ object RunnerUtils {
   }
 
   def roundRobinDDMin(experiment_dir: String,
-                      messageFingerprinter: MessageFingerprinter,
+                      fingerprintFactory: FingerprintFactory,
                       messageDeserializer: MessageDeserializer,
                       invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
@@ -159,11 +159,11 @@ object RunnerUtils {
   }
 
   def editDistanceDporDDMin(experiment_dir: String,
-                            messageFingerprinter: MessageFingerprinter,
+                            fingerprintFactory: FingerprintFactory,
                             messageDeserializer: MessageDeserializer,
                             invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new DPORwHeuristics(true, messageFingerprinter)
+    val sched = new DPORwHeuristics(true, fingerprintFactory)
     Instrumenter().scheduler = sched
     val deserializer = new ExperimentDeserializer(experiment_dir)
     sched.setActorNameProps(deserializer.get_actors)
@@ -177,7 +177,6 @@ object RunnerUtils {
       case Some(graph) => sched.setInitialDepGraph(graph)
       case None => throw new IllegalArgumentException("Need a DepGraph to run DPORwHeuristics")
     }
-    sched.setDepthBound(trace.size)
     sched.setInvariant(invariant)
 
     // Convert Trace to a format DPOR will understand. Start by getting a list
@@ -219,6 +218,7 @@ object RunnerUtils {
       case TimerDelivery(_) => None // XXX
     }
 
+    sched.setDepthBound(initialTrace.size)
     sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
 
     // TODO(cs): if delta debugging decides to remove a partition/kill, should

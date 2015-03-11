@@ -62,7 +62,7 @@ object ExperimentSerializer {
   }
 }
 
-class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_serializer: MessageSerializer) {
+class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_serializer: MessageSerializer) {
 
   def record_experiment(experiment_name: String, trace: EventTrace,
                         violation: ViolationFingerprint,
