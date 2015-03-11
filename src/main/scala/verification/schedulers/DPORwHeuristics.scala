@@ -109,7 +109,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   var currentSubsequence : Seq[ExternalEvent] = null
   var lookingFor : ViolationFingerprint = null
   var foundLookingFor = false
-  var traceSem = new Semaphore(0)
   var _initialTrace : Trace = null
   def setInitialTrace(t: Trace) {
     _initialTrace = t
@@ -144,7 +143,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     backTrack.clear
     exploredTracker.clear
     blockedOnCheckpoint.set(false)
-    traceSem = new Semaphore(0)
 
     setParentEvent(getRootEvent)
   }
@@ -780,7 +778,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
               if (lookingFor.matches(v)) {
                 println("Found matching violation!")
                 foundLookingFor = true
-                traceSem.release()
                 return
               }
             case None =>
@@ -1110,7 +1107,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
             // If the backtrack set is empty, this means we're done.
       if (backTrack.isEmpty) {
         logger.info("Tutto finito!")
-        traceSem.release()
         done(depGraph)
         return None
         //System.exit(0);
@@ -1161,7 +1157,13 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     lookingFor = violation_fingerprint
     stats = _stats
     Instrumenter().scheduler = this
-    run(events, initialTrace=Some(_initialTrace),
+    var traceSem = new Semaphore(0)
+    run(events,
+        f2 = (graph) => {
+          _initialDegGraph ++= graph
+          traceSem.release
+        },
+        initialTrace=Some(_initialTrace),
         initialGraph=Some(_initialDegGraph))
     traceSem.acquire()
     reset
