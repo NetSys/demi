@@ -7,9 +7,7 @@ import akka.actor.ActorCell,
        akka.actor.ActorRefWithCell,
        akka.actor.Actor,
        akka.actor.PoisonPill,
-       akka.actor.Props,
-       akka.actor.FSM,
-       akka.actor.FSM.Timer
+       akka.actor.Props
 
 import akka.dispatch.Envelope,
        akka.dispatch.MessageQueue,

@@ -130,16 +130,15 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
                 enqueue_message(receiver, message)
               }
             }
-          case TimerSend(fingerprint) =>
-            if (scheduledFSMTimers contains fingerprint) {
-              val timer = scheduledFSMTimers(fingerprint)
-              Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
+          case t: TimerSend =>
+            if (scheduledFSMTimers contains t) {
+              val timer = scheduledFSMTimers(t)
+              Instrumenter().manuallyHandleTick(t.receiver, timer)
             } else {
               throw new RuntimeException(
-                "Internal error: expected scheduledFSMTimers contains " +
-                fingerprint)
+                "Internal error: expected scheduledFSMTimers contains " + t)
             }
-          case TimerDelivery(fingerprint) =>
+          case t: TimerDelivery =>
             break
           case MsgEvent(snd, rcv, msg) =>
             break
@@ -237,10 +236,8 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
       val key = event_orchestrator.current_event match {
         case MsgEvent(snd, rcv, msg) =>
           (snd, rcv, messageFingerprinter.fingerprint(msg))
-        case TimerDelivery(timer_fingerprint) =>
-          val timer = scheduledFSMTimers(timer_fingerprint)
-          (timer_fingerprint.sender, timer_fingerprint.receiver,
-           messageFingerprinter.fingerprint(timer))
+        case t: TimerDelivery =>
+          (t.sender, t.receiver, t.fingerprint)
         case _ =>
          throw new Exception("Replay error")
       }

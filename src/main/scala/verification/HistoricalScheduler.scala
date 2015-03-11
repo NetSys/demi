@@ -23,23 +23,26 @@ trait HistoricalScheduler {
   // When FSM.Timer's are scheduled, store them here.
   // This is really only needed to deal with the non-serializability of Timer
   // events.
-  var scheduledFSMTimers = new HashMap[TimerFingerprint, Timer]
+  var scheduledFSMTimers = new HashMap[TimerSend, Timer]
 
-  // Called by scheduler from notify_timer_scheduled 
+  // Called by scheduler from notify_timer_scheduled
+  // Really only needed to deal with the non-serializability of Timer
+  // events.
   def handle_timer_scheduled(sender: ActorRef, receiver: ActorRef,
                              msg: Any, messageFingerprinter: FingerprintFactory) {
     val snd = if (sender == null) "deadLetters" else sender.path.name
     val rcv = if (receiver == null) "deadLetters" else receiver.path.name
     msg match {
-      case Timer(name, nestedMsg, repeat, generation) =>
-        val fingerprint = TimerFingerprint(name, snd, rcv,
-          messageFingerprinter.fingerprint(nestedMsg), repeat, generation)
-        scheduledFSMTimers(fingerprint) = msg.asInstanceOf[Timer]
+      case Timer(name, nestedMsg, repeat, _) =>
+        val fingerprint = TimerFingerprint(name,
+          messageFingerprinter.fingerprint(nestedMsg), repeat)
+        val sendEvent = TimerSend(snd, rcv, fingerprint)
+        scheduledFSMTimers(sendEvent) = msg.asInstanceOf[Timer]
       case _ =>
         // TODO(cs): not sure this is really necessary! We only need
         // scheduledFSMTimers to deal with non-serializability of Timers. As long
         // as this msg is serializable, there shouldn't be a problem?
-        println("Warning: Non-akka.FSM.Timers not yet supported:" + msg)
+        println("Warning: Non-akka.FSM.Timers not yet supported: " + msg)
     }
   }
 

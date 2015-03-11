@@ -214,19 +214,14 @@ object RunnerUtils {
       case ChangeContext(_) => None
       case UniqueMsgSend(_, _) => None
       case MsgSend(_, _, _) => None
-      case TimerSend(_) => None
-      case TimerDelivery(_) => None // XXX
+      case TimerSend(_, _, _) => None
+      case TimerDelivery(snd, rcv, fingerprint) =>
+        Some(Unique(MsgEvent(snd, rcv, fingerprint)))
     }
 
     sched.setDepthBound(initialTrace.size)
     sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
 
-    // TODO(cs): if delta debugging decides to remove a partition/kill, should
-    // we also remove the partition/kill from intitialTrace? i.e., it's possible
-    // there will be NetworkPartitions as part of initialTrace even when no
-    // NetworkPartition has been specified as an external event for DPOR...
-    // Not sure if that's a problem. Maybe it's fine: hopefully DPOR will just realize
-    // that it's diverging
     val filtered_externals = trace.original_externals flatMap {
       case s: Start => Some(s)
       case s: Send => Some(s)
@@ -243,7 +238,6 @@ object RunnerUtils {
     // Don't check unmodified execution, since it might take too long
     // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
     val ddmin = new DDMin(sched, false)
-    // TODO(cs): do we need to specify f1, f2 (args to DPOR.run)?
     val mcs = ddmin.minimize(filtered_externals, violation)
     // TODO(cs): write a verify_mcs method that uses Replayer instead of
     // TestOracle.

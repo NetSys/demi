@@ -68,10 +68,10 @@ final case class ChangeContext (actor: String) extends Event
 // Recording/Replaying Akka.FSM.Timer's (which aren't serializable! hence this madness)
 // N.B. these aren't explicitly recorded. We use them only when we want to serialize event
 // traces.
-final case class TimerFingerprint(name: String, sender: String, receiver: String,
-  msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int)
-final case class TimerSend(fingerprint: TimerFingerprint) extends Event
-final case class TimerDelivery(fingerprint: TimerFingerprint) extends Event
+final case class TimerFingerprint(name: String,
+  msgFingerprint: MessageFingerprint, repeat: Boolean) extends MessageFingerprint
+final case class TimerSend(sender: String, receiver: String, fingerprint: TimerFingerprint) extends Event
+final case class TimerDelivery(sender: String, receiver: String, fingerprint: TimerFingerprint) extends Event
 
 
 object EventTypes {

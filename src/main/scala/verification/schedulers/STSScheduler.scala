@@ -96,7 +96,7 @@ class STSScheduler(var original_trace: EventTrace,
   // we're guarenteed that TimerSent's are always valid such that
   // TimerDelivery's are also valid. I just haven't thought about it deeply
   // enough, so I'm being conservative.
-  val timersSentButNotYetDelivered = new MultiSet[TimerFingerprint]
+  val timersSentButNotYetDelivered = new MultiSet[TimerSend]
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
@@ -266,19 +266,19 @@ class STSScheduler(var original_trace: EventTrace,
                 enqueue_message(receiver, message)
               }
             }
-          case TimerSend(fingerprint) =>
-            if (scheduledFSMTimers contains fingerprint) {
-              val timer = scheduledFSMTimers(fingerprint)
+          case t: TimerSend =>
+            if (scheduledFSMTimers contains t) {
+              val timer = scheduledFSMTimers(t)
               // It may have been cancelled:
-              if (Instrumenter().timerToCancellable contains
-                  ((fingerprint.receiver, timer))) {
-                Instrumenter().manuallyHandleTick(fingerprint.receiver, timer)
-                timersSentButNotYetDelivered += fingerprint
+              if (Instrumenter().timerToCancellable contains ((t.receiver, timer))) {
+                Instrumenter().manuallyHandleTick(t.receiver, timer)
+                timersSentButNotYetDelivered += t
               }
             }
-          case TimerDelivery(fingerprint) =>
-            if (timersSentButNotYetDelivered contains fingerprint) {
-              timersSentButNotYetDelivered -= fingerprint
+          case TimerDelivery(snd, rcv, fingerprint) =>
+            val send = TimerSend(snd, rcv, fingerprint)
+            if (timersSentButNotYetDelivered contains send) {
+              timersSentButNotYetDelivered -= send
               break
             }
           // MsgEvent is the delivery
@@ -425,10 +425,8 @@ class STSScheduler(var original_trace: EventTrace,
     val key = event_orchestrator.current_event match {
       case MsgEvent(snd, rcv, msg) =>
         (snd, rcv, messageFingerprinter.fingerprint(msg))
-      case TimerDelivery(timer_fingerprint) =>
-        val timer = scheduledFSMTimers(timer_fingerprint)
-        (timer_fingerprint.sender, timer_fingerprint.receiver,
-         messageFingerprinter.fingerprint(timer))
+      case TimerDelivery(snd, rcv, timer_fingerprint) =>
+        (snd, rcv, timer_fingerprint)
       case _ =>
         // We've broken out of advanceReplay() because of a
         // BeginWaitQuiescence event, but there were no pendingSystemMessages to
