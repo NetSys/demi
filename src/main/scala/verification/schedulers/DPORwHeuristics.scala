@@ -39,15 +39,21 @@ import com.typesafe.scalalogging.LazyLogging,
 
 
 // DPOR scheduler.
-class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with LazyLogging {
+class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
-  val (should_bound, stop_at_depth) = depth_bound match {
-    case Some(d) => (true, d)
-    case _ => (false, 0)
+  var (should_bound, stop_at_depth) = (false, 0)
+  def setDepthBound(depth_bound: Int) {
+    var (should_bound, stop_at_depth) = (true, depth_bound)
+  }
+
+  // Collection of all actors that could possibly have messages sent to them.
+  var actorNameProps : Option[Seq[Tuple2[Props,String]]] = None
+  def setActorNameProps(actorNamePropPairs: Seq[Tuple2[Props,String]]) {
+    actorNameProps  = Some(actorNamePropPairs)
   }
   
   var instrumenter = Instrumenter
@@ -85,6 +91,10 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   var awaitingQuiescence = false
   var nextQuiescentPeriod = 0
   var quiescentMarker:Unique = null
+
+  var test_invariant : Invariant = null
+  var stats: MinimizationStats = null
+  def getName: String = "DPORwHeuristics"
 
   def nullFunPost(trace: Trace) : Unit = {}
   def nullFunDone(graph: Graph[Unique, DiEdge]) : Unit = {}
@@ -197,6 +207,10 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     setParentEvent(getRootEvent)
     
     currentTrace += getRootEvent
+    if (stats != null) {
+      stats.increment_replays()
+    }
+    maybeStartActors()
     runExternal()
   }
   
@@ -417,6 +431,20 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
       case msg : MsgEvent => 
   }
 
+  // Ensure that all possible actors are created, not just those with Start
+  // events. This is to prevent issues with tellEnqueue getting confused.
+  def maybeStartActors() {
+    actorNameProps match {
+      case Some(seq) =>
+        for ((props, name) <- seq) {
+          // Just start and isolate all actors we might eventually care about
+          Instrumenter().actorSystem.actorOf(props, name)
+          // TODO(cs): isolate this node.
+        }
+      case None =>
+        None
+    }
+  }
   
   def runExternal() = {
     logger.trace(Console.RED + " RUN EXTERNAL CALLED initial IDX = " + externalEventIdx +Console.RESET) 
@@ -427,7 +455,12 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
       event match {
     
         case Start(propsCtor, name) => 
-          instrumenter().actorSystem().actorOf(propsCtor(), name)
+          // If not already started:
+          if (instrumenter().actorSystem().actorFor("/user/"+name) ==
+              instrumenter().actorSystem().deadLetters) {
+            instrumenter().actorSystem().actorOf(propsCtor(), name)
+          }
+          // TODO(cs): unisolate this node.
     
         case Send(rcv, msgCtor) =>
           val ref = instrumenter().actorMappings(rcv)
@@ -912,4 +945,18 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   }
   
 
+  def setInvariant(invariant: Invariant) {
+    test_invariant = invariant
+  }
+
+  def test(events: Seq[ExternalEvent],
+           violation_fingerprint: ViolationFingerprint,
+           _stats: MinimizationStats) : Option[EventTrace] = {
+    stats = _stats
+    Instrumenter().scheduler = this
+    // TODO(cs): explore schedules.
+    reset
+    Instrumenter().restart_system()
+    return None
+  }
 }
