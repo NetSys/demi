@@ -74,6 +74,10 @@ object EventTypes {
         return snd == "deadLetters"
       case MsgSend(snd, _, _) =>
         return snd == "deadLetters"
+      case UniqueMsgEvent(MsgEvent(snd, _, _), _) =>
+        return snd == "deadLetters"
+      case UniqueMsgSend(MsgSend(snd, _, _), _) =>
+        return snd == "deadLetters"
       case _ => return false
     }
   }
