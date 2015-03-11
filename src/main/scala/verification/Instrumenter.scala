@@ -26,9 +26,13 @@ import scala.collection.mutable.HashSet
 import scala.util.Random
 import scala.util.control.Breaks
 
-class WrappedCancellable (c: Cancellable, inst: Instrumenter) extends Cancellable {
+// Wrap cancellable so we get notified about cancellation
+class WrappedCancellable (c: Cancellable, rcv: ActorRef, msg: Any) extends Cancellable {
+  val instrumenter = Instrumenter()
   def cancel(): Boolean = {
-    c.cancel
+    val success = c.cancel
+    instrumenter.cancelTimer(this, rcv, msg, success)
+    success
   }
 
   def isCancelled: Boolean = c.isCancelled
@@ -90,7 +94,15 @@ class Instrumenter {
   // released.
   var pendingTimers = new AtomicInteger(0)
 
-  private[dispatch] def cancelTimer (c: Cancellable) = {
+  private[dispatch] def cancelTimer (c: Cancellable, rcv: ActorRef, msg: Any, success: Boolean) = {
+    // Need this here since by the time DPORwHeuristics gets here the thing is already canceled
+    if (cancellableToTimer contains c) {
+      removeCancellable(c)
+    }
+    println("Cancelling timer " + rcv.path.name + " " + msg)
+    if (scheduler != null) {
+      scheduler.notify_timer_cancel(rcv, msg)
+    }
   }
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
@@ -331,7 +343,6 @@ class Instrumenter {
 
   // Return whether there were any timers to wait for...
   def await_timers(numTimers: Integer): Boolean = {
-    updateCancellables()
     if (numTimers <= 0) {
       throw new IllegalArgumentException("numTimers must be > 0")
     }
@@ -344,7 +355,6 @@ class Instrumenter {
   }
 
   def await_timers(): Boolean = {
-    updateCancellables()
     return await_timers(registeredCancellableTasks.size)
   }
 
@@ -364,6 +374,7 @@ class Instrumenter {
     if (ongoingTimer) {
       ongoingCancellableTasks += c
     }
+    println(c)
     cancellableToTimer(c) = ((receiver, msg))
     // TODO(cs): for now, assume that msg's are unique. Don't assume that.
     if (timerToCancellable contains (receiver, msg)) {
@@ -372,12 +383,6 @@ class Instrumenter {
     timerToCancellable((receiver, msg)) = c
     if (scheduler != null) {
       scheduler.notify_after_timer_scheduled(rcv, msg)
-    }
-  }
-
-  def updateCancellables() {
-    for (cancelled <- registeredCancellableTasks.filter(c => c.isCancelled)) {
-      removeCancellable(cancelled)
     }
   }
 

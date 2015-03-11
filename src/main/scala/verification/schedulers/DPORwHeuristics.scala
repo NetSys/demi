@@ -42,14 +42,17 @@ import com.typesafe.scalalogging.LazyLogging,
 
 
 // DPOR scheduler.
-class DPORwHeuristics(enableCheckpointing: Boolean) extends Scheduler with LazyLogging with TestOracle {
-  def this() = this(false)
+class DPORwHeuristics(enableCheckpointing: Boolean, depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
+  def this() = this(false, None)
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
-  var (should_bound, stop_at_depth) = (false, 0)
+  var (should_bound, stop_at_depth) = depth_bound match {
+    case Some(d) => (true, d)
+    case _ => (false, 0)
+  }
   def setDepthBound(depth_bound: Int) {
     var (should_bound, stop_at_depth) = (true, depth_bound)
   }
@@ -59,7 +62,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean) extends Scheduler with LazyL
   def setActorNameProps(actorNamePropPairs: Seq[Tuple2[Props,String]]) {
     actorNameProps = Some(actorNamePropPairs)
   }
-  
+    
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
   var externalEventIdx = 0
@@ -501,8 +504,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean) extends Scheduler with LazyL
     
         case Start(propsCtor, name) => 
           // If not already started:
-          if (instrumenter().actorSystem().actorFor("/user/"+name) ==
-              instrumenter().actorSystem().deadLetters) {
+          if (!(instrumenter().actorMappings contains name)) {
             instrumenter().actorSystem().actorOf(propsCtor(), name)
           }
           // TODO(cs): unisolate this node.
@@ -804,6 +806,24 @@ class DPORwHeuristics(enableCheckpointing: Boolean) extends Scheduler with LazyL
 
   override def notify_after_timer_scheduled (receiver: ActorRef, msg: Any) = {
     instrumenter().manuallyHandleTick(receiver.path.name, msg)
+  }
+
+  override def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
+    logger.trace("Trying to cancel timer for " + receiver.path.name + " " + msg)
+    def equivalentTo(u: (Unique, ActorCell, Envelope)): Boolean = {
+      u._1 match {
+        case Unique(MsgEvent("deadLetters", n, m), _) => ((n == receiver.path.name) && (m == msg))
+        case _ => false
+      }
+
+    }
+    pendingEvents.get(receiver.path.name) match {
+      case Some(q) => 
+        q.dequeueFirst(equivalentTo(_))
+        logger.trace(Console.RED + " Removing pending event (" + 
+                     receiver.path.name + " , " + msg + ")" + Console.RESET)
+      case None => // This cancellation came too late, things have already been done.
+    }
   }
   
   

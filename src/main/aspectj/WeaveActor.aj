@@ -3,6 +3,7 @@ package sample;
 import static java.lang.Thread.sleep;
 
 import akka.dispatch.verification.Instrumenter;
+import akka.dispatch.verification.WrappedCancellable;
 
 import akka.actor.ActorRef;
 import akka.actor.ScalaActorRef;
@@ -143,7 +144,7 @@ privileged public aspect WeaveActor {
     }
     boolean shouldRun = inst.notify_timer_scheduled(sender, receiver, msg);
     MyRunnable runnable = new MyRunnable(receiver, msg, inst, shouldRun);
-    Cancellable c = me.scheduleOnce(delay, runnable, exc);
+    Cancellable c = new WrappedCancellable(me.scheduleOnce(delay, runnable, exc), receiver, msg);
     runnable.setCancellable(c);
     inst.registerCancellable(c, false, receiver, msg);
     return c;

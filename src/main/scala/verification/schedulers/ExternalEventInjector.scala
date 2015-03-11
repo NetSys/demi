@@ -303,7 +303,6 @@ trait ExternalEventInjector[E] {
     started.set(false)
     event_orchestrator.events += Quiescence
     if (numWaitingFor.get() > 0) {
-      Instrumenter().updateCancellables()
       if (Instrumenter().cancellableToTimer.values.filterNot(
            { case (receiver, m) => event_orchestrator.inaccessible contains receiver }
           ).isEmpty) {
