@@ -47,7 +47,6 @@ trait HistoricalScheduler {
   // TODO(cs): enforce that timer t is sent less than k
   // times (where k is the number of times it was originally sent).
   def getRandomPendingTimer(): Option[(String, Any)] = {
-    Instrumenter().updateCancellables()
     if (!Instrumenter().cancellableToTimer.isEmpty) {
       // Taking the first value gives us some degree of randomness
       return Some(Instrumenter().cancellableToTimer.values.head)
@@ -56,7 +55,6 @@ trait HistoricalScheduler {
   }
 
   def getAllPendingTimers(): Seq[(String, Any)] = {
-    Instrumenter().updateCancellables()
     return new Queue[(String, Any)] ++ Instrumenter().cancellableToTimer.values
   }
 
