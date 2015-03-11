@@ -103,6 +103,7 @@ class Instrumenter {
     if (scheduler != null) {
       scheduler.notify_timer_cancel(rcv, msg)
     }
+  }
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
