@@ -670,6 +670,12 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
       case par: NodesUnreachable =>
         val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, ActorCell, Envelope)])
         pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
+      
+      // Decomposed network events are simply enqueued to the priority queued
+      // and dispatched at the earliest convenience.
+      case par: NodesReachable =>
+        val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, ActorCell, Envelope)])
+        pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
         
       case _ =>
         val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
@@ -853,8 +859,8 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         // can simply move it in front of the earlier event.
         // This might cause the earlier event to become disabled,
         // but we have no way of knowing.
-        case (_: MsgEvent,_: NetworkPartition) =>
-          val branchI = earlierI
+        case (_: MsgEvent, _: NetworkPartition) =>
+          val branchI = earlierI - 1
           val needToReplay = List(later, earlier)
             
           exploredTracker.setExplored(branchI, (earlier, later))
@@ -875,73 +881,13 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
           
           return Some((branchI, needToReplay))
         
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        // TODO: Maybe consider dependency in this case
-        case (_: NetworkPartition, _: NetworkUnpartition) => 
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
-          
-          exploredTracker.setExplored(branchI, (earlier, later))
-          
-          return Some((branchI, needToReplay))
-
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        // TODO: Maybe consider dependency in this case
-        case (_: NetworkUnpartition, _: NetworkUnpartition) => 
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
-          
-          exploredTracker.setExplored(branchI, (earlier, later))
-          
-          return Some((branchI, needToReplay))
-
-
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        // TODO: Maybe consider dependency in this case
-        case (_: NetworkPartition, _: NetworkPartition) => 
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
-          
-          exploredTracker.setExplored(branchI, (earlier, later))
-          
-          return Some((branchI, needToReplay))
-
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        // TODO: Maybe consider dependency in this case
-        case (_: NetworkUnpartition, _: NetworkPartition) => 
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
-          
-          exploredTracker.setExplored(branchI, (earlier, later))
-          
-          return Some((branchI, needToReplay))
           
         // Since the later event is completely independent, we
         // can simply move it in front of the earlier event.
         // This might cause the earlier event to become disabled,
         // but we have no way of knowing.
-        case (_: MsgEvent,_: NetworkUnpartition) =>
-          val branchI = earlierI
+        case (_: MsgEvent, _: NetworkUnpartition) =>
+          val branchI = earlierI - 1
           val needToReplay = List(later, earlier)
             
           exploredTracker.setExplored(branchI, (earlier, later))
@@ -1008,6 +954,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
           return Some((branchI, needToReplayV))
 
       }
+      return None
 
     }
     
@@ -1025,22 +972,21 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
      ** @return: Boolean 
      */
     def isCoEnabeled(earlier: Unique, later: Unique) : Boolean = (earlier, later) match {
-      
-      case (Unique(NetworkPartition(s1, s2), _), Unique(NetworkPartition(s3, s4), _)) =>
-        !((s1 & s3).isEmpty && (s1 & s4).isEmpty && (s2 & s3).isEmpty && (s2 & s4).isEmpty)
-      case (Unique(NetworkPartition(s1, s2), _), Unique(NetworkUnpartition(s3, s4), _)) =>
-        !((s1 & s3).isEmpty && (s1 & s4).isEmpty && (s2 & s3).isEmpty && (s2 & s4).isEmpty)
-      case (Unique(NetworkUnpartition(s1, s2), _), Unique(NetworkPartition(s3, s4), _)) =>
-        !((s1 & s3).isEmpty && (s1 & s4).isEmpty && (s2 & s3).isEmpty && (s2 & s4).isEmpty)
+      // Quiescence is never co-enabled
+      case (Unique(WaitQuiescence(), _), _) => false
+      case (_, Unique(WaitQuiescence(), _)) => false
+      // Network partitions and unpartitions with interesection are not coenabled (cheap hack to
+      // prevent us from trying reordering these directly). We need to do something smarter maybe
+      case (Unique(p1: NetworkPartition, _), Unique(p2: NetworkPartition, _)) => false
+      case (Unique(u1: NetworkUnpartition, _), Unique(u2: NetworkUnpartition, _)) => false
+      case (Unique(p1: NetworkPartition, _), Unique(u2: NetworkUnpartition, _)) => false
+      case (Unique(u1: NetworkUnpartition, _), Unique(p2: NetworkPartition, _)) => false
       // NetworkPartition is always co-enabled with any other event.
       case (Unique(p : NetworkPartition, _), _) => true
       case (_, Unique(p : NetworkPartition, _)) => true
       // NetworkUnpartition is always co-enabled with any other event.
       case (Unique(p : NetworkUnpartition, _), _) => true
       case (_, Unique(p : NetworkUnpartition, _)) => true
-      // Quiescence is never co-enabled
-      case (Unique(WaitQuiescence(), _), _) => false
-      case (_, Unique(WaitQuiescence(), _)) => false
       //case (_, _) =>
       case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
         if (m1.receiver != m2.receiver) 
@@ -1078,7 +1024,6 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
           
           analyze_dep(earlierI, laterI, trace) match {
             case Some((branchI, needToReplayV)) =>    
-              
               // Since we're exploring an already executed trace, we can
               // safely mark the interleaving of (earlier, later) as
               // already explored.
