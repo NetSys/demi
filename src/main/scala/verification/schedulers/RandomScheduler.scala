@@ -174,16 +174,16 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
           return Some((event_trace, fingerprint))
         // Else, check the invariant condition one last time.
         case None =>
-          var checkpoint : HashMap[String, Option[CheckpointReply]] = null
           if (!disableCheckpointing) {
+            var checkpoint : HashMap[String, Option[CheckpointReply]] = null
             checkpoint = takeCheckpoint()
-          }
-          val violation = test_invariant(_trace, checkpoint)
-          violationFound = violationMatches(violation)
-          violationFound match {
-            case Some(fingerprint) =>
-              return Some((event_trace, fingerprint))
-            case None => None
+            val violation = test_invariant(_trace, checkpoint)
+            violationFound = violationMatches(violation)
+            violationFound match {
+              case Some(fingerprint) =>
+                return Some((event_trace, fingerprint))
+              case None => None
+            }
           }
       }
 

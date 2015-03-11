@@ -1,5 +1,7 @@
 package akka.dispatch.verification
 
+import scala.collection.mutable.Queue
+
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
@@ -160,17 +162,25 @@ object RunnerUtils {
                             messageDeserializer: MessageDeserializer,
                             invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new DPORwHeuristics
+    val sched = new DPORwHeuristics(true)
     Instrumenter().scheduler = sched
     val deserializer = new ExperimentDeserializer(experiment_dir)
     sched.setActorNameProps(deserializer.get_actors)
+    // Start up actors so we can deserialize ActorRefs
+    sched.maybeStartActors()
     val violation = deserializer.get_violation(messageDeserializer)
-    val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
-    val dep_graph = deserializer.get_dep_graph()
+    val trace = deserializer.get_events(messageDeserializer,
+      Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
+    val depGraph = deserializer.get_dep_graph()
+    depGraph match {
+      case Some(graph) => sched.setInitialDepGraph(graph)
+      case None => throw new IllegalArgumentException("Need a DepGraph to run DPORwHeuristics")
+    }
     sched.setDepthBound(trace.size)
     sched.setInvariant(invariant)
 
-    // Convert to a format that DPOR will understand
+    // Convert Trace to a format DPOR will understand. Start by getting a list
+    // of all actors, to be used for Kill events.
     var allActors = trace flatMap {
       case SpawnEvent(_,_,name,_) => Some(name)
       case _ => None
@@ -181,7 +191,7 @@ object RunnerUtils {
 
     // DPOR's initialTrace argument contains only Unique SpawnEvents, MsgEvents,
     // NetworkPartitions, and WaitQuiescence events.
-    val initialTrace = trace.filterFailureDetectorMessages.filterCheckpointMessages flatMap {
+    val initialTrace = trace flatMap {
       case s: SpawnEvent =>
         // DPOR ignores Spawns
         None
@@ -193,7 +203,7 @@ object RunnerUtils {
         // getNextTraceMessage
         Some(Unique(m.m, m.id))
       case KillEvent(actor) =>
-        Some(NetworkPartition(Set(actor), allActorsSet))
+        Some(Unique(NetworkPartition(Set(actor), allActorsSet)))
       case PartitionEvent((a,b)) =>
         None
         // XXX verify no subsequent UnPartitionEvents
@@ -207,6 +217,8 @@ object RunnerUtils {
       case TimerDelivery(_) => None // XXX
     }
 
+    sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
+
     // Don't check unmodified execution, since it might take too long
     // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
     val ddmin = new DDMin(sched, false)
@@ -214,7 +226,7 @@ object RunnerUtils {
     val mcs = ddmin.minimize(trace.original_externals, violation)
     // TODO(cs): write a verify_mcs method that uses Replayer instead of
     // TestOracle.
-    val verified_mcs = null
+    val verified_mcs = None
     return (mcs, ddmin.stats, verified_mcs, violation)
   }
 }

@@ -26,6 +26,9 @@ import scala.collection.concurrent.TrieMap,
        scala.math.Ordering,
        scala.reflect.ClassTag
 
+import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
+
 import Function.tupled
 
 import scalax.collection.mutable.Graph,
@@ -39,7 +42,8 @@ import com.typesafe.scalalogging.LazyLogging,
 
 
 // DPOR scheduler.
-class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
+class DPORwHeuristics(enableCheckpointing: Boolean) extends Scheduler with LazyLogging with TestOracle {
+  def this() = this(false)
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
@@ -53,7 +57,7 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
   // Collection of all actors that could possibly have messages sent to them.
   var actorNameProps : Option[Seq[Tuple2[Props,String]]] = None
   def setActorNameProps(actorNamePropPairs: Seq[Tuple2[Props,String]]) {
-    actorNameProps  = Some(actorNamePropPairs)
+    actorNameProps = Some(actorNamePropPairs)
   }
   
   var instrumenter = Instrumenter
@@ -93,8 +97,24 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
   var quiescentMarker:Unique = null
 
   var test_invariant : Invariant = null
+  // Whether we are currently awaiting checkpoint responses from actors.
+  var blockedOnCheckpoint = new AtomicBoolean(false)
   var stats: MinimizationStats = null
   def getName: String = "DPORwHeuristics"
+  var currentSubsequence : Seq[ExternalEvent] = null
+  var lookingFor : ViolationFingerprint = null
+  var foundLookingFor = false
+  var traceSem = new Semaphore(0)
+  var _initialTrace : Trace = null
+  def setInitialTrace(t: Trace) {
+    _initialTrace = t
+  }
+  var _initialDegGraph : Graph[Unique, DiEdge] = null
+  def setInitialDepGraph(g: Graph[Unique, DiEdge]) {
+    _initialDegGraph = g
+  }
+  var checkpointer : CheckpointCollector =
+    if (enableCheckpointing) new CheckpointCollector else null
 
   def nullFunPost(trace: Trace) : Unit = {}
   def nullFunDone(graph: Graph[Unique, DiEdge]) : Unit = {}
@@ -118,6 +138,8 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
     quiescentPeriod.clear
     backTrack.clear
     exploredTracker.clear
+    blockedOnCheckpoint.set(false)
+    traceSem = new Semaphore(0)
 
     setParentEvent(getRootEvent)
   }
@@ -442,21 +464,31 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
   def event_produced(event: Event) = event match {
       case event : SpawnEvent => actorNames += event.name
       case msg : MsgEvent => 
+
   }
 
   // Ensure that all possible actors are created, not just those with Start
   // events. This is to prevent issues with tellEnqueue getting confused.
   def maybeStartActors() {
+    // Just start and isolate all actors we might eventually care about
     actorNameProps match {
       case Some(seq) =>
         for ((props, name) <- seq) {
-          // Just start and isolate all actors we might eventually care about
           Instrumenter().actorSystem.actorOf(props, name)
-          // TODO(cs): isolate this node.
         }
       case None =>
         None
     }
+
+    if (enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
+    }
+
+    // TODO(cs): Partition all actors from eachother, once we support
+    // UnPartitions.
+    // actorNames.map(name =>
+    //   partitionMap(name) = partitionMap.getOrElse(node, new HashSet[String]) ++ actorNames
+    // )
   }
   
   def runExternal() = {
@@ -599,13 +631,21 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
   
   
   
-  def event_produced(cell: ActorCell, envelope: Envelope) = {
+  def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
+    val snd = envelope.sender.path.name
+    val rcv = cell.self.path.name
+    if (rcv == CheckpointSink.name) {
+      assert(enableCheckpointing)
+      checkpointer.handleCheckpointResponse(envelope.message, snd)
+      // Don't add anything to pendingEvents, since we just "delivered" it
+      return
+    }
 
     envelope.message match {
     
-      // Decomposed network events are simply enqueued to the priority queued
+      // CheckpointRequests and failure detector messeages are simply enqueued to the priority queued
       // and dispatched at the earliest convenience.
-      case par: NodesUnreachable =>
+      case NodesUnreachable | CheckpointRequest =>
         val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, ActorCell, Envelope)])
         pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
         
@@ -667,6 +707,43 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
 
       runExternal()
     } else {
+      if (enableCheckpointing && test_invariant != null) {
+        if (blockedOnCheckpoint.get) {
+          // We've finished our checkpoint. Check our invariant. If it fails,
+          // stop exploring! Otherwise, continue exploring schedules.
+          blockedOnCheckpoint.set(false)
+          println("Checking invariant")
+          val violation = test_invariant(currentSubsequence, checkpointer.checkpoints)
+          violation match {
+            case Some(v) =>
+              if (lookingFor.matches(v)) {
+                println("Found matching violation!")
+                foundLookingFor = true
+                traceSem.release()
+                return
+              }
+            case None =>
+              println("No matching violation. Proceeding...")
+          }
+        } else {
+          // Initiate a checkpoint
+          blockedOnCheckpoint.set(true)
+          println("Initiating checkpoint..")
+          val actorRefs = Instrumenter().actorMappings.
+                            filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                            values.toSeq
+          val checkpointRequests = checkpointer.prepareRequests(actorRefs)
+          // Put our requests at the front of the queue, and any existing requests
+          // at the end of the queue.
+          for ((actor, request) <- checkpointRequests) {
+            Instrumenter().actorMappings(actor) ! request
+          }
+          Instrumenter().await_enqueue
+          Instrumenter().start_dispatch
+          return
+        }
+      }
+
       logger.info("\n--------------------- Interleaving #" +
                   interleavingCounter + " ---------------------")
       
@@ -920,6 +997,7 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
             // If the backtrack set is empty, this means we're done.
       if (backTrack.isEmpty) {
         logger.info("Tutto finito!")
+        traceSem.release()
         done(depGraph)
         return None
         //System.exit(0);
@@ -966,11 +1044,19 @@ class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
            _stats: MinimizationStats) : Option[EventTrace] = {
+    currentSubsequence = events
+    lookingFor = violation_fingerprint
     stats = _stats
     Instrumenter().scheduler = this
-    // TODO(cs): explore schedules.
+    run(events, initialTrace=Some(_initialTrace),
+        initialGraph=Some(_initialDegGraph))
+    traceSem.acquire()
     reset
     Instrumenter().restart_system()
-    return None
+    if (foundLookingFor) {
+      return None // XXX return Some(recorded events)
+    } else {
+      return None
+    }
   }
 }
