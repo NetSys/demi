@@ -39,13 +39,17 @@ import com.typesafe.scalalogging.LazyLogging,
 
 
 // DPOR scheduler.
-class DPORwHeuristics() extends Scheduler with LazyLogging with TestOracle {
+class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
-  var (should_bound, stop_at_depth) = (false, 0)
+  var (should_bound, stop_at_depth) = depth_bound match {
+    case Some(d) => (true, d)
+    case _ => (false, 0)
+  }
+
   def setDepthBound(depth_bound: Int) {
     var (should_bound, stop_at_depth) = (true, depth_bound)
   }
