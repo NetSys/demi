@@ -10,6 +10,7 @@ import scalax.collection.mutable.Graph,
 object RunnerUtils {
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
+           messageFingerprinter: MessageFingerprinter,
            validate_replay:Option[ReplayScheduler]=None) :
         Tuple3[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge]] = {
     var violationFound : ViolationFingerprint = null
@@ -19,7 +20,7 @@ object RunnerUtils {
       val fuzzTest = fuzzer.generateFuzzTest()
       println("Trying: " + fuzzTest)
 
-      val sched = new RandomScheduler(1, false, 30, false)
+      val sched = new RandomScheduler(1, messageFingerprinter, false, 30, false)
       sched.setInvariant(invariant)
       Instrumenter().scheduler = sched
       sched.explore(fuzzTest) match {
@@ -91,7 +92,7 @@ object RunnerUtils {
                   messageDeserializer: MessageDeserializer,
                   invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new RandomScheduler(1, false, 0, false)
+    val sched = new RandomScheduler(1, messageFingerprinter, false, 0, false)
     sched.setInvariant(invariant)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)

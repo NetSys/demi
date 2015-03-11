@@ -39,13 +39,15 @@ import scalax.collection.mutable.Graph,
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
+class RandomScheduler(max_executions: Int,
+                      messageFingerprinter: MessageFingerprinter,
+                      enableFailureDetector: Boolean,
                       invariant_check_interval: Int,
                       disableCheckpointing: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_executions: Int) = this(max_executions, true, 0, false)
+  def this(max_executions: Int) = this(max_executions, new BasicFingerprinter, true, 0, false)
   def this(max_executions: Int, enableFailureDetector: Boolean) =
-      this(max_executions, enableFailureDetector, 0, false)
+      this(max_executions, new BasicFingerprinter, enableFailureDetector, 0, false)
 
   def getName: String = "RandomScheduler"
 
@@ -156,7 +158,8 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     val envelope = uniq.element._2
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msgEvent = new MsgEvent(snd, rcv, envelope.message)
+    val msgEvent = new MsgEvent(snd, rcv,
+      messageFingerprinter.fingerprint(envelope.message))
     return Unique(msgEvent, id=uniq.id)
   }
 
@@ -177,18 +180,8 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     val inNeighs = depGraph.get(parent).inNeighbors
 
     def matchMessage (event: Event) : Boolean = {
-      // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
-      return (event, newUnique.event) match {
-        case (MsgEvent(s1, r1, Timer(n1, m1, rep1, _)), MsgEvent(s2, r2, Timer(n2, m2, rep2, _))) =>
-          (s1 == s2) && (r1 == r2) && (n1 == n2) && (m1 == m2) && (rep1 == rep2)
-        case (MsgEvent(_, rcv1, m1), MsgEvent(_, rcv2, m2)) =>
-          (ClassTag(m1.getClass).toString, ClassTag(m2.getClass).toString) match {
-            case ("akka.actor.FSM$TimeoutMarker", "akka.actor.FSM$TimeoutMarker") => rcv1 == rcv2
-            case _ => event == newUnique.event
-          }
-        case _ =>
-          event == newUnique.event
-      }
+      // N.B. comparison by message fingerprint, not raw message
+      newUnique.event.asInstanceOf[MsgEvent].msg == event
     }
 
     val unique =
