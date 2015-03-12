@@ -90,6 +90,8 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   
   var post: (Trace) => Unit = nullFunPost
   var done: (Graph[Unique, DiEdge]) => Unit = nullFunDone
+
+  private[this] var currentRoot = getRootEvent
   
   var currentQuiescentPeriod = 0
   var awaitingQuiescence = false
@@ -122,6 +124,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     quiescentPeriod.clear
     backTrack.clear
     exploredTracker.clear
+    currentRoot = getRootEvent
 
     setParentEvent(getRootEvent)
   }
@@ -155,7 +158,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     depGraph.add(event)
     quiescentPeriod(event) = currentQuiescentPeriod
   }
-  
+ 
   private[this] val _root = Unique(MsgEvent("null", "null", null), 0)
   def getRootEvent() : Unique = {
     addGraphNode(_root)
@@ -631,10 +634,8 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = new MsgEvent(snd, rcv, envelope.message)
-    val parent = parentEvent match {
-      case u @ Unique(m: MsgEvent, id) => u
-      case _ => throw new Exception("parent event not a message")
-    }
+    // Who cares if the parentEvent is in fact a message, as long as it is a parent.
+    val parent = parentEvent
 
     def matchMessage (event: Event) : Boolean = {
       // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
@@ -738,8 +739,11 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
       currentQuiescentPeriod = nextQuiescentPeriod
       nextQuiescentPeriod = 0
 
-      addGraphNode(quiescentMarker)
       currentTrace += quiescentMarker
+      addGraphNode(quiescentMarker)
+      depGraph.addEdge(quiescentMarker, currentRoot)(DiEdge)
+      currentRoot = quiescentMarker
+      setParentEvent(quiescentMarker)
       quiescentMarker = null
 
       runExternal()
@@ -768,6 +772,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
 
           
           setParentEvent(getRootEvent)
+          currentRoot = getRootEvent
 
           
           pendingEvents.clear()
