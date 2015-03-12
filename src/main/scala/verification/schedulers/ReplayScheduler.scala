@@ -336,4 +336,8 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
     handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
     return false
   }
+
+  override def notify_timer_cancel(receiver: ActorRef, msg: Any) = {
+    handle_timer_cancel(receiver, msg, messageFingerprinter)
+  }
 }

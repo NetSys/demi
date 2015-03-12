@@ -540,6 +540,10 @@ class STSScheduler(var original_trace: EventTrace,
     return false
   }
 
+  override def notify_timer_cancel(receiver: ActorRef, msg: Any) = {
+    handle_timer_cancel(receiver, msg, messageFingerprinter)
+  }
+
   override def reset_all_state() {
     super.reset_all_state
     reset_state

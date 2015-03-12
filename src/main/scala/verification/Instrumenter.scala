@@ -32,7 +32,7 @@ class WrappedCancellable (c: Cancellable, rcv: ActorRef, msg: Any) extends Cance
   def cancel(): Boolean = {
     val success = c.cancel
     instrumenter.cancelTimer(this, rcv, msg, success)
-    success
+    return success
   }
 
   def isCancelled: Boolean = c.isCancelled
@@ -405,6 +405,10 @@ class Instrumenter {
   // we intercept it here.
   def handleTick(receiver: ActorRef, msg: Any, c: Cancellable) {
     println("handleTick " + receiver)
+    if (!(registeredCancellableTasks contains c)) {
+      throw new IllegalArgumentException("Cancellable " + (receiver.path.name, msg) +
+                                         "is already cancelled...")
+    }
     scheduler.enqueue_message(receiver.path.name, msg)
     if (!(ongoingCancellableTasks contains c)) {
       removeCancellable(c)
