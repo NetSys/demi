@@ -498,7 +498,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       case Some((nextEvent @ Unique(WaitQuiescence(), nID), _, _)) =>
         awaitQuiescenceUpdate(nextEvent)
         return schedule_new_message()
-      case _ => return None
+
+      case _ =>
+        return None
     }
     
   }
@@ -596,13 +598,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     
     instrumenter().tellEnqueue.await()
     
-    // Booststrap the process.
-    schedule_new_message() match {
-      case Some((cell, env)) =>
-        instrumenter().dispatch_new_message(cell, env)
-      case None => 
-        throw new Exception("internal error")
-    }
+    instrumenter().start_dispatch
   }
  
 
