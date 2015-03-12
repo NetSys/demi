@@ -6,12 +6,13 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
+
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            fingerprintFactory: FingerprintFactory,
-           validate_replay:Option[ReplayScheduler]=None) :
+           validate_replay:Option[() => ReplayScheduler]=None) :
         Tuple3[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -33,8 +34,9 @@ object RunnerUtils {
           depGraph = sched.depGraph
           sched.shutdown()
           validate_replay match {
-            case Some(replayer) =>
+            case Some(replayerCtor) =>
               println("Validating replay")
+              val replayer = replayerCtor()
               Instrumenter().scheduler = replayer
               var deterministic = true
               try {
@@ -174,7 +176,14 @@ object RunnerUtils {
       Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
     val depGraph = deserializer.get_dep_graph()
     depGraph match {
-      case Some(graph) => sched.setInitialDepGraph(graph)
+      case Some(graph) =>
+        sched.setInitialDepGraph(graph)
+        println("---------------")
+        println("DepGraph:")
+        JavaSerialization.withPrintWriter("/tmp", "dep.dot") { pw =>
+          pw.write(Util.getDot(graph))
+        }
+        println("---------------")
       case None => throw new IllegalArgumentException("Need a DepGraph to run DPORwHeuristics")
     }
     sched.setInvariant(invariant)
@@ -191,7 +200,7 @@ object RunnerUtils {
 
     // DPOR's initialTrace argument contains only Unique SpawnEvents, MsgEvents,
     // NetworkPartitions, and WaitQuiescence events.
-    val initialTrace = trace flatMap {
+    val initialTrace = trace.events flatMap {
       case s: SpawnEvent =>
         // DPOR ignores Spawns
         None
@@ -202,8 +211,6 @@ object RunnerUtils {
         // TODO(cs): does DPOR assume that system messages all have id=0? see
         // getNextTraceMessage
         Some(Unique(m.m, m.id))
-      case m: MsgEvent =>
-        Some(Unique(m))
       case KillEvent(actor) =>
         Some(Unique(NetworkPartition(Set(actor), allActorsSet)))
       case PartitionEvent((a,b)) =>
@@ -213,11 +220,17 @@ object RunnerUtils {
       case Quiescence => None
       case ChangeContext(_) => None
       case UniqueMsgSend(_, _) => None
-      case MsgSend(_, _, _) => None
-      case TimerSend(_, _, _) => None
-      case TimerDelivery(snd, rcv, fingerprint) =>
-        Some(Unique(MsgEvent(snd, rcv, fingerprint)))
+      case UniqueTimerSend(_, _) => None
+      case UniqueTimerDelivery(TimerDelivery(snd, rcv, fingerprint), id) =>
+        Some(Unique(MsgEvent(snd, rcv, fingerprint), id=id))
     }
+
+    println("--------------")
+    println("Initial trace:")
+    for (e <- initialTrace) {
+      println(e)
+    }
+    println("--------------")
 
     sched.setDepthBound(initialTrace.size)
     sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
@@ -237,7 +250,7 @@ object RunnerUtils {
 
     // Don't check unmodified execution, since it might take too long
     // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
-    val ddmin = new DDMin(sched, false)
+    val ddmin = new DDMin(sched, true)
     val mcs = ddmin.minimize(filtered_externals, violation)
     // TODO(cs): write a verify_mcs method that uses Replayer instead of
     // TestOracle.
