@@ -24,40 +24,28 @@ trait MessageFingerprinter {
   }
 }
 
-// A simple fingerprint template for user-defined fingerprinters
-case class BasicFingerprint(str: String) extends MessageFingerprint
+// A simple fingerprint template for user-defined fingerprinters. Should
+// usually not be instantiated directly; invoke BasicFingerprint.fromMessage()
+case class BasicFingerprint(val str: String) extends MessageFingerprint
 
-// Most general fingerprint, always matches last
-case class BaseFingerprint(val msg: Any) extends MessageFingerprint {
+// Static constructor for BasicFingeprrint
+object BasicFingerprint {
   val systemRegex = ".*(new-system-\\d+).*".r
 
-  // Lazy person's approach: for any message that we didn't explicitly match on,
-  // their toString might contain a string referring to the ActorSystem, which
-  // changes across runs. Run a simple regex over it to catch that.
-  val str = msg.toString match {
-    case systemRegex(system) => msg.toString.replace(system, "")
-    case _ => msg.toString
-  }
-
-  override def hashCode : Int = {
-    if (ClassTag(msg.getClass).toString == "akka.actor.FSM$TimeoutMarker") {
-      return 42
+  def fromMessage(msg: Any): BasicFingerprint = {
+    // Lazy person's approach: for any message that we didn't explicitly match on,
+    // their toString might contain a string referring to the ActorSystem, which
+    // changes across runs. Run a simple regex over it to catch that.
+    val str = msg.toString match {
+      case systemRegex(system) => msg.toString.replace(system, "")
+      case _ => msg.toString
     }
-    return str.hashCode
-  }
-
-  override def equals(other: Any) : Boolean = {
-    return other match {
-      case b: BaseFingerprint =>
-        // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
-        (ClassTag(msg.getClass).toString, ClassTag(b.msg.getClass).toString) match {
-          case ("akka.actor.FSM$TimeoutMarker", "akka.actor.FSM$TimeoutMarker") => true
-          case _ => str.equals(b.str)
-        }
-      case _ => return false
-    }
+    return BasicFingerprint(str)
   }
 }
+
+// Singleton for TimeoutMaker
+case object TimeoutMarkerFingerprint extends MessageFingerprint
 
 class BaseFingerprinter(parent: FingerprintFactory) extends MessageFingerprinter {
   override def fingerprint(msg: Any) : Option[MessageFingerprint] = {
@@ -65,12 +53,15 @@ class BaseFingerprinter(parent: FingerprintFactory) extends MessageFingerprinter
     if (alreadyFingerprint != None) {
       return alreadyFingerprint
     }
+    if (ClassTag(msg.getClass).toString == "akka.actor.FSM$TimeoutMarker") {
+      return Some(TimeoutMarkerFingerprint)
+    }
     msg match {
       case Timer(name, message, repeat, _) =>
         return Some(TimerFingerprint(name, parent.fingerprint(message), repeat))
       case _ =>
         // BaseFingerprinter is the most general fingerprinter, so it always returns Some.
-        return Some(BaseFingerprint(msg))
+        return Some(BasicFingerprint.fromMessage(msg))
     }
   }
 }
