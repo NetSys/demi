@@ -37,12 +37,22 @@ trait HistoricalScheduler {
         val fingerprint = TimerFingerprint(name,
           messageFingerprinter.fingerprint(nestedMsg), repeat)
         val sendEvent = TimerSend(snd, rcv, fingerprint)
+        if (scheduledFSMTimers contains sendEvent) {
+          println("WARNING: Timer " + sendEvent + " already present?")
+        }
         scheduledFSMTimers(sendEvent) = msg.asInstanceOf[Timer]
-      case _ =>
-        // TODO(cs): not sure this is really necessary! We only need
-        // scheduledFSMTimers to deal with non-serializability of Timers. As long
-        // as this msg is serializable, there shouldn't be a problem?
-        println("Warning: Non-akka.FSM.Timers not yet supported: " + msg)
+      case _ => None
+    }
+  }
+
+  def handle_timer_cancel(receiver: ActorRef, msg: Any, messageFingerprinter: FingerprintFactory) = {
+    msg match {
+      case Timer(name, nestedMsg, repeat, _) =>
+        val fingerprint = TimerFingerprint(name,
+          messageFingerprinter.fingerprint(nestedMsg), repeat)
+        val sendEvent = TimerSend("deadLetters", receiver.path.name, fingerprint)
+        scheduledFSMTimers -= sendEvent
+      case _ => None
     }
   }
 

@@ -277,7 +277,11 @@ class STSScheduler(var original_trace: EventTrace,
             }
           case TimerDelivery(snd, rcv, fingerprint) =>
             val send = TimerSend(snd, rcv, fingerprint)
-            if (timersSentButNotYetDelivered contains send) {
+            send_external_messages(false)
+            // Check that it was previously delivered, and that it wasn't
+            // destined for a dead actor (i.e. dropped by event_produced)
+            if ((timersSentButNotYetDelivered contains send) &&
+                (pendingEvents contains (snd, rcv, fingerprint))) {
               timersSentButNotYetDelivered -= send
               break
             }

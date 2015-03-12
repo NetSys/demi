@@ -35,6 +35,11 @@ class EventOrchestrator[E] {
   // Actors that are unreachable
   val inaccessible = new HashSet[String]
 
+  // Actors that have been explicitly killed.
+  // (Same as inaccessble, except that inaccessible also contains actors that
+  // have been created but not Start()'ed)
+  val killed = new HashSet[String]
+
   // Actors to actor ref
   // TODO(cs): make getter/setters for these
   val actorToActorRef = new HashMap[String, ActorRef]
@@ -173,6 +178,7 @@ class EventOrchestrator[E] {
   def trigger_kill (name: String) = {
     events += KillEvent(name)
     Util.logger.log(name, "God killed me")
+    killed += name
     isolate_node(name)
     if (fd != null) {
       fd.handle_kill_event(name)
@@ -211,7 +217,7 @@ class EventOrchestrator[E] {
   }
 
   def crosses_partition (snd: String, rcv: String) : Boolean = {
-    if (snd == rcv) return false
+    if (snd == rcv && !(killed contains snd)) return false
     return ((partitioned contains (snd, rcv))
            || (partitioned contains (rcv, snd))
            || (inaccessible contains rcv)

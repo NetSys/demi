@@ -139,7 +139,11 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
                 "Internal error: expected scheduledFSMTimers contains " + t)
             }
           case t: TimerDelivery =>
-            break
+            // Check that the Timer wasn't destined for a dead actor.
+            send_external_messages(false)
+            if (pendingEvents contains (t.sender, t.receiver, t.fingerprint)) {
+              break
+            }
           case MsgEvent(snd, rcv, msg) =>
             break
           case BeginWaitQuiescence =>
