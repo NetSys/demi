@@ -1163,7 +1163,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     reset
     Instrumenter().restart_system()
     if (foundLookingFor) {
-      return None // XXX return Some(recorded events)
+      return Some(new EventTrace)
     } else {
       return None
     }
