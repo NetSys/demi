@@ -103,9 +103,11 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
           SerializedSpawnEvent(parent, props, name, "deadLetters")
         // Can't serialize Timer objects
         case UniqueMsgSend(MsgSend(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
-          TimerSend(snd, rcv, TimerFingerprint(name, message_fingerprinter.fingerprint(nestedMsg), repeat))
+          UniqueTimerSend(TimerSend(snd, rcv, TimerFingerprint(name,
+            message_fingerprinter.fingerprint(nestedMsg), repeat)), id=id)
         case UniqueMsgEvent(MsgEvent(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
-          TimerDelivery(snd, rcv, TimerFingerprint(name, message_fingerprinter.fingerprint(nestedMsg), repeat))
+          UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
+            message_fingerprinter.fingerprint(nestedMsg), repeat)), id=id)
         // Need to serialize external messages
         case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
           SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
