@@ -226,7 +226,7 @@ class RandomScheduler(max_executions: Int,
             MessageTypes.fromCheckpointCollector(msg)) {
           pendingSystemMessages += uniq
         } else {
-          val unique = depTracker.reportNewlyEnabled(snd, rcv, msg)
+          val unique = depTracker.reportNewlyEnabledExternal(snd, rcv, msg)
           pendingEvents.insert(uniq, unique)
         }
       }

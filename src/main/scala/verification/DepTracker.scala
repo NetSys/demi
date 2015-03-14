@@ -29,6 +29,12 @@ class DepTracker(messageFingerprinter: FingerprintFactory) {
   // Most recent quiescence we saw
   var lastQuiescence : Unique = root
 
+  // External messages
+  def reportNewlyEnabledExternal(snd: String, rcv: String, msg: Any): Unique = {
+    parent = lastQuiescence
+    return reportNewlyEnabled(snd, rcv, msg)
+  }
+
   // Return an id for this message. Must return this same id upon
   // reportNewlyDelivered.
   def reportNewlyEnabled(snd: String, rcv: String, msg: Any): Unique = {
@@ -39,7 +45,6 @@ class DepTracker(messageFingerprinter: FingerprintFactory) {
     return child
   }
 
-  // Both internal events and external events.
   def reportNewlyDelivered(u: Unique) {
     parent = u
     initialTrace += u
