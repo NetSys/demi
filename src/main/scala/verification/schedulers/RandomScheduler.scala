@@ -230,7 +230,7 @@ class RandomScheduler(max_executions: Int,
           pendingEvents.insert(uniq, unique)
         }
       }
-      case SystemMessage => None
+      case FailureDetectorQuery => None
       case CheckpointReplyMessage =>
         if (checkpointer.done && !blockedOnCheckpoint.get) {
           val violation = test_invariant(trace, checkpointer.checkpoints)

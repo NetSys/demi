@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger
 abstract class MessageType()
 final case object ExternalMessage extends MessageType
 final case object InternalMessage extends MessageType
-final case object SystemMessage extends MessageType
+final case object FailureDetectorQuery extends MessageType
 final case object CheckpointReplyMessage extends MessageType
 
 /**
@@ -262,7 +262,7 @@ trait ExternalEventInjector[E] {
       if (!_disableFailureDetector) {
         fd.handle_fd_message(envelope.message, snd)
       }
-      return SystemMessage
+      return FailureDetectorQuery
     } else if (rcv == CheckpointSink.name) {
       if (_enableCheckpointing) {
         checkpointer.handleCheckpointResponse(envelope.message, snd)

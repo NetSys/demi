@@ -62,7 +62,7 @@ class PeekScheduler(enableFailureDetector: Boolean)
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     var isTimer = false
     handle_event_produced(snd, rcv, envelope) match {
-      case SystemMessage => None
+      case FailureDetectorQuery => None
       case CheckpointReplyMessage => None
       case ExternalMessage => None
       case InternalMessage => {
