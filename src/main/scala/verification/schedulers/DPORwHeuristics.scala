@@ -847,17 +847,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     throw new Exception("internal error not a message")
   }
 
-  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {
-    // Assume no one responds to sender on receiving a timer message
-    return false
-  }
-
-  override def notify_after_timer_scheduled (receiver: ActorRef, msg: Any) = {
-    instrumenter().manuallyHandleTick(receiver.path.name, msg)
-  }
-
-  override def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
+  def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
     logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver.path.name + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, ActorCell, Envelope)): Boolean = {
       u._1 match {

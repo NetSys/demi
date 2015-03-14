@@ -90,7 +90,7 @@ class RandomizedHashSet[E] {
     multiset += value
   }
 
-  private[this] def remove(value: (E,Int)) = {
+  def remove(value: (E,Int)) = {
     // We are going to replace the cell that contains value in A with the last
     // element in A. let d be the last element in the array A at index m. let
     // i be H[value], the index in the array of the value to be removed. Set
