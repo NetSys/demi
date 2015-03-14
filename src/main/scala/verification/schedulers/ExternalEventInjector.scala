@@ -237,9 +237,9 @@ trait ExternalEventInjector[E] {
 
   def prepareCheckpoint() = {
     val actorRefs = event_orchestrator.
-                      actorToActorRef.
-                      filterNot({case (k,v) => ActorTypes.systemActor(k)}).
-                      values.toSeq
+                       actorToActorRef.
+                       filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                       values.toSeq
     val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.

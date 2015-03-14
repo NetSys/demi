@@ -93,6 +93,7 @@ class RandomScheduler(max_executions: Int,
   // what was the last value of messagesScheduledSoFar we took a checkpoint at.
   var lastCheckpoint = 0
 
+  // How many times we've replayed
   var stats: MinimizationStats = null
 
   // For every message we deliver, track which messages become enabled as a

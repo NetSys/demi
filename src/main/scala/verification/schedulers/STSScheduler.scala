@@ -236,6 +236,8 @@ class STSScheduler(var original_trace: EventTrace,
     var loop = true
     breakable {
       while (loop && !event_orchestrator.trace_finished) {
+        // println("Replaying " + event_orchestrator.traceIdx + "/" +
+        //   event_orchestrator.trace.length + " " + event_orchestrator.current_event)
         event_orchestrator.current_event match {
           case SpawnEvent (_, _, name, _) =>
             event_orchestrator.trigger_start(name)
