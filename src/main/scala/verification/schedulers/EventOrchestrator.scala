@@ -126,14 +126,6 @@ class EventOrchestrator[E] {
         case WaitQuiescence() =>
           events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence
-        case WaitTimers(n) =>
-          if (n < 0) {
-            Instrumenter().await_timers
-          } else {
-            Instrumenter().await_timers(n)
-          }
-        case Continue(n) =>
-          loop = false
       }
       trace_advanced()
     }

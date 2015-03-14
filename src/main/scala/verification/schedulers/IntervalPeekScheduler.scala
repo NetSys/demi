@@ -20,7 +20,7 @@ object IntervalPeekScheduler {
   // N.B. enabled should contain non-fingerprinted messages, whereas _expected
   // should contain fingerprinted messages
   def unexpected(enabled: Seq[MsgEvent], _expected: MultiSet[MsgEvent],
-                 pendingTimers: Seq[(String, Any)], messageFingerprinter: FingerprintFactory) : Seq[MsgEvent] = {
+                 messageFingerprinter: FingerprintFactory) : Seq[MsgEvent] = {
     // TODO(cs): consider ordering of expected, rather than treating it as a Set?
     val expected = new MultiSet[MsgEvent] ++ _expected
     def fingerprintAndMatch(e: MsgEvent): Boolean = {
@@ -35,8 +35,7 @@ object IntervalPeekScheduler {
          return true
       }
     }
-    val timerEvents = pendingTimers.map(pair => MsgEvent("deadLetters", pair._1, pair._2))
-    return enabled.filter(fingerprintAndMatch) ++ timerEvents.filter(fingerprintAndMatch)
+    return enabled.filter(fingerprintAndMatch)
   }
 
   // Flatten all enabled events into a sorted list of (raw, non-fingerprinted) MsgEvents
@@ -128,7 +127,7 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     // pendingUnexpectedEvents.
     val unexpected = IntervalPeekScheduler.unexpected(
         IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
-        List.empty, messageFingerprinter)
+        messageFingerprinter)
     for (msgEvent <- unexpected) {
       val key = (msgEvent.sender, msgEvent.receiver,
                  messageFingerprinter.fingerprint(msgEvent.msg))
@@ -192,21 +191,8 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     send_external_messages()
 
     if (pendingUnexpectedEvents.isEmpty) {
-      // Before giving up, try to see if there are any pending timers. If so,
-      // pick one.
-      // TODO(cs): somewhat arbitrary to only trigger timers after
-      // pendingUnexpectedEvents.isEmpty. Why not before?
-      getRandomPendingTimer() match {
-        case Some((receiver, msg)) =>
-          Instrumenter().manuallyHandleTick(receiver, msg)
-          send_external_messages()
-          if (pendingUnexpectedEvents.isEmpty) {
-            return None
-          }
-        case None =>
-          println("No more events to schedule..")
-          return None
-      }
+      println("No more events to schedule..")
+      return None
     }
 
     val next = pendingUnexpectedEvents.dequeue()
@@ -229,12 +215,6 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     }
     // Wake up the main thread.
     donePeeking.release
-  }
-
-  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                                      msg: Any): Boolean = {
-    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
-    return false
   }
 
   override def shutdown () = {

@@ -85,14 +85,6 @@ class Instrumenter {
   var cancellableToTimer = new HashMap[Cancellable, Tuple2[String, Any]]
   // And vice versa
   var timerToCancellable = new HashMap[Tuple2[String,Any], Cancellable]
-  // Allow a calling thread to block until all registered Timers have gone off.
-  // We initialize the semaphore to 0 rather than 1,
-  // so that the main thread blocks upon invoking acquire() until another
-  // thread release()'s it.
-  var awaitTimers = new Semaphore(0)
-  // How many timers we still have pending until awaitTimer should be
-  // released.
-  var pendingTimers = new AtomicInteger(0)
 
   private[dispatch] def cancelTimer (c: Cancellable, rcv: ActorRef, msg: Any, success: Boolean) = {
     // Need this here since by the time DPORwHeuristics gets here the thing is already canceled
@@ -282,7 +274,9 @@ class Instrumenter {
   def dispatch_new_message(cell: ActorCell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
+    val msg = envelope.message
     Util.logger.mergeVectorClocks(snd, rcv)
+
     
     allowedEvents += ((cell, envelope) : (ActorCell, Envelope))        
 
@@ -293,6 +287,14 @@ class Instrumenter {
     
     scheduler.event_consumed(cell, envelope)
     dispatcher.dispatch(cell, envelope)
+    // Check if it was a repeating timer. If so, retrigger it.
+    if (timerToCancellable contains (rcv, msg)) {
+      val cancellable = timerToCancellable((rcv, msg))
+      if (ongoingCancellableTasks contains cancellable) {
+        println("Retriggering repeating timer: " + rcv + " " + msg)
+        handleTick(cell.self, msg, cancellable)
+      }
+    }
   }
   
   
@@ -340,30 +342,6 @@ class Instrumenter {
     }
   }
 
-  // Return whether there were any timers to wait for...
-  def await_timers(numTimers: Integer): Boolean = {
-    if (numTimers <= 0) {
-      throw new IllegalArgumentException("numTimers must be > 0")
-    }
-    if (registeredCancellableTasks.isEmpty) {
-      return false
-    }
-    pendingTimers.set(numTimers)
-    awaitTimers.acquire()
-    return true
-  }
-
-  def await_timers(): Boolean = {
-    return await_timers(registeredCancellableTasks.size)
-  }
-
-  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef, msg: Any) : Boolean = {
-    if (scheduler != null) {
-      return scheduler.notify_timer_scheduled(sender, receiver, msg)
-    }
-    return true
-  }
-
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
@@ -379,9 +357,8 @@ class Instrumenter {
       throw new RuntimeException("Non-unique timer: "+ receiver + " " + msg)
     }
     timerToCancellable((receiver, msg)) = c
-    if (scheduler != null) {
-      scheduler.notify_after_timer_scheduled(rcv, msg)
-    }
+    // Schedule it immediately!
+    handleTick(rcv, msg, c)
   }
 
   def removeCancellable(c: Cancellable) {
@@ -391,31 +368,17 @@ class Instrumenter {
     cancellableToTimer -= c
   }
 
-  // If the scheduler is replaying recorded event, it should invoke this
-  // whenever it wants to (re)trigger a recorded Timer events.
-  def manuallyHandleTick(receiver: String, msg: Any) {
-    if (timerToCancellable contains ((receiver, msg))) {
-      handleTick(actorMappings(receiver), msg, timerToCancellable((receiver, msg)))
-    } else {
-      throw new IllegalArgumentException("no such timer:" + receiver + " " + msg)
-    }
-  }
-
   // When akka.actor.schedulerOnce decides to schedule a message to be sent,
   // we intercept it here.
   def handleTick(receiver: ActorRef, msg: Any, c: Cancellable) {
-    println("handleTick " + receiver)
+    // println("handleTick " + receiver + " " + msg)
     if (!(registeredCancellableTasks contains c)) {
       throw new IllegalArgumentException("Cancellable " + (receiver.path.name, msg) +
                                          "is already cancelled...")
     }
-    scheduler.enqueue_message(receiver.path.name, msg)
+    scheduler.enqueue_timer(receiver.path.name, msg)
     if (!(ongoingCancellableTasks contains c)) {
       removeCancellable(c)
-    }
-    val pending = pendingTimers.decrementAndGet()
-    if (pending == 0) {
-      awaitTimers.release()
     }
   }
 
@@ -435,12 +398,6 @@ class Instrumenter {
    * method.
    */
   def checkpoint() : InstrumenterCheckpoint = {
-    // Right now we assume that STSSched is the only scheduler that invokes
-    // this. This assumption allows us to simply let all timers keep going rather than
-    // cancelling them and later rescheduling them, since
-    // STSSChed's timers are all no-ops anyways, i.e. notify_timer_scheduled
-    // always returns false.
-
     // TODO(cs): the shared state of the application is going to be reset on
     // reinitialize_system, due to shutdownCallback. This is problematic,
     // unless the application properly uses CheckpointSink's protocol for

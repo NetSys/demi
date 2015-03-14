@@ -2,9 +2,6 @@ package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
 import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
-import akka.actor.FSM,
-       akka.actor.FSM.Timer
-
 
 import akka.dispatch.Envelope
 
@@ -85,9 +82,10 @@ class RandomScheduler(max_executions: Int,
   // First element of tuple is the receiver
   var pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell,Envelope)]]
 
-  // Current set of externally injected events, to be delivered in the order
-  // they arrive.
-  var pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
+  // Current set of failure detector or CheckpointRequest messages destined for
+  // actors, to be delivered in the order they arrive.
+  // Always prioritized over internal messages.
+  var pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
 
   // The violation we're looking for, if not None.
   var lookingFor : Option[ViolationFingerprint] = None
@@ -271,25 +269,30 @@ class RandomScheduler(max_executions: Int,
   }
 
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
+    var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
-
-    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+    var isTimer = false
 
     handle_event_produced(snd, rcv, envelope) match {
       case InternalMessage => {
-        updateDepGraph(uniq)
+        if (snd == "deadLetters") {
+          isTimer = true
+        }
+        val unique = depTracker.reportNewlyEnabled(snd, rcv, msg)
         if (!crosses_partition(snd, rcv)) {
-          pendingInternalEvents.insert(uniq)
+          pendingEvents.insert((uniq, unique))
         }
       }
       case ExternalMessage => {
-        updateDepGraph(uniq)
-        // We assume that the failure detector and the outside world always
-        // have connectivity with all actors, i.e. no failure detector partitions.
-        pendingExternalEvents += uniq
+        if (MessageTypes.fromFailureDetector(msg) ||
+            MessageTypes.fromCheckpointCollector(msg)) {
+          pendingSystemMessages += uniq
+        } else {
+          val unique = depTracker.reportNewlyEnabled(snd, rcv, msg)
+          pendingEvents.insert(uniq, unique)
+        }
       }
       case SystemMessage => None
       case CheckpointReplyMessage =>
@@ -299,6 +302,10 @@ class RandomScheduler(max_executions: Int,
           violationFound = violationMatches(violation)
         }
     }
+
+    // Record this MsgSend as a special if it was sent from a timer.
+    snd = if (isTimer) "Timer" else snd
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
   }
 
   // Record a mapping from actor names to actor refs
@@ -329,7 +336,6 @@ class RandomScheduler(max_executions: Int,
     // Also check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
       println("Exceeded maxMessages")
-      numWaitingFor.set(0)
       event_orchestrator.finish_early
       return None
     }
@@ -343,35 +349,20 @@ class RandomScheduler(max_executions: Int,
       // CheckpointReplies.
       println("Checking invariant")
       lastCheckpoint = messagesScheduledSoFar
-      // TODO(cs): remove any elements in pendingExternalEvents, and move them
-      // to the end of pendingExternalEvents once the CheckpointRequests have
-      // been queued. Not strictly necessary for correctness, just currently means that
-      // we sometimes collect the checkpoint a bit later than we want to.
       prepareCheckpoint()
     }
 
     // Proceed normally.
     send_external_messages()
-    // Always prioritize external events.
-    if (!pendingExternalEvents.isEmpty) {
-      val uniq = pendingExternalEvents.dequeue()
+    // Always prioritize system messages.
+    if (!pendingSystemMessages.isEmpty) {
+      val uniq = pendingSystemMessages.dequeue()
       event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      uniq.element._2.message match {
-        case CheckpointRequest => None
-        case _ =>
-          messagesScheduledSoFar += 1
-          if (messagesScheduledSoFar == Int.MaxValue) {
-            messagesScheduledSoFar = 1
-          }
-      }
-      val unique = getUniqueFromUniq(uniq)
-      (depGraph get unique)
-      setParentEvent(unique)
       return Some(uniq.element)
     }
 
     // Do we have some pending events
-    if (pendingInternalEvents.isEmpty) {
+    if (pendingEvents.isEmpty) {
       return None
     }
 
@@ -423,14 +414,38 @@ class RandomScheduler(max_executions: Int,
     test_invariant = invariant
   }
 
+  def notify_timer_cancel(rcv: ActorRef, msg: Any): Unit = {
+    if (handle_timer_cancel(rcv, msg)) {
+      return
+    }
+    // Awkward, we need to walk through the entire hashset to find what we're
+    // looking for.
+    val toRemove = pendingEvents.arr.find((element) => {
+      val otherRcv = element._1._1.element._1.self.path.name
+      val otherMsg = element._1._1.element._2.message
+      rcv.path.name == otherRcv && msg == otherMsg
+    })
+    toRemove match {
+      case Some(e) =>
+        pendingEvents.remove(e)
+      case None =>
+        // It was already delivered. This is weird that the application is
+        // still trying to cancel it, but I don't think it's a violation of
+        // soundness on our part.
+        None
+    }
+  }
+
+  override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
+
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
     reset_state
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
-    pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell, Envelope)]]
-    pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
+    pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
+    pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
     lookingFor = None
     violationFound = None
     trace = null

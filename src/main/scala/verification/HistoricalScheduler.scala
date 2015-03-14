@@ -1,7 +1,6 @@
 package akka.dispatch.verification
 
 import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
-import akka.actor.FSM.Timer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.Queue
 
@@ -19,57 +18,6 @@ trait HistoricalScheduler {
 
   // User-specified event updater.
   var eventMapper : Option[EventMapper] = None
-
-  // When FSM.Timer's are scheduled, store them here.
-  // This is really only needed to deal with the non-serializability of Timer
-  // events.
-  var scheduledFSMTimers = new HashMap[TimerSend, Timer]
-
-  // Called by scheduler from notify_timer_scheduled
-  // Really only needed to deal with the non-serializability of Timer
-  // events.
-  def handle_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any, messageFingerprinter: FingerprintFactory) {
-    val snd = if (sender == null) "deadLetters" else sender.path.name
-    val rcv = if (receiver == null) "deadLetters" else receiver.path.name
-    msg match {
-      case Timer(name, nestedMsg, repeat, _) =>
-        val fingerprint = TimerFingerprint(name,
-          messageFingerprinter.fingerprint(nestedMsg), repeat)
-        val sendEvent = TimerSend(snd, rcv, fingerprint)
-        if (scheduledFSMTimers contains sendEvent) {
-          println("WARNING: Timer " + sendEvent + " already present?")
-        }
-        scheduledFSMTimers(sendEvent) = msg.asInstanceOf[Timer]
-      case _ => None
-    }
-  }
-
-  def handle_timer_cancel(receiver: ActorRef, msg: Any, messageFingerprinter: FingerprintFactory) = {
-    msg match {
-      case Timer(name, nestedMsg, repeat, _) =>
-        val fingerprint = TimerFingerprint(name,
-          messageFingerprinter.fingerprint(nestedMsg), repeat)
-        val sendEvent = TimerSend("deadLetters", receiver.path.name, fingerprint)
-        scheduledFSMTimers -= sendEvent
-      case _ => None
-    }
-  }
-
-  // Find a timer (any timer, not just FSM.Timer) that's waiting to be triggered
-  // TODO(cs): enforce that timer t is sent less than k
-  // times (where k is the number of times it was originally sent).
-  def getRandomPendingTimer(): Option[(String, Any)] = {
-    if (!Instrumenter().cancellableToTimer.isEmpty) {
-      // Taking the first value gives us some degree of randomness
-      return Some(Instrumenter().cancellableToTimer.values.head)
-    }
-    return None
-  }
-
-  def getAllPendingTimers(): Seq[(String, Any)] = {
-    return new Queue[(String, Any)] ++ Instrumenter().cancellableToTimer.values
-  }
 
   def setEventMapper(mapper: EventMapper) {
     eventMapper = Some(mapper)

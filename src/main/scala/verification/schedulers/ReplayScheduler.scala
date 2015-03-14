@@ -2,7 +2,6 @@ package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
 import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
-import akka.actor.FSM.Timer
 
 import akka.dispatch.Envelope
 
@@ -83,7 +82,8 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
         case MsgSend (snd, rcv, msg) =>
           // Track all messages we expect.
           val fingerprint = messageFingerprinter.fingerprint(msg)
-          allSends((snd, rcv, fingerprint)) = allSends.getOrElse((snd, rcv, fingerprint), 0) + 1
+          val correctedSnd = if (snd == "Timer") "deadLetters" else snd
+          allSends((correctedSnd, rcv, fingerprint)) = allSends.getOrElse((correctedSnd, rcv, fingerprint), 0) + 1
         case _ =>
           None
       }
@@ -124,19 +124,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
           case MsgSend (sender, receiver, message) =>
             // sender == "deadLetters" means the message is external.
             if (sender == "deadLetters") {
-              if (Instrumenter().timerToCancellable contains ((receiver, message))) {
-                Instrumenter().manuallyHandleTick(receiver, message)
-              } else {
-                enqueue_message(receiver, message)
-              }
-            }
-          case t: TimerSend =>
-            if (scheduledFSMTimers contains t) {
-              val timer = scheduledFSMTimers(t)
-              Instrumenter().manuallyHandleTick(t.receiver, timer)
-            } else {
-              throw new RuntimeException(
-                "Internal error: expected scheduledFSMTimers contains " + t)
+              enqueue_message(receiver, message)
             }
           case t: TimerDelivery =>
             // Check that the Timer wasn't destined for a dead actor.
@@ -168,7 +156,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
 
   // Check no unexpected messages are enqueued
   def event_produced(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
+    var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     val fingerprint = messageFingerprinter.fingerprint(msg)
@@ -189,13 +177,18 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
     }
 
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
-    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
     // Drop any messages that crosses a partition.
     if (!event_orchestrator.crosses_partition(snd, rcv) && rcv != FailureDetector.fdName) {
       val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
                           new Queue[Uniq[(ActorCell, Envelope)]])
       pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
     }
+
+    // Record this MsgSend as a special if it was sent from a timer.
+    val isTimer = (snd == "deadLetters" &&
+                   enqueuedExternalMessages.contains(msg))
+    snd = if (isTimer) "Timer" else snd
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
   }
 
   // Record a mapping from actor names to actor refs
@@ -309,6 +302,22 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
     }
   }
 
+  def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {
+    if (handle_timer_cancel(receiver, msg)) {
+      return
+    }
+    val rcv = receiver.path.name
+    val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
+    pendingEvents.get(key) match {
+      case Some(queue) =>
+        val e = queue.dequeue()
+        if (queue.isEmpty) {
+          pendingEvents.remove(key)
+        }
+      case None => None
+    }
+  }
+
   // Shutdown the scheduler, this ensures that the instrumenter is returned to its
   // original pristine form, so one can change schedulers
   override def shutdown () = {
@@ -331,13 +340,5 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
     handle_after_receive(cell)
   }
 
-  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                                      msg: Any): Boolean = {
-    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
-    return false
-  }
-
-  override def notify_timer_cancel(receiver: ActorRef, msg: Any) = {
-    handle_timer_cancel(receiver, msg, messageFingerprinter)
-  }
+  override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
 }

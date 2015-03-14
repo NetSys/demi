@@ -56,20 +56,27 @@ class PeekScheduler(enableFailureDetector: Boolean)
   }
 
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
+    var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(ActorCell, Envelope)]])
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
-    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+    var isTimer = false
     handle_event_produced(snd, rcv, envelope) match {
       case SystemMessage => None
       case CheckpointReplyMessage => None
-      case _ => {
+      case ExternalMessage => None
+      case InternalMessage => {
+        if (snd == "deadLetters") {
+          isTimer = true
+        }
         if (!crosses_partition(snd, rcv)) {
           pendingEvents(rcv) = msgs += uniq
         }
       }
     }
+    // Record this MsgEvent as a special if it was sent from a timer.
+    snd = if (isTimer) "Timer" else snd
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
   }
 
   // Record a mapping from actor names to actor refs
@@ -92,7 +99,6 @@ class PeekScheduler(enableFailureDetector: Boolean)
     // Check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
       println("Exceeded maxMessages")
-      numWaitingFor.set(0)
       event_orchestrator.finish_early
       return None
     }
@@ -147,6 +153,15 @@ class PeekScheduler(enableFailureDetector: Boolean)
   override def enqueue_message(receiver: String, msg: Any) = {
     super[ExternalEventInjector].enqueue_message(receiver, msg)
   }
+
+  override def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {
+    if (handle_timer_cancel(receiver, msg)) {
+      return
+    }
+    super.notify_timer_cancel(receiver, msg)
+  }
+
+  override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
 
   override def reset_all_state() = {
     super.reset_all_state

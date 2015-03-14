@@ -582,14 +582,16 @@ class DPORwFailures extends Scheduler with LazyLogging {
   def enqueue_message(receiver: String,msg: Any): Unit = {
     throw new Exception("internal error not a message")
   }
+
+  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
+    throw new RuntimeException("NYI!") // TODO(cs): do what DPORwHeuristics does..
+  }
+
   
   
   def shutdown(): Unit = {
     throw new Exception("internal error not a message")
   }
-
-  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {return true}
   
   
   def getEvent(index: Integer, trace: Queue[Unique]) : Unique = {

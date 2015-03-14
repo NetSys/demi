@@ -90,14 +90,6 @@ class STSScheduler(var original_trace: EventTrace,
   val pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
 
-  // Track which timers we have sent (via TimerSend) so that we know whether
-  // we should act on the corresponding TimerDelivery.
-  // TODO(cs): this complexity may not be necessary, e.g. it's possible that
-  // we're guarenteed that TimerSent's are always valid such that
-  // TimerDelivery's are also valid. I just haven't thought about it deeply
-  // enough, so I'm being conservative.
-  val timersSentButNotYetDelivered = new MultiSet[TimerSend]
-
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
   // Always prioritized over internal messages.
@@ -192,7 +184,7 @@ class STSScheduler(var original_trace: EventTrace,
     // Optimization: if no unexpected events to schedule, give up early.
     val unexpected = IntervalPeekScheduler.unexpected(
         IntervalPeekScheduler.flattenedEnabled(pendingEvents), expected,
-        getAllPendingTimers(), messageFingerprinter)
+        messageFingerprinter)
 
     if (unexpected.isEmpty) {
       println("No unexpected messages. Ignoring message" + msgEvent)
@@ -260,29 +252,13 @@ class STSScheduler(var original_trace: EventTrace,
             // detector -> actors from event_orchestrator.trace, to ensure
             // that we don't send redundant messages.
             if (sender == "deadLetters") {
-              if (Instrumenter().timerToCancellable contains ((receiver, message))) {
-                Instrumenter().manuallyHandleTick(receiver, message)
-              } else {
-                enqueue_message(receiver, message)
-              }
-            }
-          case t: TimerSend =>
-            if (scheduledFSMTimers contains t) {
-              val timer = scheduledFSMTimers(t)
-              // It may have been cancelled:
-              if (Instrumenter().timerToCancellable contains ((t.receiver, timer))) {
-                Instrumenter().manuallyHandleTick(t.receiver, timer)
-                timersSentButNotYetDelivered += t
-              }
+              enqueue_message(receiver, message)
             }
           case TimerDelivery(snd, rcv, fingerprint) =>
-            val send = TimerSend(snd, rcv, fingerprint)
             send_external_messages(false)
             // Check that it was previously delivered, and that it wasn't
             // destined for a dead actor (i.e. dropped by event_produced)
-            if ((timersSentButNotYetDelivered contains send) &&
-                (pendingEvents contains (snd, rcv, fingerprint))) {
-              timersSentButNotYetDelivered -= send
+            if (pendingEvents contains (snd, rcv, fingerprint)) {
               break
             }
           // MsgEvent is the delivery
@@ -336,12 +312,12 @@ class STSScheduler(var original_trace: EventTrace,
   }
 
   def event_produced(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
+    var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     val fingerprint = messageFingerprinter.fingerprint(msg)
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
-    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+    var isTimer = false
 
     handle_event_produced(snd, rcv, envelope) match {
       case ExternalMessage => {
@@ -357,6 +333,9 @@ class STSScheduler(var original_trace: EventTrace,
         }
       }
       case InternalMessage => {
+        if (snd == "deadLetters") {
+          isTimer = true
+        }
         // Drop any messages that crosses a partition.
         if (!event_orchestrator.crosses_partition(snd, rcv)) {
           val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
@@ -366,6 +345,10 @@ class STSScheduler(var original_trace: EventTrace,
       }
       case _ => None
     }
+
+    // Record this MsgSend as a special if it was sent from a timer.
+    snd = if (isTimer) "Timer" else snd
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
   }
 
   // Record a mapping from actor names to actor refs
@@ -531,25 +514,29 @@ class STSScheduler(var original_trace: EventTrace,
     test_invariant = invariant
   }
 
-  override def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                                      msg: Any): Boolean = {
-    handle_timer_scheduled(sender, receiver, msg, messageFingerprinter)
-    // So long as we are following a fixed prefix, we just replay the recorded
-    // timer events, and ignore new timer events. IntervalPeekScheduler
-    // explores unexpected timer events on our behalf.
-    return false
+  def notify_timer_cancel(receiver: ActorRef, msg: Any) : Unit = {
+    if (handle_timer_cancel(receiver, msg)) {
+      return
+    }
+    val rcv = receiver.path.name
+    val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
+    pendingEvents.get(key) match {
+      case Some(queue) =>
+        queue.dequeue()
+        if (queue.isEmpty) {
+          pendingEvents.remove(key)
+        }
+      case None => None
+    }
   }
 
-  override def notify_timer_cancel(receiver: ActorRef, msg: Any) = {
-    handle_timer_cancel(receiver, msg, messageFingerprinter)
-  }
+  override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
 
   override def reset_all_state() {
     super.reset_all_state
     reset_state
     firstMessage = true
     pendingEvents.clear
-    timersSentButNotYetDelivered.clear
     pendingSystemMessages.clear
     pausing = new AtomicBoolean(false)
   }

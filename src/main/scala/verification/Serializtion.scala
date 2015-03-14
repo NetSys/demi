@@ -94,35 +94,34 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     // Now serialize the events, making sure to nest the serialization of
     // application messages, and making sure to deal with (non-serializable)
     // timers correctly.
-    val sanitized = trace.events.map(e =>
+    val sanitized = trace.events.flatMap(e =>
       e match {
         // Careful how we serialize SpawnEvents' ActorRefs
         case SpawnEvent(parent, props, name, actor) =>
           // For now, nobody uses the ActorRef field of SpawnEvents, so just
           // put deadLetters.
-          SerializedSpawnEvent(parent, props, name, "deadLetters")
+          Some(SerializedSpawnEvent(parent, props, name, "deadLetters"))
         // Can't serialize Timer objects
         case UniqueMsgSend(MsgSend(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
-          UniqueTimerSend(TimerSend(snd, rcv, TimerFingerprint(name,
-            message_fingerprinter.fingerprint(nestedMsg), repeat)), id=id)
+          None
         case UniqueMsgEvent(MsgEvent(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
-          UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
-            message_fingerprinter.fingerprint(nestedMsg), repeat)), id=id)
+          Some(UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
+            message_fingerprinter.fingerprint(nestedMsg), repeat)), id=id))
         // Need to serialize external messages
         case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
-          SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
-            message_serializer.serialize(msg).array()), id)
+          Some(SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
+            message_serializer.serialize(msg).array()), id))
         case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
-          SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
-            message_serializer.serialize(msg).array()), id)
+          Some(SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
+            message_serializer.serialize(msg).array()), id))
         // Only need to serialize fingerprints for all other messages
         case UniqueMsgSend(MsgSend(snd, rcv, msg), id) =>
-          UniqueMsgSend(MsgSend(snd, rcv,
-            message_fingerprinter.fingerprint(msg)), id)
+          Some(UniqueMsgSend(MsgSend(snd, rcv,
+            message_fingerprinter.fingerprint(msg)), id))
         case UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
-          UniqueMsgEvent(MsgEvent(snd, rcv,
-            message_fingerprinter.fingerprint(msg)), id)
-        case event => event
+          Some(UniqueMsgEvent(MsgEvent(snd, rcv,
+            message_fingerprinter.fingerprint(msg)), id))
+        case event => Some(event)
       }
     )
     // Use a data structure that won't cause stackoverflow on

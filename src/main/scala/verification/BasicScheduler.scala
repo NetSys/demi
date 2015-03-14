@@ -202,6 +202,14 @@ class BasicScheduler extends Scheduler {
 
   def notify_quiescence () {
   }
+
+  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
+    val rcv = receiver.path.name
+    pendingEvents(rcv).dequeueFirst(tuple => tuple._2.message == msg)
+    if (pendingEvents(rcv).isEmpty) {
+      pendingEvents -= rcv
+    }
+  }
   
   def enqueue_message(receiver: String, msg: Any) {
     throw new Exception("NYI")
@@ -210,7 +218,4 @@ class BasicScheduler extends Scheduler {
   def shutdown() {
     instrumenter.restart_system
   }
-
-  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {return true}
 }
