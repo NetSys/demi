@@ -32,6 +32,7 @@ import Function.tupled
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
+
        
 import com.typesafe.scalalogging.LazyLogging,
        org.slf4j.LoggerFactory,
@@ -175,7 +176,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     quiescentPeriod(event) = currentQuiescentPeriod
   }
   
-  private[this] val _root = Unique(MsgEvent("null", "null", null), 0)
+  private[this] var _root = Unique(MsgEvent("null", "null", null), 0)
   def getRootEvent() : Unique = {
     addGraphNode(_root)
     _root
@@ -457,7 +458,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         // as the result of NodesUnreachable being received.
         //decomposePartitionEvent(par) map tupled(
           //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
-        
         for (node  <- first) {
           partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  second
         }
@@ -543,10 +543,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
-    actorNames.map(name =>
-      partitionMap(name) = partitionMap.getOrElse(name,
-        new HashSet[String]) ++ actorNames
-    )
+    //actorNames.map(name =>
+    //  partitionMap(name) = partitionMap.getOrElse(name,
+    //    new HashSet[String]) ++ actorNames
+    //)
   }
   
   def runExternal() = {
@@ -561,7 +561,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
           // If not already started: start it and unisolate it
           if (!(instrumenter().actorMappings contains name)) {
             instrumenter().actorSystem().actorOf(propsCtor(), name)
-            partitionMap(name) = new HashSet[String]
+            //partitionMap -= name
           }
     
         case Send(rcv, msgCtor) =>
@@ -673,7 +673,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         val newMsg = Unique( MsgEvent(msg.sender, msg.receiver, msg.msg) )
         logger.trace(
             Console.YELLOW + "Not seen: " + newMsg.id + 
-            " (" + msg.sender + " -> " + msg.receiver + ") " + Console.RESET)
+            " (" + msg.sender + " -> " + msg.receiver + ") " + msg.msg + Console.RESET)
         return newMsg
       case _ => throw new Exception("wrong type")
     }
@@ -701,7 +701,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
       
       case _ =>
-        val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
+        val unique @ Unique(msg : MsgEvent, id) = getMessage(cell, envelope)
         val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
         // Do not enqueue if bound hit
         if (!should_bound || currentDepth < stop_at_depth) {
@@ -772,10 +772,12 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
               if (lookingFor.matches(v)) {
                 println("Found matching violation!")
                 foundLookingFor = true
+                throw new IllegalStateException("TEMP EXCEPTION> REMVEO ME")
                 return
               }
             case None =>
               println("No matching violation. Proceeding...")
+              throw new IllegalStateException("TEMP EXCEPTION> REMVEO ME")
           }
         } else {
           // Initiate a checkpoint
@@ -1137,10 +1139,22 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
            _stats: MinimizationStats) : Option[EventTrace] = {
+    assert(_initialDegGraph != null)
+    assert(_initialTrace != null)
     currentSubsequence = events
     lookingFor = violation_fingerprint
     stats = _stats
     Instrumenter().scheduler = this
+    // Since the graph does reference equality, need to reset _root to the
+    // root in the graph.
+    def matchesRoot(n: Unique) : Boolean = {
+      return n.event == MsgEvent("null", "null", null)
+    }
+    _initialDegGraph.nodes.toList.find(matchesRoot _) match {
+      case Some(root) => _root = root.value
+      case _ => throw new IllegalArgumentException("No root in initialDepGraph")
+    }
+
     var traceSem = new Semaphore(0)
     run(events,
         f2 = (graph) => {

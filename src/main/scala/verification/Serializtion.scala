@@ -45,6 +45,7 @@ object ExperimentSerializer {
   val mcs = "/mcs.bin"
   val stats = "/minimization_stats.json"
   val depGraph = "/depGraph.bin"
+  val initialTrace = "/initialTrace.bin"
 
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
@@ -66,7 +67,8 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
 
   def record_experiment(experiment_name: String, trace: EventTrace,
                         violation: ViolationFingerprint,
-                        depGraph: Option[Graph[Unique, DiEdge]]=None) : String = {
+                        depGraph: Option[Graph[Unique, DiEdge]]=None,
+                        initialTrace: Option[Queue[Unique]]=None) : String = {
     val output_dir = ExperimentSerializer.create_experiment_dir(experiment_name)
     // We store the actor's names and props separately (reduntantly), so that
     // we can properly deserialize ActorRefs later. (When deserializing
@@ -76,13 +78,14 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     // system with all these actors created, and then deserialize the rest of the
     // events.)
     record_experiment_known_dir(output_dir, trace, violation,
-                                depGraph=depGraph)
+                                depGraph=depGraph, initialTrace=initialTrace)
     return output_dir
   }
 
   def record_experiment_known_dir(output_dir: String, trace: EventTrace,
                                   violation: ViolationFingerprint,
-                                  depGraph: Option[Graph[Unique, DiEdge]]=None) {
+                                  depGraph: Option[Graph[Unique, DiEdge]]=None,
+                                  initialTrace: Option[Queue[Unique]]=None) {
     val actorPropNamePairs = trace.events.flatMap {
       case SpawnEvent(_,props,name,_) => Some((props, name))
       case _ => None
@@ -151,6 +154,15 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
       case None =>
         None
     }
+
+    initialTrace match {
+      case Some(t) =>
+        val traceBuf = message_serializer.serialize(t)
+        JavaSerialization.writeToFile(output_dir + ExperimentSerializer.initialTrace,
+                                      traceBuf)
+      case None =>
+        None
+    }
   }
 
   def serializeMCS(old_experiment_dir: String, mcs: Seq[ExternalEvent],
@@ -207,6 +219,16 @@ class ExperimentDeserializer(results_dir: String) {
       val buf = JavaSerialization.readFromFile(file)
       val graph = JavaSerialization.deserialize[Graph[Unique, DiEdge]](buf)
       return Some(graph)
+    }
+    return None
+  }
+
+  def get_initial_trace(): Option[Queue[Unique]] = {
+    val file = results_dir + ExperimentSerializer.initialTrace
+    if (new java.io.File(file).exists) {
+      val buf = JavaSerialization.readFromFile(file)
+      val trace = JavaSerialization.deserialize[Queue[Unique]](buf)
+      return Some(trace)
     }
     return None
   }

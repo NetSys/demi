@@ -13,14 +13,17 @@ object RunnerUtils {
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            fingerprintFactory: FingerprintFactory,
            validate_replay:Option[() => ReplayScheduler]=None) :
-        Tuple3[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge]] = {
+        Tuple4[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
     var depGraph : Graph[Unique, DiEdge] = null
+    var initialTrace : Queue[Unique] = null
     while (violationFound == null) {
       val fuzzTest = fuzzer.generateFuzzTest()
       println("Trying: " + fuzzTest)
 
+      // TODO(cs): it's possible for RandomScheduler to never terminate
+      // (waiting for a WaitQuiescene)
       val sched = new RandomScheduler(1, fingerprintFactory, false, 30, false)
       sched.setInvariant(invariant)
       Instrumenter().scheduler = sched
@@ -31,7 +34,8 @@ object RunnerUtils {
           println("shutdown successfully")
         case Some((trace, violation)) => {
           println("Found a safety violation!")
-          depGraph = sched.depGraph
+          depGraph = sched.depTracker.getGraph
+          initialTrace = sched.depTracker.getInitialTrace
           sched.shutdown()
           validate_replay match {
             case Some(replayerCtor) =>
@@ -60,7 +64,7 @@ object RunnerUtils {
       }
     }
 
-    return (traceFound, violationFound, depGraph)
+    return (traceFound, violationFound, depGraph, initialTrace)
   }
 
   def deserializeExperiment(experiment_dir: String,
@@ -166,6 +170,7 @@ object RunnerUtils {
                             invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new DPORwHeuristics(true, fingerprintFactory)
+    sched.setInvariant(invariant)
     Instrumenter().scheduler = sched
     val deserializer = new ExperimentDeserializer(experiment_dir)
     sched.setActorNameProps(deserializer.get_actors)
@@ -174,9 +179,18 @@ object RunnerUtils {
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer,
       Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
-    val depGraph = deserializer.get_dep_graph()
-    depGraph match {
+    println("---------------")
+    println("trace:")
+    for (e <- trace) {
+      println(e)
+    }
+    println("---------------")
+
+    val depGraphOpt = deserializer.get_dep_graph()
+    var depGraph : Graph[Unique, DiEdge] = null
+    depGraphOpt match {
       case Some(graph) =>
+        depGraph = graph
         sched.setInitialDepGraph(graph)
         println("---------------")
         println("DepGraph:")
@@ -186,7 +200,19 @@ object RunnerUtils {
         println("---------------")
       case None => throw new IllegalArgumentException("Need a DepGraph to run DPORwHeuristics")
     }
-    sched.setInvariant(invariant)
+    val initialTraceOpt = deserializer.get_initial_trace()
+    initialTraceOpt match {
+      case Some(initialTrace) =>
+        println("----------")
+        println("initialTrace")
+        for (e <- initialTrace) {
+          println(e)
+        }
+        println("----------")
+        sched.setDepthBound(initialTrace.size)
+        sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
+      case None => throw new IllegalArgumentException("Need initialTrace to run DPORwHeuristics")
+    }
 
     // Convert Trace to a format DPOR will understand. Start by getting a list
     // of all actors, to be used for Kill events.
@@ -197,43 +223,6 @@ object RunnerUtils {
     // Verify crash-stop, not crash-recovery
     val allActorsSet = allActors.toSet
     assert(allActors.size == allActorsSet.size)
-
-    // DPOR's initialTrace argument contains only Unique SpawnEvents, MsgEvents,
-    // NetworkPartitions, and WaitQuiescence events.
-    val initialTrace = trace.events flatMap {
-      case s: SpawnEvent =>
-        // DPOR ignores Spawns
-        None
-      case BeginWaitQuiescence =>
-        Some(Unique(WaitQuiescence()))
-      case m: UniqueMsgEvent =>
-        // TODO(cs): verify that timers and Send()s are matched correctly by DPOR
-        // TODO(cs): does DPOR assume that system messages all have id=0? see
-        // getNextTraceMessage
-        Some(Unique(m.m, m.id))
-      case KillEvent(actor) =>
-        Some(Unique(NetworkPartition(Set(actor), allActorsSet)))
-      case PartitionEvent((a,b)) =>
-        Some(Unique(NetworkPartition(Set(a), Set(b))))
-      case UnPartitionEvent((a,b)) =>
-        Some(Unique(NetworkUnpartition(Set(a), Set(b))))
-      case Quiescence => None
-      case ChangeContext(_) => None
-      case UniqueMsgSend(_, _) => None
-      case UniqueTimerSend(_, _) => None
-      case UniqueTimerDelivery(TimerDelivery(snd, rcv, fingerprint), id) =>
-        Some(Unique(MsgEvent(snd, rcv, fingerprint), id=id))
-    }
-
-    println("--------------")
-    println("Initial trace:")
-    for (e <- initialTrace) {
-      println(e)
-    }
-    println("--------------")
-
-    sched.setDepthBound(initialTrace.size)
-    sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
 
     val filtered_externals = trace.original_externals flatMap {
       case s: Start => Some(s)
