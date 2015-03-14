@@ -29,6 +29,17 @@ class EventOrchestrator[E] {
   // Function that queues a message to be sent later.
   type EnqueueMessage = (String, Any) => Unit
 
+  // Callbacks
+  type KillCallback = (String, Set[String]) => Unit
+  type PartitionCallback = (String, String) => Unit
+  type UnPartitionCallback = (String, String) => Unit
+  var killCallback : KillCallback = (s: String, actors: Set[String]) => None
+  def setKillCallback(c: KillCallback) = killCallback = c
+  var partitionCallback : PartitionCallback = (a: String, b: String) => None
+  def setPartitionCallback(c: PartitionCallback) = partitionCallback = c
+  var unPartitionCallback : UnPartitionCallback = (a: String, b: String) => None
+  def setUnPartitionCallback(c: UnPartitionCallback) = unPartitionCallback = c
+
   // Pairs of actors that cannot communicate
   val partitioned = new HashSet[(String, String)]
 
@@ -116,12 +127,15 @@ class EventOrchestrator[E] {
         case Start (_, name) =>
           trigger_start(name)
         case Kill (name) =>
+          killCallback(name, actorToActorRef.keys.toSet)
           trigger_kill(name)
         case Send (name, messageCtor) =>
           enqueue_message(name, messageCtor())
         case Partition (a, b) =>
+          partitionCallback(a,b)
           trigger_partition(a,b)
         case UnPartition (a, b) =>
+          unPartitionCallback(a,b)
           trigger_unpartition(a,b)
         case WaitQuiescence() =>
           events += BeginWaitQuiescence

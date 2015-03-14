@@ -17,10 +17,6 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Random
 
-import scalax.collection.mutable.Graph,
-       scalax.collection.GraphEdge.DiEdge,
-       scalax.collection.edge.LDiEdge
-
 /**
  * Takes a list of ExternalEvents as input, and explores random interleavings
  * of internal messages until either a maximum number of interleavings is
@@ -55,17 +51,6 @@ class RandomScheduler(max_executions: Int,
     maxMessages = _maxMessages
   }
 
-  // TODO(cs): put this into ExternalEventInjector?
-  var depGraph = Graph[Unique, DiEdge]()
-  private[this] val _root = Unique(MsgEvent("null", "null", null), 0)
-  def getRootEvent() : Unique = {
-    addGraphNode(_root)
-    return _root
-  }
-
-  var parentEvent = getRootEvent()
-  assert(parentEvent != null)
-
   var test_invariant : Invariant = null
 
   // TODO(cs): separate enableFailureDetector and disableCheckpointing out
@@ -79,8 +64,10 @@ class RandomScheduler(max_executions: Int,
   }
 
   // Current set of enabled events.
-  // First element of tuple is the receiver
-  var pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell,Envelope)]]
+  // Our use of Uniq and Unique is somewhat confusing. Uniq is used to
+  // associate MsgSends with their subsequent MsgEvents.
+  // Unique is used by DepTracker.
+  var pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
@@ -108,6 +95,19 @@ class RandomScheduler(max_executions: Int,
 
   var stats: MinimizationStats = null
 
+  // For every message we deliver, track which messages become enabled as a
+  // result of our delivering that message. This can be used later to recreate
+  // the DepGraph (used by DPOR).
+  var depTracker = new DepTracker(messageFingerprinter)
+
+  // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
+  // caused us to arrive at Quiescence.
+  setQuiescenceCallback(depTracker.reportQuiescence)
+  // Tell EventOrchestrator to tell us about Kills, Parititions, UnPartitions
+  event_orchestrator.setKillCallback(depTracker.reportKill)
+  event_orchestrator.setPartitionCallback(depTracker.reportPartition)
+  event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
+
   /**
    * If we're looking for a specific violation, return None if the given
    * violation doesn't match, or Some(violation) if it does.
@@ -131,71 +131,6 @@ class RandomScheduler(max_executions: Int,
             }
         }
     }
-  }
-
-  private[this] def setParentEvent (event: Unique) {
-    assert(event != null)
-    val graphNode = depGraph.get(event)
-    val rootNode = depGraph.get(getRootEvent())
-    // val pathLength = graphNode.pathTo(rootNode) match {
-    //   case Some(p) => p.length
-    //   case _ =>
-    //     throw new Exception("Unexpected path")
-    // }
-    parentEvent = event
-  }
-
-  private[this] def addGraphNode (event: Unique) = {
-    depGraph.add(event)
-  }
-
-  // Convert RandomScheduler's Uniq to depGraph's Unique, using the
-  // same id.
-  def getUniqueFromUniq(uniq : Uniq[(ActorCell, Envelope)]) : Unique = {
-    val cell = uniq.element._1
-    val envelope = uniq.element._2
-    val snd = envelope.sender.path.name
-    val rcv = cell.self.path.name
-    val msgEvent = new MsgEvent(snd, rcv,
-      messageFingerprinter.fingerprint(envelope.message))
-    return Unique(msgEvent, id=uniq.id)
-  }
-
-  /**
-   * Given a message, figure out if we have already seen
-   * it before. We achieve this by consulting the
-   * dependency graph.
-   *
-   * * @param (cell, envelope): Original message context.
-   */
-  // TODO(cs): redundant with DPORwHeuristics.
-  def updateDepGraph(uniq : Uniq[(ActorCell, Envelope)]) {
-    val newUnique = getUniqueFromUniq(uniq)
-    val parent = parentEvent match {
-      case u @ Unique(m: MsgEvent, id) => u
-      case _ => throw new Exception("parent event not a message:" + parentEvent)
-    }
-    val inNeighs = depGraph.get(parent).inNeighbors
-
-    def matchMessage (event: Event) : Boolean = {
-      // N.B. comparison by message fingerprint, not raw message
-      newUnique.event == event
-    }
-
-    val unique =
-      inNeighs.find { x => matchMessage(x.value.event) } match {
-        case Some(x) =>
-          // Ensure that the id's match in the future, by mutating uniq
-          // TODO(cs): not sure this is completely correct
-          uniq.id = x.value.id
-          x.value
-        case None =>
-          newUnique
-        case _ => throw new Exception("wrong type")
-    }
-
-    addGraphNode(unique)
-    depGraph.addEdge(unique, parentEvent)(DiEdge)
   }
 
   /**
@@ -370,12 +305,9 @@ class RandomScheduler(max_executions: Int,
     if (messagesScheduledSoFar == Int.MaxValue) {
       messagesScheduledSoFar = 1
     }
-    val uniq = pendingInternalEvents.removeRandomElement()
+    val (uniq, unique) = pendingEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-
-    val unique = getUniqueFromUniq(uniq)
-    (depGraph get unique)
-    setParentEvent(unique)
+    depTracker.reportNewlyDelivered(unique)
     return Some(uniq.element)
   }
 
@@ -451,8 +383,10 @@ class RandomScheduler(max_executions: Int,
     trace = null
     messagesScheduledSoFar = 0
     lastCheckpoint = 0
-    depGraph = Graph[Unique, DiEdge]()
-    setParentEvent(getRootEvent())
+    depTracker = new DepTracker(messageFingerprinter)
+    event_orchestrator.setKillCallback(depTracker.reportKill)
+    event_orchestrator.setPartitionCallback(depTracker.reportPartition)
+    event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
   }
 
   def test(events: Seq[ExternalEvent],

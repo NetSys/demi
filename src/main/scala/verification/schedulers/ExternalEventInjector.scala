@@ -95,7 +95,13 @@ trait ExternalEventInjector[E] {
   // Whether populateActors has been invoked.
   var alreadyPopulated = false
 
-    // Enqueue an external message for future delivery
+  // An optional callback that will be invoked when a WaitQuiescence has just
+  // caused us to arrive at Quiescence.
+  type QuiescenceCallback = () => Unit
+  var quiescenceCallback : QuiescenceCallback = () => None
+  def setQuiescenceCallback(c: QuiescenceCallback) { quiescenceCallback = c }
+
+  // Enqueue an external message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
       enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
@@ -305,6 +311,8 @@ trait ExternalEventInjector[E] {
 
     if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
+      event_orchestrator.events += Quiescence
+      quiescenceCallback()
       advanceTrace()
     } else {
       if (currentlyInjecting.get) {
