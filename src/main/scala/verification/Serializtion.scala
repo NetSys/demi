@@ -107,9 +107,9 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
         // Can't serialize Timer objects
         case UniqueMsgSend(MsgSend(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
           None
-        case UniqueMsgEvent(MsgEvent(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
+        case UniqueMsgEvent(MsgEvent(snd, rcv, Timer(name, nestedMsg, repeat, generation)), id) =>
           Some(UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
-            message_fingerprinter.fingerprint(nestedMsg), repeat)), id=id))
+            message_fingerprinter.fingerprint(nestedMsg), repeat, generation)), id=id))
         // Need to serialize external messages
         case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
           Some(SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,

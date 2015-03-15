@@ -237,6 +237,13 @@ object RunnerUtils {
       case _ => None
     }
 
+    println("----------")
+    println("external events:")
+    for (e <- filtered_externals) {
+      println(e)
+    }
+    println("----------")
+
     // Don't check unmodified execution, since it might take too long
     // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
     val ddmin = new DDMin(sched, true)

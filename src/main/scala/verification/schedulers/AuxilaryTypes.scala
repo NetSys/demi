@@ -60,7 +60,7 @@ final case class ChangeContext (actor: String) extends Event
 // N.B. these aren't explicitly recorded. We use them only when we want to serialize event
 // traces.
 final case class TimerFingerprint(name: String,
-  msgFingerprint: MessageFingerprint, repeat: Boolean) extends MessageFingerprint
+  msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int) extends MessageFingerprint
 final case class TimerDelivery(sender: String, receiver: String, fingerprint: TimerFingerprint) extends Event
 
 

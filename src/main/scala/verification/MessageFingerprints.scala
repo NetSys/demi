@@ -57,8 +57,8 @@ class BaseFingerprinter(parent: FingerprintFactory) extends MessageFingerprinter
       return Some(TimeoutMarkerFingerprint)
     }
     msg match {
-      case Timer(name, message, repeat, _) =>
-        return Some(TimerFingerprint(name, parent.fingerprint(message), repeat))
+      case Timer(name, message, repeat, generation) =>
+        return Some(TimerFingerprint(name, parent.fingerprint(message), repeat, generation))
       case _ =>
         // BaseFingerprinter is the most general fingerprinter, so it always returns Some.
         return Some(BasicFingerprint.fromMessage(msg))
