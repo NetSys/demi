@@ -775,12 +775,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
               if (lookingFor.matches(v)) {
                 println("Found matching violation!")
                 foundLookingFor = true
-                throw new IllegalStateException("TEMP EXCEPTION> REMVEO ME")
                 return
               }
             case None =>
               println("No matching violation. Proceeding...")
-              throw new IllegalStateException("TEMP EXCEPTION> REMVEO ME")
           }
         } else {
           // Initiate a checkpoint
