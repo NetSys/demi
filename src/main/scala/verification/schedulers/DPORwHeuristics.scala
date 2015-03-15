@@ -94,6 +94,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   
   var post: (Trace) => Unit = nullFunPost
   var done: (Graph[Unique, DiEdge]) => Unit = nullFunDone
+
+  private[this] var currentRoot = getRootEvent
   
   var currentQuiescentPeriod = 0
   var awaitingQuiescence = false
@@ -142,6 +144,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     backTrack.clear
     exploredTracker.clear
     blockedOnCheckpoint.set(false)
+    currentRoot = getRootEvent
 
     setParentEvent(getRootEvent)
   }
@@ -654,12 +657,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msg = new MsgEvent(snd, rcv,
-      messageFingerprinter.fingerprint(envelope.message))
-    val parent = parentEvent match {
-      case u @ Unique(m: MsgEvent, id) => u
-      case _ => throw new Exception("parent event not a message")
-    }
+    val msg = new MsgEvent(snd, rcv, messageFingerprinter.fingerprint(envelope.message))
+    // Who cares if the parentEvent is in fact a message, as long as it is a parent.
+    val parent = parentEvent
 
     def matchMessage (event: Event) : Boolean = {
       return event == msg
@@ -754,8 +754,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       currentQuiescentPeriod = nextQuiescentPeriod
       nextQuiescentPeriod = 0
 
-      addGraphNode(quiescentMarker)
       currentTrace += quiescentMarker
+      addGraphNode(quiescentMarker)
+      depGraph.addEdge(quiescentMarker, currentRoot)(DiEdge)
+      currentRoot = quiescentMarker
+      setParentEvent(quiescentMarker)
       quiescentMarker = null
 
       runExternal()
@@ -822,6 +825,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
           
           setParentEvent(getRootEvent)
+          currentRoot = getRootEvent
 
           
           pendingEvents.clear()
