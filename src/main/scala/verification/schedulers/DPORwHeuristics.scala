@@ -865,10 +865,18 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
     pendingEvents.get(receiver.path.name) match {
       case Some(q) =>
-        q.dequeueFirst(equivalentTo(_))
-        logger.trace(Console.RED + " Removing pending event (" + 
+        q.dequeueFirst(equivalentTo(_)) match {
+          case Some(u) => logger.trace(Console.RED + " Removing pending event (" + 
                     receiver.path.name + " , " + msg + ")" + Console.RESET)
+          case None => logger.trace(Console.RED + 
+                    " Did not remove message due to timer cancellation (" + 
+                      receiver.path.name + ", " + msg + ")" +  Console.RESET)
+        }
       case None => // This cancellation came too late, things have already been done.
+        logger.trace(Console.RED +
+                    " Did not remove message due to timer cancellation (" + 
+                      receiver.path.name + ", " + msg + ")" +  Console.RESET)
+
     }
   }
   
