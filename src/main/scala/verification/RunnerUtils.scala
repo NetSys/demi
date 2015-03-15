@@ -179,12 +179,6 @@ object RunnerUtils {
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer,
       Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
-    println("---------------")
-    println("trace:")
-    for (e <- trace) {
-      println(e)
-    }
-    println("---------------")
 
     val depGraphOpt = deserializer.get_dep_graph()
     var depGraph : Graph[Unique, DiEdge] = null
@@ -192,23 +186,11 @@ object RunnerUtils {
       case Some(graph) =>
         depGraph = graph
         sched.setInitialDepGraph(graph)
-        println("---------------")
-        println("DepGraph:")
-        JavaSerialization.withPrintWriter("/tmp", "dep.dot") { pw =>
-          pw.write(Util.getDot(graph))
-        }
-        println("---------------")
       case None => throw new IllegalArgumentException("Need a DepGraph to run DPORwHeuristics")
     }
     val initialTraceOpt = deserializer.get_initial_trace()
     initialTraceOpt match {
       case Some(initialTrace) =>
-        println("----------")
-        println("initialTrace")
-        for (e <- initialTrace) {
-          println(e)
-        }
-        println("----------")
         sched.setDepthBound(initialTrace.size)
         sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
       case None => throw new IllegalArgumentException("Need initialTrace to run DPORwHeuristics")
@@ -236,13 +218,6 @@ object RunnerUtils {
         Some(NetworkUnpartition(Set(a), Set(b)))
       case _ => None
     }
-
-    println("----------")
-    println("external events:")
-    for (e <- filtered_externals) {
-      println(e)
-    }
-    println("----------")
 
     // Don't check unmodified execution, since it might take too long
     // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
