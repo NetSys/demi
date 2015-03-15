@@ -857,16 +857,18 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver.path.name + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, ActorCell, Envelope)): Boolean = {
       u._1 match {
-        case Unique(MsgEvent("deadLetters", n, m), _) => ((n == receiver.path.name) && (m == msg))
+        case Unique(MsgEvent("deadLetters", n, m), _) =>
+          ((n == receiver.path.name) &&
+           (m == messageFingerprinter.fingerprint(msg)))
         case _ => false
       }
-
     }
+
     pendingEvents.get(receiver.path.name) match {
-      case Some(q) => 
+      case Some(q) =>
         q.dequeueFirst(equivalentTo(_))
         logger.trace(Console.RED + " Removing pending event (" + 
-                     receiver.path.name + " , " + msg + ")" + Console.RESET)
+                    receiver.path.name + " , " + msg + ")" + Console.RESET)
       case None => // This cancellation came too late, things have already been done.
     }
   }
