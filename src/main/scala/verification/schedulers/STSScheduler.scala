@@ -524,7 +524,7 @@ class STSScheduler(var original_trace: EventTrace,
     val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
     pendingEvents.get(key) match {
       case Some(queue) =>
-        queue.dequeue()
+        queue.dequeueFirst(t => t.element._2.message == msg)
         if (queue.isEmpty) {
           pendingEvents.remove(key)
         }

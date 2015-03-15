@@ -857,11 +857,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
     logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver.path.name + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, ActorCell, Envelope)): Boolean = {
-      u._1 match {
-        case Unique(MsgEvent("deadLetters", n, m), _) =>
-          ((n == receiver.path.name) &&
-           (m == messageFingerprinter.fingerprint(msg)))
-        case _ => false
+      u._3 match {
+        case null => false
+        case e => e.message == msg && u._2.self.path.name == receiver.path.name
       }
     }
 
