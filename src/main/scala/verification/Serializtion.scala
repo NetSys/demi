@@ -45,6 +45,7 @@ object ExperimentSerializer {
   val mcs = "/mcs.bin"
   val stats = "/minimization_stats.json"
   val depGraph = "/depGraph.bin"
+  val initialTrace = "/initialTrace.bin"
 
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
@@ -62,11 +63,12 @@ object ExperimentSerializer {
   }
 }
 
-class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_serializer: MessageSerializer) {
+class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_serializer: MessageSerializer) {
 
   def record_experiment(experiment_name: String, trace: EventTrace,
                         violation: ViolationFingerprint,
-                        depGraph: Option[Graph[Unique, DiEdge]]=None) : String = {
+                        depGraph: Option[Graph[Unique, DiEdge]]=None,
+                        initialTrace: Option[Queue[Unique]]=None) : String = {
     val output_dir = ExperimentSerializer.create_experiment_dir(experiment_name)
     // We store the actor's names and props separately (reduntantly), so that
     // we can properly deserialize ActorRefs later. (When deserializing
@@ -76,13 +78,14 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     // system with all these actors created, and then deserialize the rest of the
     // events.)
     record_experiment_known_dir(output_dir, trace, violation,
-                                depGraph=depGraph)
+                                depGraph=depGraph, initialTrace=initialTrace)
     return output_dir
   }
 
   def record_experiment_known_dir(output_dir: String, trace: EventTrace,
                                   violation: ViolationFingerprint,
-                                  depGraph: Option[Graph[Unique, DiEdge]]=None) {
+                                  depGraph: Option[Graph[Unique, DiEdge]]=None,
+                                  initialTrace: Option[Queue[Unique]]=None) {
     val actorPropNamePairs = trace.events.flatMap {
       case SpawnEvent(_,props,name,_) => Some((props, name))
       case _ => None
@@ -94,35 +97,34 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
     // Now serialize the events, making sure to nest the serialization of
     // application messages, and making sure to deal with (non-serializable)
     // timers correctly.
-    val sanitized = trace.events.map(e =>
+    val sanitized = trace.events.flatMap(e =>
       e match {
         // Careful how we serialize SpawnEvents' ActorRefs
         case SpawnEvent(parent, props, name, actor) =>
           // For now, nobody uses the ActorRef field of SpawnEvents, so just
           // put deadLetters.
-          SerializedSpawnEvent(parent, props, name, "deadLetters")
+          Some(SerializedSpawnEvent(parent, props, name, "deadLetters"))
         // Can't serialize Timer objects
-        case UniqueMsgSend(MsgSend(snd, rcv, Timer(name, nestedMsg, repeat, generation)), id) =>
-          TimerSend(TimerFingerprint(name, snd, rcv,
-            message_fingerprinter.fingerprint(nestedMsg), repeat, generation))
+        case UniqueMsgSend(MsgSend(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
+          None
         case UniqueMsgEvent(MsgEvent(snd, rcv, Timer(name, nestedMsg, repeat, generation)), id) =>
-          TimerDelivery(TimerFingerprint(name, snd, rcv,
-            message_fingerprinter.fingerprint(nestedMsg), repeat, generation))
+          Some(UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
+            message_fingerprinter.fingerprint(nestedMsg), repeat, generation)), id=id))
         // Need to serialize external messages
         case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
-          SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
-            message_serializer.serialize(msg).array()), id)
+          Some(SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
+            message_serializer.serialize(msg).array()), id))
         case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
-          SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
-            message_serializer.serialize(msg).array()), id)
+          Some(SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
+            message_serializer.serialize(msg).array()), id))
         // Only need to serialize fingerprints for all other messages
         case UniqueMsgSend(MsgSend(snd, rcv, msg), id) =>
-          UniqueMsgSend(MsgSend(snd, rcv,
-            message_fingerprinter.fingerprint(msg)), id)
+          Some(UniqueMsgSend(MsgSend(snd, rcv,
+            message_fingerprinter.fingerprint(msg)), id))
         case UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
-          UniqueMsgEvent(MsgEvent(snd, rcv,
-            message_fingerprinter.fingerprint(msg)), id)
-        case event => event
+          Some(UniqueMsgEvent(MsgEvent(snd, rcv,
+            message_fingerprinter.fingerprint(msg)), id))
+        case event => Some(event)
       }
     )
     // Use a data structure that won't cause stackoverflow on
@@ -149,6 +151,15 @@ class ExperimentSerializer(message_fingerprinter: MessageFingerprinter, message_
         val graphBuf = message_serializer.serialize(graph)
         JavaSerialization.writeToFile(output_dir + ExperimentSerializer.depGraph,
                                       graphBuf)
+      case None =>
+        None
+    }
+
+    initialTrace match {
+      case Some(t) =>
+        val traceBuf = message_serializer.serialize(t)
+        JavaSerialization.writeToFile(output_dir + ExperimentSerializer.initialTrace,
+                                      traceBuf)
       case None =>
         None
     }
@@ -208,6 +219,16 @@ class ExperimentDeserializer(results_dir: String) {
       val buf = JavaSerialization.readFromFile(file)
       val graph = JavaSerialization.deserialize[Graph[Unique, DiEdge]](buf)
       return Some(graph)
+    }
+    return None
+  }
+
+  def get_initial_trace(): Option[Queue[Unique]] = {
+    val file = results_dir + ExperimentSerializer.initialTrace
+    if (new java.io.File(file).exists) {
+      val buf = JavaSerialization.readFromFile(file)
+      val trace = JavaSerialization.deserialize[Queue[Unique]](buf)
+      return Some(trace)
     }
     return None
   }

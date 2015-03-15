@@ -90,7 +90,7 @@ class RandomizedHashSet[E] {
     multiset += value
   }
 
-  private[this] def remove(value: (E,Int)) = {
+  def remove(value: (E,Int)) = {
     // We are going to replace the cell that contains value in A with the last
     // element in A. let d be the last element in the array A at index m. let
     // i be H[value], the index in the array of the value to be removed. Set
@@ -243,8 +243,7 @@ object Util {
 
     def nodeStr(event: Unique) : String = {
       event.value match {
-        case Unique(msg : MsgEvent, id) => id.toString()
-        case Unique(spawn : SpawnEvent, id) => id.toString()
+        case Unique(_, id) => id.toString()
       }
     }
         
@@ -254,6 +253,7 @@ object Util {
       val descr = innerNode.value match {
         case u @ Unique(msg : MsgEvent, id) => DotNodeStmt( nodeStr(u), Seq.empty[DotAttr])
         case u @ Unique(spawn : SpawnEvent, id) => DotNodeStmt( nodeStr(u), Seq(DotAttr("color", "red")))
+        case u @ Unique(_, id) => DotNodeStmt( nodeStr(u), Seq.empty[DotAttr])
       }
 
       Some(root, descr)

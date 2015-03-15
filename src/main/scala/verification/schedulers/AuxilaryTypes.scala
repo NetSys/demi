@@ -4,14 +4,16 @@ import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{Envelope}
 
 // External events used to specify a trace
-abstract class ExternalEvent {
+abstract trait ExternalEvent
+
+trait UniqueExternalEvent {
   val _id : Int = IDGenerator.get()
 
   def toStringWithId: String = "e"+_id+":"+toString()
 
   override def equals(other: Any): Boolean = {
-    if (other.isInstanceOf[ExternalEvent]) {
-      return _id == other.asInstanceOf[ExternalEvent]._id
+    if (other.isInstanceOf[UniqueExternalEvent]) {
+      return _id == other.asInstanceOf[UniqueExternalEvent]._id
     } else {
       return false
     }
@@ -23,22 +25,21 @@ abstract class ExternalEvent {
 }
 abstract trait Event
 
-final case class Start (propCtor: () => Props, name: String) extends ExternalEvent with Event
-final case class Kill (name: String) extends ExternalEvent with Event {}
+final case class Start (propCtor: () => Props, name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class Kill (name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent {}
 // Allow the client to late-bind the construction of the message. Invoke the
 // function at the point that the Send is about to be injected.
-final case class Send (name: String, messageCtor: () => Any) extends ExternalEvent with Event
-final case class WaitQuiescence() extends ExternalEvent with Event
-// Wait for numTimers currently queued timers to be scheduled. numTimers can be set to
-// -1 to wait for all currently queued timers.
-final case class WaitTimers(numTimers: Integer) extends ExternalEvent with Event
+final case class Send (name: String, messageCtor: () => Any) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class WaitQuiescence() extends
+    ExternalEvent with Event with UniqueExternalEvent
 // Bidirectional partitions.
-final case class Partition (a: String, b: String) extends ExternalEvent with Event
-final case class UnPartition (a: String, b: String) extends ExternalEvent with Event
-// Continue scheduling numSteps internal events. Whenver we arrive at
-// quiescence, wait for the next timer, then wait for quiescence, etc. until
-// numSteps messages have been sent.
-final case class Continue(numSteps: Integer) extends ExternalEvent with Event
+final case class Partition (a: String, b: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class UnPartition (a: String, b: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
 
 // Internal events in addition to those defined in ../AuxilaryTypes
 // MsgSend is the initial send, not the delivery
@@ -58,10 +59,9 @@ final case class ChangeContext (actor: String) extends Event
 // Recording/Replaying Akka.FSM.Timer's (which aren't serializable! hence this madness)
 // N.B. these aren't explicitly recorded. We use them only when we want to serialize event
 // traces.
-final case class TimerFingerprint(name: String, sender: String, receiver: String,
-  msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int)
-final case class TimerSend(fingerprint: TimerFingerprint) extends Event
-final case class TimerDelivery(fingerprint: TimerFingerprint) extends Event
+final case class TimerFingerprint(name: String,
+  msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int) extends MessageFingerprint
+final case class TimerDelivery(sender: String, receiver: String, fingerprint: TimerFingerprint) extends Event
 
 
 object EventTypes {
@@ -71,7 +71,7 @@ object EventTypes {
       case _: KillEvent | _: SpawnEvent | _: PartitionEvent | _: UnPartitionEvent =>
         return true
       case MsgEvent(snd, _, _) =>
-        return snd == "deadLetters"
+        return snd == "deadLetters" // TODO(cs): Timers break this
       case MsgSend(snd, _, _) =>
         return snd == "deadLetters"
       case UniqueMsgEvent(MsgEvent(snd, _, _), _) =>

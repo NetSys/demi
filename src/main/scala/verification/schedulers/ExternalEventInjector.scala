@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger
 abstract class MessageType()
 final case object ExternalMessage extends MessageType
 final case object InternalMessage extends MessageType
-final case object SystemMessage extends MessageType
+final case object FailureDetectorQuery extends MessageType
 final case object CheckpointReplyMessage extends MessageType
 
 /**
@@ -85,21 +85,23 @@ trait ExternalEventInjector[E] {
   // Assumes that external message objects never == internal message objects.
   // That assumption would be broken if, for example, nodes relayed external
   // messages to eachother...
+  // TODO(cs): include receiver here for safety?
   var enqueuedExternalMessages = new MultiSet[Any]
 
   // A set of external messages to send. Messages sent between actors are not
   // queued here.
   var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
 
-  // Whenever we inject a "Continue" external event, this tracks how many
-  // events we have left to scheduled until we return to scheduling more
-  // external events.
-  var numWaitingFor = new AtomicInteger(0)
-
   // Whether populateActors has been invoked.
   var alreadyPopulated = false
 
-    // Enqueue an external message for future delivery
+  // An optional callback that will be invoked when a WaitQuiescence has just
+  // caused us to arrive at Quiescence.
+  type QuiescenceCallback = () => Unit
+  var quiescenceCallback : QuiescenceCallback = () => None
+  def setQuiescenceCallback(c: QuiescenceCallback) { quiescenceCallback = c }
+
+  // Enqueue an external message for future delivery
   def enqueue_message(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
       enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
@@ -111,6 +113,15 @@ trait ExternalEventInjector[E] {
   def enqueue_message(actor: ActorRef, msg: Any) {
     enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
+  }
+
+  // Enqueue a timer message for future delivery
+  def handle_timer(receiver: String, msg: Any) {
+    if (event_orchestrator.actorToActorRef contains receiver) {
+      messagesToSend += ((event_orchestrator.actorToActorRef(receiver), msg))
+    } else {
+      println("WARNING! Unknown receiver " + receiver)
+    }
   }
 
   def send_external_messages() {
@@ -194,13 +205,6 @@ trait ExternalEventInjector[E] {
     schedSemaphore.acquire
     started.set(true)
     event_orchestrator.inject_until_quiescence(enqueue_message)
-    if (!event_orchestrator.trace_finished) {
-      event_orchestrator.previous_event match {
-        case Continue(n) =>
-          numWaitingFor.set(n)
-        case _ => None
-      }
-    }
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
@@ -233,9 +237,9 @@ trait ExternalEventInjector[E] {
 
   def prepareCheckpoint() = {
     val actorRefs = event_orchestrator.
-                      actorToActorRef.
-                      filterNot({case (k,v) => ActorTypes.systemActor(k)}).
-                      values.toSeq
+                       actorToActorRef.
+                       filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                       values.toSeq
     val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.
@@ -258,7 +262,7 @@ trait ExternalEventInjector[E] {
       if (!_disableFailureDetector) {
         fd.handle_fd_message(envelope.message, snd)
       }
-      return SystemMessage
+      return FailureDetectorQuery
     } else if (rcv == CheckpointSink.name) {
       if (_enableCheckpointing) {
         checkpointer.handleCheckpointResponse(envelope.message, snd)
@@ -288,7 +292,6 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_event_consumed(cell: ActorCell, envelope: Envelope) = {
-    numWaitingFor.decrementAndGet()
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (enqueuedExternalMessages.contains(msg)) {
@@ -301,33 +304,15 @@ trait ExternalEventInjector[E] {
   def handle_quiescence(): Unit = {
     assert(started.get)
     started.set(false)
-    event_orchestrator.events += Quiescence
-    if (numWaitingFor.get() > 0) {
-      if (Instrumenter().cancellableToTimer.values.filterNot(
-           { case (receiver, m) => event_orchestrator.inaccessible contains receiver }
-          ).isEmpty) {
-        println("No alive actors with registered timers. Skipping Continue")
-        // Fall through to next if/else block.
-        numWaitingFor.set(0)
-      } else {
-        val pendingTimers = Instrumenter().await_timers(1)
-        if (!pendingTimers) {
-          // Nothing to wait for.
-          // Fall through to next if/else block.
-          numWaitingFor.set(0)
-        } else {
-          started.set(true)
-          Instrumenter().start_dispatch()
-          return
-        }
-      }
-    } else if (blockedOnCheckpoint.get()) {
+    if (blockedOnCheckpoint.get()) {
       checkpointSem.release()
       return
     }
 
     if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
+      event_orchestrator.events += Quiescence
+      quiescenceCallback()
       advanceTrace()
     } else {
       if (currentlyInjecting.get) {
@@ -357,6 +342,15 @@ trait ExternalEventInjector[E] {
     event_orchestrator.events += ChangeContext("scheduler")
   }
 
+  // Return true if we found the timer in our messagesToSend
+  def handle_timer_cancel(rcv: ActorRef, msg: Any): Boolean = {
+    messagesToSend.dequeueFirst(tuple =>
+      tuple._1.path.name == rcv.path.name && tuple._2 == msg) match {
+      case Some(_) => return true
+      case None => return false
+    }
+  }
+
   /**
    * Reset ourselves and the Instrumenter to a initial clean state.
    */
@@ -380,7 +374,6 @@ trait ExternalEventInjector[E] {
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
     messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
-    numWaitingFor = new AtomicInteger(0)
     alreadyPopulated = false
     println("state reset.")
   }

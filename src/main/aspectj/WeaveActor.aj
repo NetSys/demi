@@ -116,36 +116,12 @@ privileged public aspect WeaveActor {
   Object around(LightArrayRevolverScheduler me, FiniteDuration delay, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
   scheduleOnce(me, delay, receiver, msg, exc, sender) {
     class MyRunnable implements java.lang.Runnable {
-      ActorRef rcv;
-      Object m;
-      Instrumenter i;
-      Cancellable c;
-      boolean shouldRun;
-
-      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst, boolean _shouldRun) {
-        rcv = receiver;
-        m = msg;
-        i = inst;
-        shouldRun = _shouldRun;
-      }
-
-      public void setCancellable(Cancellable cancellable) {
-        c = cancellable;
-      }
-
+      // Make it a no-op!
       public void run() {
-        // Use essentially the same scheduleOnce implementation, but don't use !
-        // See:
-        //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
-        if (shouldRun) {
-          i.handleTick(rcv, m, c);
-        }
       }
     }
-    boolean shouldRun = inst.notify_timer_scheduled(sender, receiver, msg);
-    MyRunnable runnable = new MyRunnable(receiver, msg, inst, shouldRun);
+    MyRunnable runnable = new MyRunnable();
     Cancellable c = new WrappedCancellable(me.scheduleOnce(delay, runnable, exc), receiver, msg);
-    runnable.setCancellable(c);
     inst.registerCancellable(c, false, receiver, msg);
     return c;
   }
@@ -160,36 +136,12 @@ privileged public aspect WeaveActor {
   Object around(LightArrayRevolverScheduler me, FiniteDuration delay, FiniteDuration interval, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
   schedule(me, delay, interval, receiver, msg, exc, sender) {
     class MyRunnable implements java.lang.Runnable {
-      ActorRef rcv;
-      Object m;
-      Instrumenter i;
-      Cancellable c;
-      boolean shouldRun;
-
-      public MyRunnable(ActorRef receiver, Object msg, Instrumenter inst, boolean _shouldRun) {
-        rcv = receiver;
-        m = msg;
-        i = inst;
-        shouldRun = _shouldRun;
-      }
-
-      public void setCancellable(Cancellable cancellable) {
-        c = cancellable;
-      }
-
+      // Make it a no-op!
       public void run() {
-        // Use essentially the same scheduleOnce implementation, but don't use !
-        // See:
-        //   https://github.com/akka/akka/blob/cb05725c1ec8a09e9bfd57dd093911dd41c7b288/akka-actor/src/main/scala/akka/actor/Scheduler.scala#L105
-        if (shouldRun) {
-          i.handleTick(rcv, m, c);
-        }
       }
     }
-    boolean shouldRun = inst.notify_timer_scheduled(sender, receiver, msg);
-    MyRunnable runnable = new MyRunnable(receiver, msg, inst, shouldRun);
+    MyRunnable runnable = new MyRunnable();
     Cancellable c = me.schedule(delay, interval, runnable, exc);
-    runnable.setCancellable(c);
     inst.registerCancellable(c, true, receiver, msg);
     return c;
   }

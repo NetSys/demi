@@ -7,9 +7,7 @@ import akka.actor.ActorCell,
        akka.actor.ActorRefWithCell,
        akka.actor.Actor,
        akka.actor.PoisonPill,
-       akka.actor.Props,
-       akka.actor.FSM,
-       akka.actor.FSM.Timer
+       akka.actor.Props
 
 import akka.dispatch.Envelope,
        akka.dispatch.MessageQueue,
@@ -26,11 +24,15 @@ import scala.collection.concurrent.TrieMap,
        scala.math.Ordering,
        scala.reflect.ClassTag
 
+import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
+
 import Function.tupled
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
+
        
 import com.typesafe.scalalogging.LazyLogging,
        org.slf4j.LoggerFactory,
@@ -39,27 +41,32 @@ import com.typesafe.scalalogging.LazyLogging,
 
 
 // DPOR scheduler.
-class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
+class DPORwHeuristics(enableCheckpointing: Boolean,
+  messageFingerprinter: FingerprintFactory,
+  depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
+  def this() = this(false, new FingerprintFactory, None)
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
-  var (should_bound, stop_at_depth) = depth_bound match {
-    case Some(d) => (true, d)
-    case _ => (false, 0)
+  var should_bound = false
+  var stop_at_depth = 0
+  depth_bound match {
+    case Some(d) => setDepthBound(d)
+    case _ => None
   }
-
-  def setDepthBound(depth_bound: Int) {
-    var (should_bound, stop_at_depth) = (true, depth_bound)
+  def setDepthBound(_stop_at_depth: Int) {
+    should_bound = true
+    stop_at_depth = _stop_at_depth
   }
 
   // Collection of all actors that could possibly have messages sent to them.
   var actorNameProps : Option[Seq[Tuple2[Props,String]]] = None
   def setActorNameProps(actorNamePropPairs: Seq[Tuple2[Props,String]]) {
-    actorNameProps  = Some(actorNamePropPairs)
+    actorNameProps = Some(actorNamePropPairs)
   }
-  
+    
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
   var externalEventIdx = 0
@@ -99,8 +106,23 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   var quiescentMarker:Unique = null
 
   var test_invariant : Invariant = null
+  // Whether we are currently awaiting checkpoint responses from actors.
+  var blockedOnCheckpoint = new AtomicBoolean(false)
   var stats: MinimizationStats = null
   def getName: String = "DPORwHeuristics"
+  var currentSubsequence : Seq[ExternalEvent] = null
+  var lookingFor : ViolationFingerprint = null
+  var foundLookingFor = false
+  var _initialTrace : Trace = null
+  def setInitialTrace(t: Trace) {
+    _initialTrace = t
+  }
+  var _initialDegGraph : Graph[Unique, DiEdge] = null
+  def setInitialDepGraph(g: Graph[Unique, DiEdge]) {
+    _initialDegGraph = g
+  }
+  var checkpointer : CheckpointCollector =
+    if (enableCheckpointing) new CheckpointCollector else null
 
   def nullFunPost(trace: Trace) : Unit = {}
   def nullFunDone(graph: Graph[Unique, DiEdge]) : Unit = {}
@@ -124,6 +146,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     quiescentPeriod.clear
     backTrack.clear
     exploredTracker.clear
+    blockedOnCheckpoint.set(false)
     currentRoot = getRootEvent
 
     setParentEvent(getRootEvent)
@@ -158,8 +181,8 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     depGraph.add(event)
     quiescentPeriod(event) = currentQuiescentPeriod
   }
- 
-  private[this] val _root = Unique(MsgEvent("null", "null", null), 0)
+  
+  private[this] var _root = Unique(MsgEvent("null", "null", null), 0)
   def getRootEvent() : Unique = {
     addGraphNode(_root)
     _root
@@ -441,7 +464,6 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         // as the result of NodesUnreachable being received.
         //decomposePartitionEvent(par) map tupled(
           //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
-        
         for (node  <- first) {
           partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  second
         }
@@ -482,7 +504,9 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
       case Some((nextEvent @ Unique(WaitQuiescence(), nID), _, _)) =>
         awaitQuiescenceUpdate(nextEvent)
         return schedule_new_message()
-      case _ => return None
+
+      case _ =>
+        return None
     }
     
   }
@@ -505,21 +529,30 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   def event_produced(event: Event) = event match {
       case event : SpawnEvent => actorNames += event.name
       case msg : MsgEvent => 
+
   }
 
   // Ensure that all possible actors are created, not just those with Start
   // events. This is to prevent issues with tellEnqueue getting confused.
   def maybeStartActors() {
+    // Just start and isolate all actors we might eventually care about
     actorNameProps match {
       case Some(seq) =>
         for ((props, name) <- seq) {
-          // Just start and isolate all actors we might eventually care about
           Instrumenter().actorSystem.actorOf(props, name)
-          // TODO(cs): isolate this node.
         }
       case None =>
         None
     }
+
+    if (enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
+    }
+
+    //actorNames.map(name =>
+    //  partitionMap(name) = partitionMap.getOrElse(name,
+    //    new HashSet[String]) ++ actorNames
+    //)
   }
   
   def runExternal() = {
@@ -531,11 +564,11 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
       event match {
     
         case Start(propsCtor, name) => 
-          // If not already started:
+          // If not already started: start it and unisolate it
           if (!(instrumenter().actorMappings contains name)) {
             instrumenter().actorSystem().actorOf(propsCtor(), name)
+            //partitionMap -= name
           }
-          // TODO(cs): unisolate this node.
     
         case Send(rcv, msgCtor) =>
           val ref = instrumenter().actorMappings(rcv)
@@ -562,7 +595,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         // A unique ID needs to be associated with all network events.
         case par : NetworkPartition => throw new Exception("internal error")
         case par : NetworkUnpartition => throw new Exception("internal error")
-        case _ => throw new Exception("unsuported external event")
+        case _ => throw new Exception("unsuported external event " + event)
       }
       externalEventIdx += 1
     }
@@ -571,13 +604,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     
     instrumenter().tellEnqueue.await()
     
-    // Booststrap the process.
-    schedule_new_message() match {
-      case Some((cell, env)) =>
-        instrumenter().dispatch_new_message(cell, env)
-      case None => 
-        throw new Exception("internal error")
-    }
+    instrumenter().start_dispatch
   }
  
 
@@ -626,30 +653,19 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
    * it before. We achieve this by consulting the
    * dependency graph.
    *
-   * * @param (cell, envelope: Original message context.
+   * * @param (cell, envelope): Original message context.
    *
    * * @return A unique event.
    */
   def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msg = new MsgEvent(snd, rcv, envelope.message)
+    val msg = new MsgEvent(snd, rcv, messageFingerprinter.fingerprint(envelope.message))
     // Who cares if the parentEvent is in fact a message, as long as it is a parent.
     val parent = parentEvent
 
     def matchMessage (event: Event) : Boolean = {
-      // Ugly hack since TimeoutMarker is private in new enough (> 2.0) Akka versions.
-      (event, msg) match {
-        case (MsgEvent(s1, r1, Timer(n1, m1, rep1, _)), MsgEvent(s2, r2, Timer(n2, m2, rep2, _))) =>
-          (s1 == s2) && (r1 == r2) && (n1 == n2) && (m1 == m2) && (rep1 == rep2)
-        case (MsgEvent(_, rcv1, m1), MsgEvent(_, rcv2, m2)) =>
-          (ClassTag(m1.getClass).toString, ClassTag(m2.getClass).toString) match {
-            case ("akka.actor.FSM$TimeoutMarker", "akka.actor.FSM$TimeoutMarker") => rcv1 == rcv2
-            case _ => event == msg
-          }
-        case _ =>
-          event == msg
-      }
+      return event == msg
     }
 
     val inNeighs = depGraph.get(parent).inNeighbors
@@ -660,7 +676,7 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
         val newMsg = Unique( MsgEvent(msg.sender, msg.receiver, msg.msg) )
         logger.trace(
             Console.YELLOW + "Not seen: " + newMsg.id + 
-            " (" + msg.sender + " -> " + msg.receiver + ") " + Console.RESET)
+            " (" + msg.sender + " -> " + msg.receiver + ") " + msg.msg + Console.RESET)
         return newMsg
       case _ => throw new Exception("wrong type")
     }
@@ -669,24 +685,26 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   
   
   
-  def event_produced(cell: ActorCell, envelope: Envelope) = {
+  def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
+    val snd = envelope.sender.path.name
+    val rcv = cell.self.path.name
+    if (rcv == CheckpointSink.name) {
+      assert(enableCheckpointing)
+      checkpointer.handleCheckpointResponse(envelope.message, snd)
+      // Don't add anything to pendingEvents, since we just "delivered" it
+      return
+    }
 
     envelope.message match {
     
-      // Decomposed network events are simply enqueued to the priority queued
+      // CheckpointRequests and failure detector messeages are simply enqueued to the priority queued
       // and dispatched at the earliest convenience.
-      case par: NodesUnreachable =>
+      case NodesReachable | NodesUnreachable | CheckpointRequest =>
         val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, ActorCell, Envelope)])
         pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
       
-      // Decomposed network events are simply enqueued to the priority queued
-      // and dispatched at the earliest convenience.
-      case par: NodesReachable =>
-        val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, ActorCell, Envelope)])
-        pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
-        
       case _ =>
-        val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
+        val unique @ Unique(msg : MsgEvent, id) = getMessage(cell, envelope)
         val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
         // Do not enqueue if bound hit
         if (!should_bound || currentDepth < stop_at_depth) {
@@ -748,6 +766,42 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
 
       runExternal()
     } else {
+      if (enableCheckpointing && test_invariant != null) {
+        if (blockedOnCheckpoint.get) {
+          // We've finished our checkpoint. Check our invariant. If it fails,
+          // stop exploring! Otherwise, continue exploring schedules.
+          blockedOnCheckpoint.set(false)
+          println("Checking invariant")
+          val violation = test_invariant(currentSubsequence, checkpointer.checkpoints)
+          violation match {
+            case Some(v) =>
+              if (lookingFor.matches(v)) {
+                println("Found matching violation!")
+                foundLookingFor = true
+                return
+              }
+            case None =>
+              println("No matching violation. Proceeding...")
+          }
+        } else {
+          // Initiate a checkpoint
+          blockedOnCheckpoint.set(true)
+          println("Initiating checkpoint..")
+          val actorRefs = Instrumenter().actorMappings.
+                            filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                            values.toSeq
+          val checkpointRequests = checkpointer.prepareRequests(actorRefs)
+          // Put our requests at the front of the queue, and any existing requests
+          // at the end of the queue.
+          for ((actor, request) <- checkpointRequests) {
+            Instrumenter().actorMappings(actor) ! request
+          }
+          Instrumenter().await_enqueue
+          Instrumenter().start_dispatch
+          return
+        }
+      }
+
       logger.info("\n--------------------- Interleaving #" +
                   interleavingCounter + " ---------------------")
       
@@ -800,30 +854,20 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
     throw new Exception("internal error not a message")
   }
 
-  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {
-    // Assume no one responds to sender on receiving a timer message
-    return false
-  }
-
-  override def notify_after_timer_scheduled (receiver: ActorRef, msg: Any) = {
-    instrumenter().manuallyHandleTick(receiver.path.name, msg)
-  }
-
-  override def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
+  def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
     logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver.path.name + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, ActorCell, Envelope)): Boolean = {
-      u._1 match {
-        case Unique(MsgEvent("deadLetters", n, m), _) => ((n == receiver.path.name) && (m == msg))
-        case _ => false
+      u._3 match {
+        case null => false
+        case e => e.message == msg && u._2.self.path.name == receiver.path.name
       }
-
     }
+
     pendingEvents.get(receiver.path.name) match {
-      case Some(q) => 
+      case Some(q) =>
         q.dequeueFirst(equivalentTo(_))
         logger.trace(Console.RED + " Removing pending event (" + 
-                     receiver.path.name + " , " + msg + ")" + Console.RESET)
+                    receiver.path.name + " , " + msg + ")" + Console.RESET)
       case None => // This cancellation came too late, things have already been done.
     }
   }
@@ -1100,11 +1144,37 @@ class DPORwHeuristics(depth_bound: Option[Int] = None) extends Scheduler with La
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
            _stats: MinimizationStats) : Option[EventTrace] = {
+    assert(_initialDegGraph != null)
+    assert(_initialTrace != null)
+    currentSubsequence = events
+    lookingFor = violation_fingerprint
     stats = _stats
     Instrumenter().scheduler = this
-    // TODO(cs): explore schedules.
+    // Since the graph does reference equality, need to reset _root to the
+    // root in the graph.
+    def matchesRoot(n: Unique) : Boolean = {
+      return n.event == MsgEvent("null", "null", null)
+    }
+    _initialDegGraph.nodes.toList.find(matchesRoot _) match {
+      case Some(root) => _root = root.value
+      case _ => throw new IllegalArgumentException("No root in initialDepGraph")
+    }
+
+    var traceSem = new Semaphore(0)
+    run(events,
+        f2 = (graph) => {
+          _initialDegGraph ++= graph
+          traceSem.release
+        },
+        initialTrace=Some(_initialTrace),
+        initialGraph=Some(_initialDegGraph))
+    traceSem.acquire()
     reset
     Instrumenter().restart_system()
-    return None
+    if (foundLookingFor) {
+      return Some(new EventTrace)
+    } else {
+      return None
+    }
   }
 }

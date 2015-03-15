@@ -13,6 +13,7 @@ import scala.collection.mutable.HashSet
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
+case class UniqueTimerDelivery(t: TimerDelivery, id: Int) extends Event
 
 case class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new Queue[Event], null)
@@ -40,11 +41,13 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
 
   // The difference between EventTrace.events and EventTrace.getEvents is that
   // we hide UniqueMsgSend/Events here
+  // TODO(cs): this is a dangerous API; easy to mix this up with .events...
   def getEvents() : Seq[Event] = {
     return events.map(e =>
       e match {
         case UniqueMsgSend(m, id) => m
         case UniqueMsgEvent(m, id) => m
+        case UniqueTimerDelivery(t: TimerDelivery, id) => t
         case i: Event => i
       }
     )
@@ -301,6 +304,7 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
 
     for (event <- events) {
       event match {
+        // TODO(cs): account for UniqueTimerDeliveries
         case UniqueMsgSend(m, id) =>
           if (messageSendable(m.sender, m.receiver)) {
             result += event

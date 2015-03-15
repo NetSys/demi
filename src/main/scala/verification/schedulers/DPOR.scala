@@ -695,11 +695,12 @@ class DPOR extends Scheduler with LazyLogging {
     messagesToSend += ((actor, msg))
   }
 
+  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
+    throw new RuntimeException("NYI!") // TODO(cs): do what DPORwHeuristics does..
+  }
+
   def shutdown() {
     instrumenter().restart_system
     // TODO(cs): not thread-safe? see PeekScheduler's shutdown()
   }
-
-  def notify_timer_scheduled(sender: ActorRef, receiver: ActorRef,
-                             msg: Any): Boolean = {return true}
 }

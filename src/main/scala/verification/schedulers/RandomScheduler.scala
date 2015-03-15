@@ -11,14 +11,11 @@ import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Set
 import scala.collection.mutable.HashSet
 import scala.collection.mutable.ArrayBuffer
+import scala.reflect.ClassTag
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Random
-
-import scalax.collection.mutable.Graph,
-       scalax.collection.GraphEdge.DiEdge,
-       scalax.collection.edge.LDiEdge
 
 /**
  * Takes a list of ExternalEvents as input, and explores random interleavings
@@ -35,13 +32,15 @@ import scalax.collection.mutable.Graph,
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
+class RandomScheduler(max_executions: Int,
+                      messageFingerprinter: FingerprintFactory,
+                      enableFailureDetector: Boolean,
                       invariant_check_interval: Int,
                       disableCheckpointing: Boolean)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_executions: Int) = this(max_executions, true, 0, false)
+  def this(max_executions: Int) = this(max_executions, new FingerprintFactory, true, 0, false)
   def this(max_executions: Int, enableFailureDetector: Boolean) =
-      this(max_executions, enableFailureDetector, 0, false)
+      this(max_executions, new FingerprintFactory, enableFailureDetector, 0, false)
 
   def getName: String = "RandomScheduler"
 
@@ -50,15 +49,6 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
   var maxMessages = Int.MaxValue
   def setMaxMessages(_maxMessages: Int) = {
     maxMessages = _maxMessages
-  }
-
-  // TODO(cs): put this into ExternalEventInjector?
-  var depGraph = Graph[Unique, DiEdge]()
-  var parentEvent = getRootEvent
-  def getRootEvent : Unique = {
-    var root = Unique(MsgEvent("null", "null", null), 0)
-    depGraph.add(root)
-    return root
   }
 
   var test_invariant : Invariant = null
@@ -74,12 +64,15 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
   }
 
   // Current set of enabled events.
-  // First element of tuple is the receiver
-  var pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell,Envelope)]]
+  // Our use of Uniq and Unique is somewhat confusing. Uniq is used to
+  // associate MsgSends with their subsequent MsgEvents.
+  // Unique is used by DepTracker.
+  var pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
 
-  // Current set of externally injected events, to be delivered in the order
-  // they arrive.
-  var pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
+  // Current set of failure detector or CheckpointRequest messages destined for
+  // actors, to be delivered in the order they arrive.
+  // Always prioritized over internal messages.
+  var pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
 
   // The violation we're looking for, if not None.
   var lookingFor : Option[ViolationFingerprint] = None
@@ -100,7 +93,21 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
   // what was the last value of messagesScheduledSoFar we took a checkpoint at.
   var lastCheckpoint = 0
 
+  // How many times we've replayed
   var stats: MinimizationStats = null
+
+  // For every message we deliver, track which messages become enabled as a
+  // result of our delivering that message. This can be used later to recreate
+  // the DepGraph (used by DPOR).
+  var depTracker = new DepTracker(messageFingerprinter)
+
+  // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
+  // caused us to arrive at Quiescence.
+  setQuiescenceCallback(depTracker.reportQuiescence)
+  // Tell EventOrchestrator to tell us about Kills, Parititions, UnPartitions
+  event_orchestrator.setKillCallback(depTracker.reportKill)
+  event_orchestrator.setPartitionCallback(depTracker.reportPartition)
+  event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
 
   /**
    * If we're looking for a specific violation, return None if the given
@@ -171,19 +178,22 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
       // If the violation has already been found, return.
       violationFound match {
         case Some(fingerprint) =>
+          // Prune off any external events that we didn't end up using.
+          event_trace.original_externals =
+            event_trace.original_externals.slice(0, event_orchestrator.traceIdx)
           return Some((event_trace, fingerprint))
         // Else, check the invariant condition one last time.
         case None =>
-          var checkpoint : HashMap[String, Option[CheckpointReply]] = null
           if (!disableCheckpointing) {
+            var checkpoint : HashMap[String, Option[CheckpointReply]] = null
             checkpoint = takeCheckpoint()
-          }
-          val violation = test_invariant(_trace, checkpoint)
-          violationFound = violationMatches(violation)
-          violationFound match {
-            case Some(fingerprint) =>
-              return Some((event_trace, fingerprint))
-            case None => None
+            val violation = test_invariant(_trace, checkpoint)
+            violationFound = violationMatches(violation)
+            violationFound match {
+              case Some(fingerprint) =>
+                return Some((event_trace, fingerprint))
+              case None => None
+            }
           }
       }
 
@@ -197,57 +207,33 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     return None
   }
 
-  // Convert RandomScheduler's Uniq to depGraph's Unique, using the
-  // same id.
-  def getUniqueFromUniq(uniq : Uniq[(ActorCell, Envelope)]) : Unique = {
-    val cell = uniq.element._1
-    val envelope = uniq.element._2
-    val snd = envelope.sender.path.name
-    val rcv = cell.self.path.name
-    val msgEvent = new MsgEvent(snd, rcv, envelope.message)
-    return Unique(msgEvent, id=uniq.id)
-  }
-
-  def updateDepGraph(uniq : Uniq[(ActorCell, Envelope)]) {
-    val newUnique = getUniqueFromUniq(uniq)
-    val parent = parentEvent match {
-      case u @ Unique(m: MsgEvent, id) => u
-      case _ => throw new Exception("parent event not a message")
-    }
-    val inNeighs = depGraph.get(parent).inNeighbors
-
-    val unique =
-      inNeighs.find { x => x.value.event == newUnique.event } match {
-        case Some(x) => x.value
-        case None => newUnique
-        case _ => throw new Exception("wrong type")
-    }
-
-    depGraph.add(unique)
-    depGraph.addEdge(unique, parentEvent)(DiEdge)
-  }
-
   override def event_produced(cell: ActorCell, envelope: Envelope) = {
-    val snd = envelope.sender.path.name
+    var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
-    updateDepGraph(uniq)
-
-    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
+    var isTimer = false
 
     handle_event_produced(snd, rcv, envelope) match {
       case InternalMessage => {
+        if (snd == "deadLetters") {
+          isTimer = true
+        }
+        val unique = depTracker.reportNewlyEnabled(snd, rcv, msg)
         if (!crosses_partition(snd, rcv)) {
-          pendingInternalEvents.insert(uniq)
+          pendingEvents.insert((uniq, unique))
         }
       }
       case ExternalMessage => {
-        // We assume that the failure detector and the outside world always
-        // have connectivity with all actors, i.e. no failure detector partitions.
-        pendingExternalEvents += uniq
+        if (MessageTypes.fromFailureDetector(msg) ||
+            MessageTypes.fromCheckpointCollector(msg)) {
+          pendingSystemMessages += uniq
+        } else {
+          val unique = depTracker.reportNewlyEnabledExternal(snd, rcv, msg)
+          pendingEvents.insert(uniq, unique)
+        }
       }
-      case SystemMessage => None
+      case FailureDetectorQuery => None
       case CheckpointReplyMessage =>
         if (checkpointer.done && !blockedOnCheckpoint.get) {
           val violation = test_invariant(trace, checkpointer.checkpoints)
@@ -255,6 +241,10 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
           violationFound = violationMatches(violation)
         }
     }
+
+    // Record this MsgSend as a special if it was sent from a timer.
+    snd = if (isTimer) "Timer" else snd
+    event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
   }
 
   // Record a mapping from actor names to actor refs
@@ -285,7 +275,6 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     // Also check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
       println("Exceeded maxMessages")
-      numWaitingFor.set(0)
       event_orchestrator.finish_early
       return None
     }
@@ -299,33 +288,20 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
       // CheckpointReplies.
       println("Checking invariant")
       lastCheckpoint = messagesScheduledSoFar
-      // TODO(cs): remove any elements in pendingExternalEvents, and move them
-      // to the end of pendingExternalEvents once the CheckpointRequests have
-      // been queued. Not strictly necessary for correctness, just currently means that
-      // we sometimes collect the checkpoint a bit later than we want to.
       prepareCheckpoint()
     }
 
     // Proceed normally.
     send_external_messages()
-    // Always prioritize external events.
-    if (!pendingExternalEvents.isEmpty) {
-      val uniq = pendingExternalEvents.dequeue()
+    // Always prioritize system messages.
+    if (!pendingSystemMessages.isEmpty) {
+      val uniq = pendingSystemMessages.dequeue()
       event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      uniq.element._2.message match {
-        case CheckpointRequest => None
-        case _ =>
-          messagesScheduledSoFar += 1
-          if (messagesScheduledSoFar == Int.MaxValue) {
-            messagesScheduledSoFar = 1
-          }
-      }
-      parentEvent = getUniqueFromUniq(uniq)
       return Some(uniq.element)
     }
 
     // Do we have some pending events
-    if (pendingInternalEvents.isEmpty) {
+    if (pendingEvents.isEmpty) {
       return None
     }
 
@@ -333,9 +309,9 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     if (messagesScheduledSoFar == Int.MaxValue) {
       messagesScheduledSoFar = 1
     }
-    val uniq = pendingInternalEvents.removeRandomElement()
+    val (uniq, unique) = pendingEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-    parentEvent = getUniqueFromUniq(uniq)
+    depTracker.reportNewlyDelivered(unique)
     return Some(uniq.element)
   }
 
@@ -374,21 +350,47 @@ class RandomScheduler(max_executions: Int, enableFailureDetector: Boolean,
     test_invariant = invariant
   }
 
+  def notify_timer_cancel(rcv: ActorRef, msg: Any): Unit = {
+    if (handle_timer_cancel(rcv, msg)) {
+      return
+    }
+    // Awkward, we need to walk through the entire hashset to find what we're
+    // looking for.
+    val toRemove = pendingEvents.arr.find((element) => {
+      val otherRcv = element._1._1.element._1.self.path.name
+      val otherMsg = element._1._1.element._2.message
+      rcv.path.name == otherRcv && msg == otherMsg
+    })
+    toRemove match {
+      case Some(e) =>
+        pendingEvents.remove(e)
+      case None =>
+        // It was already delivered. This is weird that the application is
+        // still trying to cancel it, but I don't think it's a violation of
+        // soundness on our part.
+        None
+    }
+  }
+
+  override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
+
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
     reset_state
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
-    pendingInternalEvents = new RandomizedHashSet[Uniq[(ActorCell, Envelope)]]
-    pendingExternalEvents = new Queue[Uniq[(ActorCell, Envelope)]]
+    pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
+    pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
     lookingFor = None
     violationFound = None
     trace = null
     messagesScheduledSoFar = 0
     lastCheckpoint = 0
-    depGraph = Graph[Unique, DiEdge]()
-    parentEvent = getRootEvent
+    depTracker = new DepTracker(messageFingerprinter)
+    event_orchestrator.setKillCallback(depTracker.reportKill)
+    event_orchestrator.setPartitionCallback(depTracker.reportPartition)
+    event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
   }
 
   def test(events: Seq[ExternalEvent],
