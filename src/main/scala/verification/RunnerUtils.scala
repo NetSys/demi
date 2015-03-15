@@ -169,7 +169,7 @@ object RunnerUtils {
                             messageDeserializer: MessageDeserializer,
                             invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new DPORwHeuristics(true, fingerprintFactory)
+    val sched = new DPORwHeuristics(true, fingerprintFactory, true)
     sched.setInvariant(invariant)
     Instrumenter().scheduler = sched
     val deserializer = new ExperimentDeserializer(experiment_dir)

@@ -40,11 +40,22 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Logger
 
 
-// DPOR scheduler.
+/**
+ * DPOR scheduler.
+ *   - prioritizePendingUponDivergence: if true, whenever an expected message in
+ *     nextTrace does not show up, rather than picking a random pending event
+ *     to proceed, instead pick the pending event that appears first in
+ *     nextTrace.
+ *   - If invariant_check_interval is <=0, only checks the invariant at the end of
+ *     the execution. Otherwise, checks the invariant every
+ *     invariant_check_interval message deliveries.
+ */
 class DPORwHeuristics(enableCheckpointing: Boolean,
   messageFingerprinter: FingerprintFactory,
+  prioritizePendingUponDivergence:Boolean=false,
+  invariant_check_interval:Int=0,
   depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
-  def this() = this(false, new FingerprintFactory, None)
+  def this() = this(false, new FingerprintFactory, false, 0, None)
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
@@ -311,7 +322,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
     // Get from the current set of pending events.
     def getPendingEvent(): Option[(Unique, ActorCell, Envelope)] = {
-      
       // Do we have some pending events
       Util.dequeueOne(pendingEvents) match {
         case Some( next @ (Unique(MsgEvent(snd, rcv, msg), id), _, _)) =>
@@ -378,8 +388,19 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         case None => None
         case _ => throw new Exception("internal error")
       }
-    
     }
+
+    // Keep looping until we find a pending message that matches.
+    // Note that this mutates nextTrace; it pops from the head of the queue
+    // until it finds a match or until the queue is empty.
+    def getNextMatchingMessage(): Option[(Unique, ActorCell, Envelope)] = {
+      var foundMatching : Option[(Unique, ActorCell, Envelope)] = None
+      while (!nextTrace.isEmpty && foundMatching == None) {
+        foundMatching = getMatchingMessage()
+      }
+      return foundMatching
+    }
+
     //
     // Are there any prioritized events that need to be dispatched.
     pendingEvents.get(PRIORITY) match {
@@ -393,7 +414,12 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     
     val result = awaitingQuiescence match {
       case false =>
-        getMatchingMessage() match {
+        val matching = prioritizePendingUponDivergence match {
+          case true => getNextMatchingMessage
+          case false => getMatchingMessage
+        }
+
+        matching match {
           
           // There is a pending event that matches a message in our trace.
           // We call this a convergent state.
