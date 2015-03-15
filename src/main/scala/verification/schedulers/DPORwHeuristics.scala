@@ -50,12 +50,15 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
-  var (should_bound, stop_at_depth) = depth_bound match {
-    case Some(d) => (true, d)
-    case _ => (false, 0)
+  var should_bound = false
+  var stop_at_depth = 0
+  depth_bound match {
+    case Some(d) => setDepthBound(d)
+    case _ => None
   }
-  def setDepthBound(depth_bound: Int) {
-    var (should_bound, stop_at_depth) = (true, depth_bound)
+  def setDepthBound(_stop_at_depth: Int) {
+    should_bound = true
+    stop_at_depth = _stop_at_depth
   }
 
   // Collection of all actors that could possibly have messages sent to them.
