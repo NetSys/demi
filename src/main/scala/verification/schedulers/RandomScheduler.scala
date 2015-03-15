@@ -178,6 +178,9 @@ class RandomScheduler(max_executions: Int,
       // If the violation has already been found, return.
       violationFound match {
         case Some(fingerprint) =>
+          // Prune off any external events that we didn't end up using.
+          event_trace.original_externals =
+            event_trace.original_externals.slice(0, event_orchestrator.traceIdx)
           return Some((event_trace, fingerprint))
         // Else, check the invariant condition one last time.
         case None =>
