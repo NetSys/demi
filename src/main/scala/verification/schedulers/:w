@@ -103,8 +103,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   val nextTrace = new Trace
   var parentEvent = getRootEvent
   var currentDepth = 0
-  // The depth of the last checkpoint we took
-  var lastCheckpoint = currentDepth
   
   val partitionMap = new HashMap[String, HashSet[String]]
   
