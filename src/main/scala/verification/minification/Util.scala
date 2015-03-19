@@ -34,15 +34,6 @@ object MinificationUtil {
     }
     return splits
   }
-
-  def map_from_iterable[A,B](in: Iterable[(A,B)]) : Map[A,B] = {
-    val dest = collection.mutable.Map[A,B]()
-    for (e @ (k,v) <- in) {
-      dest += e
-    }
-
-    return dest
-  }
 }
 
 /**
@@ -163,7 +154,7 @@ object EventDag {
  * An unmodified EventDag.
  */
 class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
-  val event_to_idx : Map[ExternalEvent, Int] = MinificationUtil.map_from_iterable(events.zipWithIndex)
+  val event_to_idx : Map[ExternalEvent, Int] = Util.map_from_iterable(events.zipWithIndex)
 
   def remove_events(to_remove: Seq[AtomicEvent]) : EventDag = {
     val remaining = EventDag.remove_events(to_remove, events)

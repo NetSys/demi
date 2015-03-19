@@ -46,6 +46,8 @@ object ExperimentSerializer {
   val stats = "/minimization_stats.json"
   val depGraph = "/depGraph.bin"
   val initialTrace = "/initialTrace.bin"
+  // initialTrace minus all events that were concurrent with the violation.
+  val filteredTrace = "/filteredTrace.bin"
 
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
@@ -68,7 +70,8 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
   def record_experiment(experiment_name: String, trace: EventTrace,
                         violation: ViolationFingerprint,
                         depGraph: Option[Graph[Unique, DiEdge]]=None,
-                        initialTrace: Option[Queue[Unique]]=None) : String = {
+                        initialTrace: Option[Queue[Unique]]=None,
+                        filteredTrace: Option[Queue[Unique]]=None) : String = {
     val output_dir = ExperimentSerializer.create_experiment_dir(experiment_name)
     // We store the actor's names and props separately (reduntantly), so that
     // we can properly deserialize ActorRefs later. (When deserializing
@@ -78,14 +81,16 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     // system with all these actors created, and then deserialize the rest of the
     // events.)
     record_experiment_known_dir(output_dir, trace, violation,
-                                depGraph=depGraph, initialTrace=initialTrace)
+                                depGraph=depGraph, initialTrace=initialTrace,
+                                filteredTrace=filteredTrace)
     return output_dir
   }
 
   def record_experiment_known_dir(output_dir: String, trace: EventTrace,
                                   violation: ViolationFingerprint,
                                   depGraph: Option[Graph[Unique, DiEdge]]=None,
-                                  initialTrace: Option[Queue[Unique]]=None) {
+                                  initialTrace: Option[Queue[Unique]]=None,
+                                  filteredTrace: Option[Queue[Unique]]=None) {
     val actorPropNamePairs = trace.events.flatMap {
       case SpawnEvent(_,props,name,_) => Some((props, name))
       case _ => None
@@ -155,13 +160,16 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
         None
     }
 
-    initialTrace match {
-      case Some(t) =>
-        val traceBuf = message_serializer.serialize(t)
-        JavaSerialization.writeToFile(output_dir + ExperimentSerializer.initialTrace,
-                                      traceBuf)
-      case None =>
-        None
+    for ((dporTrace, outputFile) <- Seq(
+         (initialTrace, ExperimentSerializer.initialTrace),
+         (filteredTrace, ExperimentSerializer.filteredTrace))) {
+      dporTrace match {
+        case Some(t) =>
+          val traceBuf = message_serializer.serialize(t)
+          JavaSerialization.writeToFile(output_dir + outputFile, traceBuf)
+        case None =>
+          None
+      }
     }
   }
 
@@ -213,24 +221,25 @@ class ExperimentDeserializer(results_dir: String) {
     return JavaSerialization.deserialize[Array[ExternalEvent]](buf)
   }
 
-  def get_dep_graph(): Option[Graph[Unique, DiEdge]] = {
-    val file = results_dir + ExperimentSerializer.depGraph
-    if (new java.io.File(file).exists) {
+  private[this] def readIfFileExists[T](file: String): Option[T] = {
+   if (new java.io.File(file).exists) {
       val buf = JavaSerialization.readFromFile(file)
-      val graph = JavaSerialization.deserialize[Graph[Unique, DiEdge]](buf)
-      return Some(graph)
+      val result = JavaSerialization.deserialize[T](buf)
+      return Some(result)
     }
     return None
   }
 
+  def get_dep_graph(): Option[Graph[Unique, DiEdge]] = {
+    return readIfFileExists[Graph[Unique, DiEdge]](results_dir + ExperimentSerializer.depGraph)
+  }
+
   def get_initial_trace(): Option[Queue[Unique]] = {
-    val file = results_dir + ExperimentSerializer.initialTrace
-    if (new java.io.File(file).exists) {
-      val buf = JavaSerialization.readFromFile(file)
-      val trace = JavaSerialization.deserialize[Queue[Unique]](buf)
-      return Some(trace)
-    }
-    return None
+    return readIfFileExists[Queue[Unique]](results_dir + ExperimentSerializer.initialTrace)
+  }
+
+  def get_filtered_initial_trace(): Option[Queue[Unique]] = {
+    return readIfFileExists[Queue[Unique]](results_dir + ExperimentSerializer.filteredTrace)
   }
 
   def get_events(message_deserializer: MessageDeserializer, actorSystem: ActorSystem) : EventTrace = {

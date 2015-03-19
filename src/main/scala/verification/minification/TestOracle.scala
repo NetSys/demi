@@ -9,6 +9,8 @@ import scala.collection.mutable.HashMap
  */
 trait ViolationFingerprint {
   def matches(other: ViolationFingerprint) : Boolean
+  // Return the names of all nodes whose internal state exhibited the invariant violation.
+  def affectedNodes(): Seq[String]
 }
 
 object TestOracle {

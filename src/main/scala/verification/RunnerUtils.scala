@@ -13,7 +13,7 @@ object RunnerUtils {
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            fingerprintFactory: FingerprintFactory,
            validate_replay:Option[() => ReplayScheduler]=None) :
-        Tuple4[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique]] = {
+        Tuple5[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
     var depGraph : Graph[Unique, DiEdge] = null
@@ -64,7 +64,13 @@ object RunnerUtils {
       }
     }
 
-    return (traceFound, violationFound, depGraph, initialTrace)
+    // Before returning, try to prune events that are concurrent with the violation.
+    println("Pruning events not in provenance of violation. This may take awhile...")
+    val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
+    val filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
+    val numberFiltered = initialTrace.size - filtered.size
+    println("Pruned " + numberFiltered + "/" + initialTrace.size + " concurrent events")
+    return (traceFound, violationFound, depGraph, initialTrace, filtered)
   }
 
   def deserializeExperiment(experiment_dir: String,
@@ -188,7 +194,7 @@ object RunnerUtils {
         sched.setInitialDepGraph(graph)
       case None => throw new IllegalArgumentException("Need a DepGraph to run DPORwHeuristics")
     }
-    val initialTraceOpt = deserializer.get_initial_trace()
+    val initialTraceOpt = deserializer.get_filtered_initial_trace()
     initialTraceOpt match {
       case Some(initialTrace) =>
         sched.setDepthBound(initialTrace.size)

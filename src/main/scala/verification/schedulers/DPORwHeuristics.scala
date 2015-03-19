@@ -416,10 +416,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     
     val result = awaitingQuiescence match {
       case false =>
-        prioritizePendingUponDivergence match {
-          case true => getNextMatchingMessage
-          case false => getMatchingMessage
-        } match {
+        (prioritizePendingUponDivergence match {
+          case true => getNextMatchingMessage()
+          case false => getMatchingMessage()
+        }) match {
           
           // There is a pending event that matches a message in our trace.
           // We call this a convergent state.
