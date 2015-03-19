@@ -15,8 +15,10 @@ import akka.dispatch.Envelope,
 import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.Queue,
        scala.collection.mutable.HashMap,
+       scala.collection.mutable.HashSet,
        scala.collection.mutable.Set,
-       scala.collection.mutable.ArrayBuffer
+       scala.collection.mutable.ArrayBuffer,
+       scala.annotation.tailrec
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphPredef._, 
@@ -169,11 +171,145 @@ class VCLogger () {
   }
 }
 
+class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
+  val happensBefore = new HashSet[(Unique, Unique)]
+
+  // We know that our traces are linearizable, so we can detect concurrent
+  // events without vector clocks.
+  //
+  // We do this in two steps:
+  //  - compute first order happens-before pairs
+  //    (Defined as one of two conditions: i. a and b are on the same
+  //      machine, or ii. a is a send event and b is the corresponding receive event.)
+  //  - Then compute the transitive closure of the initial set of happens-before
+  //    pairs
+  //
+  // N.B. we ignore quiescence and network paritions/unparitions for now.
+  {
+    // events occuring on the same machine
+    val receiver2priorReceives = new HashMap[String, Queue[Unique]]
+
+    println("computing first order happens-before..")
+    trace foreach {
+      case u @ Unique(MsgEvent(snd, rcv, msg), id) =>
+        // deal with prior events on the same machine.
+        val priorReceives = receiver2priorReceives.getOrElse(rcv, new Queue[Unique]) += u
+        receiver2priorReceives(rcv) = priorReceives
+        priorReceives.foreach(p => happensBefore += ((p,u)))
+        // deal with message sends that happen as a result of this receive
+        // event. (well, we don't explicitly track message sends. But we can
+        // look at the the depGraph to know which messages got sent
+        // immediately after this receive occurred.)
+        depGraph.get(u).inNeighbors.foreach(s => happensBefore += ((u,s)))
+      case _ => None
+    }
+
+    // Now compute the transitive closure.
+    // N.B. I initially tried a simple algorithm for computing transitive
+    // closure, but it turned out to be hideously slow. So we do something
+    // more complicated, described here:
+    //   http://cs.stackexchange.com/questions/7231/efficient-algorithm-for-retrieving-the-transitive-closure-of-a-directed-acyclic
+    println("computing transitive closure...")
+
+    // First, topologically sort the relation.
+    val sorted = Util.topologicalSort[Unique](happensBefore.filter{ case (u1,u2) => u1 != u2 })
+
+    // Now we just go backwards through this list, starting at the last vertex vn.
+    // vn's transitive closure is just itself. Also add vn to the transitive closure
+    // of every vertex with an edge to vn.
+    //
+    // For each other vertex vi, going from the end backwards, first add vi to its
+    // own transitive closure, then add everything in the transitive closure of vi to
+    // the transitive closure of all the vertices with an edge to vi.
+
+    val unique2successors = new HashMap[Unique, Set[Unique]]
+    // To make this more efficient, we also track all nodes that have an edge to
+    // a successor node
+    val node2parents = new HashMap[Unique, Set[Unique]]
+    for ((u1, u2) <- happensBefore) {
+      node2parents(u2) = node2parents.getOrElse(u2, Set()) + u1
+    }
+
+    for (u <- sorted.toSeq.reverse) {
+      // First add vi to its own transitive closure.
+      unique2successors(u) = unique2successors.getOrElse(u, Set()) + u
+      // Then add everything in the transitive closure of vi to
+      // the transitive closure of all the vertices with an edge to vi.
+      for (parent <- node2parents.getOrElse(u, Set())) {
+        unique2successors(parent) = unique2successors.getOrElse(
+          parent, Set()) ++ unique2successors(u)
+      }
+    }
+
+    for ((u1, sucessors) <- unique2successors) {
+      for (u2 <- sucessors) {
+        happensBefore += ((u1, u2))
+      }
+    }
+  }
+
+  def concurrent(a: Unique, b: Unique) : Boolean = {
+    return !((happensBefore contains (a,b)) || (happensBefore contains (b,a)))
+  }
+
+  def pruneConcurrentEvents(violation: ViolationFingerprint) : Queue[Unique] = {
+    // First, find the last event that occured in trace for each node affected
+    // by the violation
+    def findLastEventForNode(node: String) : Option[Unique] = {
+      return trace.reverse.find {
+        case Unique(MsgEvent(_, rcv, _), _) =>
+          rcv == node
+        case _ => false
+      }
+    }
+
+    val lastEvents = violation.affectedNodes.flatMap { findLastEventForNode(_) }
+
+    // Now remove all events that are concurrent or happenAfter all last events
+    def concurrentOrAfterAllLastEvents(u: Unique, lastEvents: Seq[Unique]) : Boolean = {
+      return lastEvents.forall(o => concurrent(o,u) || happensBefore(o,u))
+    }
+
+    // We return those that are *before* lastEvents
+    println("computing concurrent events...")
+    return trace.filterNot { concurrentOrAfterAllLastEvents(_, lastEvents) }
+  }
+}
+
 object Util {
 
   
   // Global logger instance.
   val logger = new VCLogger()
+
+  def map_from_iterable[A,B](in: Iterable[(A,B)]) : collection.mutable.Map[A,B] = {
+    val dest = collection.mutable.Map[A,B]()
+    for (e @ (k,v) <- in) {
+      dest += e
+    }
+
+    return dest
+  }
+
+  // Taken from: https://gist.github.com/ThiporKong/4399695
+  def topologicalSort[A](edges: Traversable[(A, A)]): Iterable[A] = {
+    @tailrec
+    def tsort(toPreds: Map[A, Set[A]], done: Iterable[A]): Iterable[A] = {
+      val (noPreds, hasPreds) = toPreds.partition { _._2.isEmpty }
+      if (noPreds.isEmpty) {
+        if (hasPreds.isEmpty) done else sys.error(hasPreds.toString)
+      } else {
+        val found = noPreds.map { _._1 }
+        tsort(hasPreds.mapValues { _ -- found }, done ++ found)
+      }
+    }
+
+    val toPred = edges.foldLeft(Map[A, Set[A]]()) { (acc, e) =>
+      acc + (e._1 -> acc.getOrElse(e._1, Set())) + (e._2 -> (acc.getOrElse(e._2, Set()) + e._1))
+    }
+    tsort(toPred, Seq())
+  }
+
     
   def dequeueOne[T1, T2](outer : HashMap[T1, Queue[T2]]) : Option[T2] =
     
