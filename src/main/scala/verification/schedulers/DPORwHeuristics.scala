@@ -103,8 +103,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   val nextTrace = new Trace
   var parentEvent = getRootEvent
   var currentDepth = 0
-  // The depth of the last checkpoint we took
-  var lastCheckpoint = currentDepth
+  // N.B. slightly different in meaning than currentDepth. See
+  // setParentEvent().
+  var messagesScheduledSoFar = 0
+  // When we took the last checkpoint.
+  var lastCheckpoint = messagesScheduledSoFar
   
   val partitionMap = new HashMap[String, HashSet[String]]
   
@@ -160,6 +163,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     backTrack.clear
     exploredTracker.clear
     blockedOnCheckpoint.set(false)
+    foundLookingFor = false
+    messagesScheduledSoFar = 0
+    lastCheckpoint = 0
     currentRoot = getRootEvent
 
     setParentEvent(getRootEvent)
@@ -286,11 +292,48 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     case _ => throw new Exception("internal error")
   }
 
+  // TODO(cs): could potentially optimize this a bit. If a node hasn't
+  // received a message since the last checkpoint, no need to send it a
+  // CheckpointRequest.
+  def prepareCheckpoint() {
+    println("Initiating checkpoint..")
+    val actorRefs = Instrumenter().actorMappings.
+                      filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                      values.toSeq
+    val checkpointRequests = checkpointer.prepareRequests(actorRefs)
+    // Put our requests at the front of the queue, and any existing requests
+    // at the end of the queue.
+    for ((actor, request) <- checkpointRequests) {
+      Instrumenter().actorMappings(actor) ! request
+    }
+    Instrumenter().await_enqueue
+  }
+
+  // Global invariant.
+  def checkInvariant() {
+    println("Checking invariant")
+    val violation = test_invariant(currentSubsequence, checkpointer.checkpoints)
+    violation match {
+      case Some(v) =>
+        if (lookingFor.matches(v)) {
+          println("Found matching violation!")
+          foundLookingFor = true
+          return
+        }
+      case None =>
+        println("No matching violation. Proceeding...")
+    }
+  }
   
   
   
   // Figure out what is the next message to schedule.
   def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+    // Stop if we found the original invariant violation.
+    if (foundLookingFor) {
+      return None
+    }
+        
     
     
     def checkInvariant[T1](result : Option[T1]) = result match {
@@ -403,6 +446,16 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       return foundMatching
     }
 
+    // Now on to actually picking a message to schedule.
+    // First check if it's time to check invariants.
+    if (enableCheckpointing &&
+        !blockedOnCheckpoint.get &&
+        invariant_check_interval > 0 &&
+        (messagesScheduledSoFar % invariant_check_interval) == 0 &&
+        lastCheckpoint != messagesScheduledSoFar) {
+      lastCheckpoint = messagesScheduledSoFar
+      prepareCheckpoint()
+    }
     //
     // Are there any prioritized events that need to be dispatched.
     pendingEvents.get(PRIORITY) match {
@@ -412,6 +465,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       }
       case _ => None
     }
+
+    // Actual (non-priority) messages scheduled so far.
+    messagesScheduledSoFar += 1
     
     
     val result = awaitingQuiescence match {
@@ -717,6 +773,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     if (rcv == CheckpointSink.name) {
       assert(enableCheckpointing)
       checkpointer.handleCheckpointResponse(envelope.message, snd)
+      if (checkpointer.done && !blockedOnCheckpoint.get) {
+        checkInvariant()
+      }
+
       // Don't add anything to pendingEvents, since we just "delivered" it
       return
     }
@@ -775,6 +835,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   
   
   def notify_quiescence() {
+    if (foundLookingFor) {
+      // We're done.
+      done(depGraph)
+      return
+    }
     
     if (awaitingQuiescence) {
       awaitingQuiescence = false
@@ -797,32 +862,15 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
           // We've finished our checkpoint. Check our invariant. If it fails,
           // stop exploring! Otherwise, continue exploring schedules.
           blockedOnCheckpoint.set(false)
-          println("Checking invariant")
-          val violation = test_invariant(currentSubsequence, checkpointer.checkpoints)
-          violation match {
-            case Some(v) =>
-              if (lookingFor.matches(v)) {
-                println("Found matching violation!")
-                foundLookingFor = true
-                return
-              }
-            case None =>
-              println("No matching violation. Proceeding...")
+          checkInvariant()
+          if (foundLookingFor) {
+            done(depGraph)
+            return
           }
         } else {
           // Initiate a checkpoint
           blockedOnCheckpoint.set(true)
-          println("Initiating checkpoint..")
-          val actorRefs = Instrumenter().actorMappings.
-                            filterNot({case (k,v) => ActorTypes.systemActor(k)}).
-                            values.toSeq
-          val checkpointRequests = checkpointer.prepareRequests(actorRefs)
-          // Put our requests at the front of the queue, and any existing requests
-          // at the end of the queue.
-          for ((actor, request) <- checkpointRequests) {
-            Instrumenter().actorMappings(actor) ! request
-          }
-          Instrumenter().await_enqueue
+          prepareCheckpoint()
           Instrumenter().start_dispatch
           return
         }
@@ -838,6 +886,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         logger.debug(Console.BLUE + " " + id + " " + ev + Console.RESET)
 
       
+      messagesScheduledSoFar = 0
       nextTrace.clear()
       
       // Unconditionally post the current trace
