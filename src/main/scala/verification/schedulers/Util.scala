@@ -187,7 +187,7 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
   // N.B. we ignore quiescence and network paritions/unparitions for now.
   {
     // events occuring on the same machine
-    val receiver2priorReceives = new HashMap[String, Queue[Unique]]
+    var receiver2priorReceives = new HashMap[String, Queue[Unique]]
 
     println("computing first order happens-before..")
     trace foreach {
@@ -203,6 +203,10 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
         depGraph.get(u).inNeighbors.foreach(s => happensBefore += ((u,s)))
       case _ => None
     }
+
+    // We sometimes run into OOMs while computing the transitive closure, so
+    // just be extra paranoid about GC.
+    receiver2priorReceives = null
 
     // Now compute the transitive closure.
     // N.B. I initially tried a simple algorithm for computing transitive
@@ -239,12 +243,11 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
         unique2successors(parent) = unique2successors.getOrElse(
           parent, Set()) ++ unique2successors(u)
       }
-    }
-
-    for ((u1, sucessors) <- unique2successors) {
-      for (u2 <- sucessors) {
-        happensBefore += ((u1, u2))
+      // Now get rid of unique2successors(u), since we no longer need it.
+      for (u2 <- unique2successors(u)) {
+        happensBefore += ((u, u2))
       }
+      unique2sucessors -= u
     }
   }
 
