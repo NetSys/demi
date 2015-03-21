@@ -247,7 +247,7 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
       for (u2 <- unique2successors(u)) {
         happensBefore += ((u, u2))
       }
-      unique2sucessors -= u
+      unique2successors -= u
     }
   }
 
