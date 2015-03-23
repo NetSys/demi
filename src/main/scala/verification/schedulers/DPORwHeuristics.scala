@@ -49,6 +49,8 @@ import com.typesafe.scalalogging.LazyLogging,
  *   - If invariant_check_interval is <=0, only checks the invariant at the end of
  *     the execution. Otherwise, checks the invariant every
  *     invariant_check_interval message deliveries.
+ *   - depth_bound: determines the maximum depGraph path from the root to the messages
+ *     played. Note that this differs from maxMessagesToSchedule.
  */
 class DPORwHeuristics(enableCheckpointing: Boolean,
   messageFingerprinter: FingerprintFactory,
@@ -70,6 +72,12 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   def setDepthBound(_stop_at_depth: Int) {
     should_bound = true
     stop_at_depth = _stop_at_depth
+  }
+  var should_cap_messages = false
+  var max_messages = 0
+  def setMaxMessagesToSchedule(_max_messages: Int) {
+    should_cap_messages = true
+    max_messages = _max_messages
   }
 
   // Collection of all actors that could possibly have messages sent to them.
@@ -468,6 +476,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
     // Actual (non-priority) messages scheduled so far.
     messagesScheduledSoFar += 1
+    if (should_cap_messages && messagesScheduledSoFar > max_messages) {
+      return None
+    }
     
     
     val result = awaitingQuiescence match {
