@@ -12,7 +12,8 @@ object RunnerUtils {
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            fingerprintFactory: FingerprintFactory,
-           validate_replay:Option[() => ReplayScheduler]=None) :
+           validate_replay:Option[() => ReplayScheduler]=None,
+           invariant_check_interval:Int=30) :
         Tuple5[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -24,7 +25,7 @@ object RunnerUtils {
 
       // TODO(cs): it's possible for RandomScheduler to never terminate
       // (waiting for a WaitQuiescene)
-      val sched = new RandomScheduler(1, fingerprintFactory, false, 30, false)
+      val sched = new RandomScheduler(1, fingerprintFactory, false, invariant_check_interval, false)
       sched.setInvariant(invariant)
       Instrumenter().scheduler = sched
       sched.explore(fuzzTest) match {
@@ -125,7 +126,7 @@ object RunnerUtils {
                     messageDeserializer: MessageDeserializer,
                     allowPeek: Boolean,
                     invariant: TestOracle.Invariant,
-                    event_mapper: Option[HistoricalScheduler.EventMapper]) :
+                    event_mapper: Option[HistoricalScheduler.EventMapper]=None) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(new EventTrace, allowPeek,
         fingerprintFactory, false)

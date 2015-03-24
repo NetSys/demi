@@ -23,8 +23,20 @@ trait MessageSerializer {
   def serialize(msg: Any): ByteBuffer
 }
 
+class BasicMessageSerializer extends MessageSerializer {
+  def serialize(msg: Any): ByteBuffer = {
+    return JavaSerialization.serialize(msg)
+  }
+}
+
 trait MessageDeserializer {
   def deserialize(buf: ByteBuffer): Any
+}
+
+class BasicMessageDeserializer extends MessageDeserializer {
+  def deserialize(buf: ByteBuffer): Any = {
+    return JavaSerialization.deserialize[Any](buf)
+  }
 }
 
 // classLoaders for the application's messages are not in scope within this file,
