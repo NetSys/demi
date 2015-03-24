@@ -175,8 +175,15 @@ object RunnerUtils {
                             messageDeserializer: MessageDeserializer,
                             invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new DPORwHeuristics(true, fingerprintFactory, true,
-                                    invariant_check_interval=5)
+
+    val heuristic = new AdditionDistanceOrdering
+    val sched = new DPORwHeuristics(true, fingerprintFactory,
+                                    prioritizePendingUponDivergence=true,
+                                    invariant_check_interval=5,
+                                    backtrackHeuristic=heuristic)
+    // XXX
+    sched.setMaxDistance(0)
+
     sched.setInvariant(invariant)
     Instrumenter().scheduler = sched
     val deserializer = new ExperimentDeserializer(experiment_dir)
@@ -198,7 +205,8 @@ object RunnerUtils {
     val initialTraceOpt = deserializer.get_filtered_initial_trace()
     initialTraceOpt match {
       case Some(initialTrace) =>
-        sched.setDepthBound(initialTrace.size)
+        heuristic.init(sched, initialTrace)
+        sched.setMaxMessagesToSchedule(initialTrace.size)
         sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
       case None => throw new IllegalArgumentException("Need initialTrace to run DPORwHeuristics")
     }
