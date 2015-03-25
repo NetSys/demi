@@ -92,6 +92,19 @@ object MessageTypes {
       case _ => return false
     }
   }
+
+  def sanityCheckTrace(trace: Seq[ExternalEvent]) {
+    trace foreach {
+      case Send(_, msgCtor) =>
+        val msg = msgCtor()
+        if (MessageTypes.fromFailureDetector(msg) ||
+            MessageTypes.fromCheckpointCollector(msg)) {
+          throw new IllegalArgumentException(
+            "trace contains system message: " + msg)
+        }
+      case _ => None
+    }
+  }
 }
 
 object ActorTypes {

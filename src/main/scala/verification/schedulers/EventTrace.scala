@@ -207,10 +207,11 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       case s: Send => Some(s)
       case _ => None
     }
-    val subseq_sends = new HashSet[Send] ++ subseq flatMap {
+    val subseq_sends_lst = subseq flatMap {
       case s: Send => Some(s)
       case _ => None
     }
+    val subseq_sends = subseq_sends_lst.toSet
 
     // Gather all indexes of original_sends that are not in subseq_sends
     val missing_indices = new HashSet[Int] ++

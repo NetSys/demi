@@ -8,6 +8,7 @@ class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends M
   val stats = new MinimizationStats("LeftToRightRemoval", oracle.getName)
 
   def minimize(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
+    MessageTypes.sanityCheckTrace(events)
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
       println("Checking if unmodified trace triggers violation...")

@@ -66,6 +66,8 @@ object RunnerUtils {
     }
 
     // Before returning, try to prune events that are concurrent with the violation.
+    // TODO(cs): currently only DPORwHeuristics makes use of this
+    // optimization...
     println("Pruning events not in provenance of violation. This may take awhile...")
     val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
     val filtered = provenenceTracker.pruneConcurrentEvents(violationFound)

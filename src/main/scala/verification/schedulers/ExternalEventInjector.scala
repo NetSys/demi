@@ -177,7 +177,8 @@ trait ExternalEventInjector[E] {
   }
 
   // Given an external event trace, see the events produced
-  def execute_trace (_trace: Seq[E]) : EventTrace = {
+  def execute_trace (_trace: Seq[E with ExternalEvent]) : EventTrace = {
+    MessageTypes.sanityCheckTrace(_trace)
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
 
@@ -193,7 +194,6 @@ trait ExternalEventInjector[E] {
         populateActorSystem(actorNamePropPairs)
       } else {
         populateActorSystem(_trace flatMap {
-          case SpawnEvent(_,props,name,_) => Some((props, name))
           case Start(propCtor,name) => Some((propCtor(), name))
           case _ => None
         })

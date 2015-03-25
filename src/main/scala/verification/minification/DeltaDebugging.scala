@@ -15,6 +15,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
   // Note that this differs from the 2001 version:
   //   https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf
   def minimize(events: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
+    MessageTypes.sanityCheckTrace(events)
     violation_fingerprint = _violation_fingerprint
 
     // First check if the initial trace violates the exception
