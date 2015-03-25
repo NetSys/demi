@@ -57,9 +57,6 @@ object STSScheduler {
  * ExternalEvents. Attempts to find a schedule containing the ExternalEvents
  * that triggers a given invariant.
  *
- * populateActors: whether to populateActors within test(). If false, you
- * the caller needs to do it before invoking test().
- *
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
@@ -124,10 +121,14 @@ class STSScheduler(var original_trace: EventTrace,
     }
 
     if (!alreadyPopulated) {
-      populateActorSystem(original_trace.getEvents flatMap {
-        case SpawnEvent(_,props,name,_) => Some((props, name))
-        case _ => None
-      })
+      if (actorNamePropPairs != null) {
+        populateActorSystem(actorNamePropPairs)
+      } else {
+        populateActorSystem(original_trace.getEvents flatMap {
+          case SpawnEvent(_,props,name,_) => Some((props, name))
+          case _ => None
+        })
+      }
     }
 
     // We use the original trace as our reference point as we step through the

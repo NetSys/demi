@@ -49,6 +49,14 @@ trait ExternalEventInjector[E] {
     checkpointer = new CheckpointCollector
   }
 
+  // A list of all *possible* actors, not just all live actors.
+  var actorNamePropPairs: Seq[Tuple2[Props,String]] = null
+  // If invoked, will always populate these actors, not just those with Start
+  // events.
+  def setActorNamePropPairs(_actorNamePropPairs: Seq[Tuple2[Props,String]]) {
+    actorNamePropPairs = _actorNamePropPairs
+  }
+
   // Semaphore to wait for trace replay to be done. We initialize the
   // semaphore to 0 rather than 1, so that the main thread blocks upon
   // invoking acquire() until another thread release()'s it.
@@ -159,9 +167,9 @@ trait ExternalEventInjector[E] {
   // so we can resolve serialized ActorRefs. Here we populate the actor system
   // give the names and props of all actors that will eventually appear in the
   // execution.
-  def populateActorSystem(actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
+  def populateActorSystem(_actorNamePropPairs: Seq[Tuple2[Props,String]]) = {
     alreadyPopulated = true
-    for ((props, name) <- actorNamePropPairs) {
+    for ((props, name) <- _actorNamePropPairs) {
       // Just start and isolate all actors we might eventually care about
       Instrumenter().actorSystem.actorOf(props, name)
       event_orchestrator.isolate_node(name)
@@ -181,11 +189,15 @@ trait ExternalEventInjector[E] {
     }
 
     if (!alreadyPopulated) {
-      populateActorSystem(_trace flatMap {
-        case SpawnEvent(_,props,name,_) => Some((props, name))
-        case Start(propCtor,name) => Some((propCtor(), name))
-        case _ => None
-      })
+      if (actorNamePropPairs != null) {
+        populateActorSystem(actorNamePropPairs)
+      } else {
+        populateActorSystem(_trace flatMap {
+          case SpawnEvent(_,props,name,_) => Some((props, name))
+          case Start(propCtor,name) => Some((propCtor(), name))
+          case _ => None
+        })
+      }
     }
 
     currentlyInjecting.set(true)

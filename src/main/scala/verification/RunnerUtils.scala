@@ -81,6 +81,7 @@ object RunnerUtils {
     val deserializer = new ExperimentDeserializer(experiment_dir)
     Instrumenter().scheduler = scheduler
     scheduler.populateActorSystem(deserializer.get_actors)
+    scheduler.setActorNamePropPairs(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
     val dep_graph = deserializer.get_dep_graph()
