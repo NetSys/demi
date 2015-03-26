@@ -50,6 +50,7 @@ case class SerializedUniqueMsgEvent(m: SerializedMsgEvent, id: Int) extends Even
 case class SerializedSpawnEvent(parent: String, props: Props, name: String, actor: String) extends Event
 
 object ExperimentSerializer {
+  val idGenerator = "/idGenerator.bin"
   val actors = "/actors.bin"
   val event_trace = "/event_trace.bin"
   val original_externals = "/original_externals.bin"
@@ -103,6 +104,9 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
                                   depGraph: Option[Graph[Unique, DiEdge]]=None,
                                   initialTrace: Option[Queue[Unique]]=None,
                                   filteredTrace: Option[Queue[Unique]]=None) {
+    JavaSerialization.writeToFile(output_dir + ExperimentSerializer.idGenerator,
+      JavaSerialization.serialize(IDGenerator.uniqueId.get()))
+
     val actorPropNamePairs = trace.events.flatMap {
       case SpawnEvent(_,props,name,_) => Some((props, name))
       case _ => None
@@ -215,6 +219,11 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
 }
 
 class ExperimentDeserializer(results_dir: String) {
+  readIfFileExists[Int](results_dir + ExperimentSerializer.idGenerator) match {
+    case Some(int) => IDGenerator.uniqueId.set(int)
+    case None => None
+  }
+
   def get_actors() : Seq[Tuple2[Props, String]] = {
     val buf = JavaSerialization.readFromFile(results_dir +
       ExperimentSerializer.actors)
