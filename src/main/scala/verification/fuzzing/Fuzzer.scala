@@ -63,7 +63,8 @@ class Fuzzer(num_events: Integer,
              message_gen: MessageGenerator,
              prefix: Seq[ExternalEvent]) {
 
-  val rand = new Random
+  var seed = System.currentTimeMillis
+  var rand = new Random(seed)
 
   val nodes = prefix flatMap {
     case Start(_, name) => Some(name)
@@ -120,12 +121,23 @@ class Fuzzer(num_events: Integer,
   def generateFuzzTest() : Seq[ExternalEvent] = {
     reset()
     val fuzzTest = new ListBuffer[ExternalEvent] ++ prefix
+
+    def validateFuzzTest(_fuzzTest: Seq[ExternalEvent]) {
+      for (i <- (0 until _fuzzTest.length - 1)) {
+        if (_fuzzTest(i).getClass() == classOf[WaitQuiescence] &&
+            _fuzzTest(i+1).getClass() == classOf[WaitQuiescence]) {
+          throw new AssertionError(i + " " + i+1 + ". Seed was: " + seed)
+        }
+      }
+    }
+
     // Ensure that we don't inject two WaitQuiescense's in a row.
     var justInjectedWaitQuiescence = false
 
     def okToInject(event: Option[ExternalEvent]) : Boolean = {
       event match {
-        case Some(WaitQuiescence()) => return !justInjectedWaitQuiescence
+        case Some(WaitQuiescence()) =>
+          return !justInjectedWaitQuiescence
         case _ => return true
       }
     }
@@ -140,17 +152,24 @@ class Fuzzer(num_events: Integer,
           event match {
             case WaitQuiescence() =>
               justInjectedWaitQuiescence = true
-            case _ => None
+            case _ =>
               justInjectedWaitQuiescence = false
           }
           fuzzTest += event
-        case None => return fuzzTest
+        case None =>
+          validateFuzzTest(fuzzTest)
+          return fuzzTest
       }
     }
+
+    validateFuzzTest(fuzzTest)
     return fuzzTest
   }
 
   def reset() {
+    seed = System.currentTimeMillis
+    rand = new Random(seed)
+
     currentlyAlive = new RandomizedHashSet[String]
     for (node <- nodes) {
       currentlyAlive.insert(node)
