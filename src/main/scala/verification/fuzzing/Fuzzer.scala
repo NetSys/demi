@@ -126,13 +126,15 @@ class Fuzzer(num_events: Integer,
       for (i <- (0 until _fuzzTest.length - 1)) {
         if (_fuzzTest(i).getClass() == classOf[WaitQuiescence] &&
             _fuzzTest(i+1).getClass() == classOf[WaitQuiescence]) {
-          throw new AssertionError(i + " " + i+1 + ". Seed was: " + seed)
+          throw new AssertionError(i + " " + (i+1) + ". Seed was: " + seed)
         }
       }
     }
 
     // Ensure that we don't inject two WaitQuiescense's in a row.
-    var justInjectedWaitQuiescence = false
+    var justInjectedWaitQuiescence = if (fuzzTest.length > 0)
+        fuzzTest(fuzzTest.length-1).getClass == classOf[WaitQuiescence]
+        else false
 
     def okToInject(event: Option[ExternalEvent]) : Boolean = {
       event match {
