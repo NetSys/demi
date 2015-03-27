@@ -19,6 +19,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
+// TODO(cs): STSSched ignores external WaitQuiescence events. That's a little
+// weird, since the minimization routines are feeding different combinations
+// of WaitQuiescence events as part of the external event subsequences, yet we
+// ignore them altogether..
+
 // TODO(cs): we invoke advanceReplay one too many times when peek is enabled. I
 // believe two threads are waiting on schedSemaphore, and both call into
 // advanceReplay. For now it looks like the redundant calls into advanceReplay are a no-op,

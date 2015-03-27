@@ -13,11 +13,16 @@ object DepTracker {
   val root = Unique(MsgEvent("null", "null", null), 0)
 }
 
-// For every message we deliver, track which messages become enabled as a
-// result of our delivering that message. This can be used later by DPOR.
+/**
+ * For every message we deliver, track which messages become enabled as a
+ * result of our delivering that message. This can be used later by DPOR.
+ *
+ * - noopWaitQuiescence: if true, always attach external events to the root.
+ */
 // TODO(cs): Should probably factor out the Graph management code from DPOR
 // and put it here.
-class DepTracker(messageFingerprinter: FingerprintFactory) {
+class DepTracker(messageFingerprinter: FingerprintFactory,
+                 noopWaitQuiescence:Boolean=true) {
   val g = Graph[Unique, DiEdge]()
   val initialTrace = new Queue[Unique]
   // Special marker for the 0th event
@@ -52,14 +57,17 @@ class DepTracker(messageFingerprinter: FingerprintFactory) {
 
   // Report when quiescence has been arrived at as a result of an external
   // WaitQuiescence event.
-  def reportQuiescence() {
-    parent = lastQuiescence
-    val quiescence = Unique(WaitQuiescence())
-    g.add(quiescence)
-    g.addEdge(quiescence, parent)(DiEdge)
-    lastQuiescence = quiescence
-    initialTrace += quiescence
-    parent = quiescence
+  def reportQuiescence(w: WaitQuiescence) {
+    if (!noopWaitQuiescence) {
+      parent = lastQuiescence
+      val quiescence = Unique(w, id=w._id)
+      println("reportQuiescence: " + quiescence)
+      g.add(quiescence)
+      g.addEdge(quiescence, parent)(DiEdge)
+      lastQuiescence = quiescence
+      initialTrace += quiescence
+      parent = quiescence
+    }
   }
 
   def reportKill(name: String, allActors: Set[String]) {

@@ -109,8 +109,7 @@ class AdditionDistanceOrdering extends BacktrackOrdering {
       return commonPrefix ++ postfix ++ Seq(tuple._2._1, tuple._2._2)
     }
 
-    val path = getPath()
-    return AdditionDistance.additionDistance(originalTrace, path)
+    return AdditionDistance.additionDistance(originalTrace, getPath())
   }
 
   private[this] def storeAdditionDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
@@ -168,6 +167,13 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
+  private[this] var _root = Unique(MsgEvent("null", "null", null), 0)
+  def getRootEvent() : Unique = {
+    require(_root != null)
+    addGraphNode(_root)
+    _root
+  }
+  
   var should_bound = false
   var stop_at_depth = 0
   depth_bound match {
@@ -306,7 +312,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
   private[this] def setParentEvent (event: Unique) {
     val graphNode = depGraph.get(event)
-    val rootNode = depGraph.get(getRootEvent)
+    val rootNode = depGraph.get(currentRoot)
     val pathLength = graphNode.pathTo(rootNode) match {
       case Some(p) => p.length
       case _ => 
@@ -318,16 +324,30 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   }
 
   private[this] def addGraphNode (event: Unique) = {
+    require(event != null)
     depGraph.add(event)
     quiescentPeriod(event) = currentQuiescentPeriod
   }
-  
-  private[this] var _root = Unique(MsgEvent("null", "null", null), 0)
-  def getRootEvent() : Unique = {
-    addGraphNode(_root)
-    _root
+
+  // Before adding a new WaitQuiescence/NetworkPartition/NetworkUnpartition to depGraph,
+  // first try to see if it already exists in depGraph.
+  def maybeAddGraphNode(unique: Unique): Unique = {
+    depGraph.get(currentRoot).inNeighbors.find {
+      x => x.value match {
+        case Unique(WaitQuiescence(), id) =>
+          println("Existing WaitQuiescence: " + id + ". looking for: " + unique.id)
+          id == unique.id
+        case _ => false
+      }
+    } match {
+      case Some(e) =>
+        return e.value
+      case None =>
+        addGraphNode(unique)
+        depGraph.addEdge(unique, currentRoot)(DiEdge)
+        return unique
+    }
   }
-  
   
   def decomposePartitionEvent(event: NetworkPartition) : Queue[(String, NodesUnreachable)] = {
     val queue = new Queue[(String, NodesUnreachable)]
@@ -783,18 +803,18 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         case uniq @ Unique(par : NetworkPartition, id) =>  
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
-          addGraphNode(uniq)
+          maybeAddGraphNode(uniq)
 
         case uniq @ Unique(par : NetworkUnpartition, id) =>  
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
-          addGraphNode(uniq)
+          maybeAddGraphNode(uniq)
        
        
         case event @ Unique(WaitQuiescence(), _) =>
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((event, null, null))
-          addGraphNode(event)
+          maybeAddGraphNode(event)
           await = true
 
         // A unique ID needs to be associated with all network events.
@@ -830,8 +850,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       case par: NetworkUnpartition => 
         val unique = Unique(par)
         unique
-      case WaitQuiescence() =>
-        Unique(WaitQuiescence())
+      case w: WaitQuiescence =>
+        Unique(w, id=w._id)
       case other => other
     } }
     
@@ -971,11 +991,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       currentQuiescentPeriod = nextQuiescentPeriod
       nextQuiescentPeriod = 0
 
-      currentTrace += quiescentMarker
-      addGraphNode(quiescentMarker)
-      depGraph.addEdge(quiescentMarker, currentRoot)(DiEdge)
-      currentRoot = quiescentMarker
-      setParentEvent(quiescentMarker)
+      val marker = maybeAddGraphNode(quiescentMarker)
+      currentTrace += marker
+      currentRoot = marker
+      setParentEvent(marker)
       quiescentMarker = null
 
       runExternal()
@@ -990,7 +1009,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
             done(depGraph)
             return
           }
-          // Else fall through to next interleaving
+          // fall through to next interleaving
         } else {
           // Initiate a checkpoint
           blockedOnCheckpoint.set(true)
