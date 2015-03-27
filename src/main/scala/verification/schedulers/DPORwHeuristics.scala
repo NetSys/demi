@@ -266,10 +266,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     /**
      * We leave these as they are:
     interleavingCounter = 0
-    backTrack.clear
     exploredTracker.clear
     depGraph.clear
      */
+    backTrack.clear
     pendingEvents.clear()
     currentDepth = 0
     currentTrace.clear
@@ -1275,6 +1275,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
      * 1) They are co-enabled.
      * 2) Such interleaving hasn't been explored before.
      */ 
+    logger.trace(Console.GREEN+ "Computing backtrack points. This may take awhile..." + Console.RESET)
     for(laterI <- 0 to trace.size - 1) {
       val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
 
@@ -1368,6 +1369,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     }
 
     var traceSem = new Semaphore(0)
+    // N.B. reset() and Instrumenter().reinitialize_system
+    // are invoked at the beginning of run(), hence we don't need to clean up
+    // after ourselves at the end of test().
     run(events,
         f2 = (graph) => {
           _initialDegGraph ++= graph
@@ -1376,8 +1380,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         initialTrace=Some(_initialTrace),
         initialGraph=Some(_initialDegGraph))
     traceSem.acquire()
-    reset
-    Instrumenter().restart_system()
+    println("Returning from test()")
     if (foundLookingFor) {
       return Some(new EventTrace)
     } else {

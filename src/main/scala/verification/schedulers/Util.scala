@@ -294,7 +294,6 @@ object AdditionDistance {
   //  - let sub = longest matching subsequence between word2' and word1.
   //  - finally, add |word2'| - |sub| to the count
   def additionDistance(word1: Seq[Unique], word2: Seq[Unique]) : Int = {
-    require(word1.length >= word2.length)
     // TODO(cs): fairly sure that explicitly accounting for unexpected is not
     // strictly necessary, but it might make lcs computation more efficient.
     val w1Set = word1.toSet
