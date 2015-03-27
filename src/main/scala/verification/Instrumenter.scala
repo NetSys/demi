@@ -167,6 +167,7 @@ class Instrumenter {
     seenActors.clear()
     allowedEvents.clear()
     dispatchers.clear()
+    Util.logger.reset()
     
     println("Started a new actor system.")
 
@@ -212,8 +213,6 @@ class Instrumenter {
 
       println("Shut down the actor system. " + argQueue.size)
     }
-
-    Util.logger.reset
   }
 
   // Signal to the instrumenter that the scheduler wants to restart the system

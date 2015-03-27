@@ -39,6 +39,107 @@ import com.typesafe.scalalogging.LazyLogging,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
+object DPORwHeuristics {
+  // Tuple is:
+  // (depth where race occurs, (racingEvent1, racingEvent2), postfix beyond
+  //  the common prefix of the racing events that needs to be played to
+  //  co-enable the racing events.)
+  type BacktrackKey = (Int, (Unique, Unique), List[Unique])
+}
+
+trait BacktrackOrdering {
+  // The priority function we feed into the priority queue.
+  // Higher return values get higher priority.
+  def getOrdered(key: DPORwHeuristics.BacktrackKey) : Ordered[DPORwHeuristics.BacktrackKey]
+
+  // If DPORwHeuristics is configured to ignore certain backtrack points, this
+  // the integer we return here decides how we decide to ignore. Higher numbers
+  // are ignored more quickly than lower numbers.
+  def getDistance(key: DPORwHeuristics.BacktrackKey) : Int
+
+  // If a key is no longer needed, give the BacktrackOrdering an opportunity
+  // to clear state associated with the key.
+  def clearKey(key: DPORwHeuristics.BacktrackKey) {}
+}
+
+class DefaultBacktrackOrdering extends BacktrackOrdering {
+  // Default: order by depth. Longer depth is given higher priority.
+  def getOrdered(tuple: DPORwHeuristics.BacktrackKey) = new Ordered[DPORwHeuristics.BacktrackKey] {
+    def compare(other: DPORwHeuristics.BacktrackKey) = tuple._1.compare(other._1)
+  }
+
+  // TODO(cs): awkward interface, since distance doesn't really make sense
+  // here...
+  def getDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
+    return 0
+  }
+}
+
+class AdditionDistanceOrdering extends BacktrackOrdering {
+  var sched : DPORwHeuristics = null
+  var originalTrace : Queue[Unique] = null
+  // Store all distances globally, to avoid redundant computation.
+  var distances = new HashMap[DPORwHeuristics.BacktrackKey, Int]
+
+  // Need a separate constructor b/c of circular dependence between
+  // DPORwHeuristics. Might think about changing the interface.
+  def init(_sched: DPORwHeuristics, _originalTrace: Queue[Unique]) {
+    sched = _sched
+    originalTrace = _originalTrace
+  }
+
+  // Unlike traditional edit distance:
+  //  - do not consider any changes to word1, i.e. keep word1 fixed.
+  //  - do not penalize deletions.
+  //
+  // This strategy effectively counts:
+  //  - number of unexpected events in word2
+  //  - any reorderings of expected events from word1.
+  //
+  // Implementation strategy:
+  //  - first count unexpected events in word2.
+  //  - let word2' be word2 without unexpected events.
+  //  - let sub = longest matching subsequence between word2' and word1.
+  //  - finally, add |word2'| - |sub| to the count
+  private[this] def additionDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
+    def getPath() : Seq[Unique] = {
+      val commonPrefix = sched.getCommonPrefix(tuple._2._1, tuple._2._1).
+                               map(node => node.value)
+      val postfix = tuple._3
+      return commonPrefix ++ postfix ++ Seq(tuple._2._1, tuple._2._2)
+    }
+
+    return AdditionDistance.additionDistance(originalTrace, getPath())
+  }
+
+  private[this] def storeAdditionDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
+    if (distances contains tuple) {
+      return distances(tuple)
+    }
+    distances(tuple) = additionDistance(tuple)
+    return distances(tuple)
+  }
+
+  def getOrdered(tuple: DPORwHeuristics.BacktrackKey) = new Ordered[DPORwHeuristics.BacktrackKey] {
+    def compare(other: DPORwHeuristics.BacktrackKey) : Int = {
+      val myDistance = storeAdditionDistance(tuple)
+      val otherDistance = storeAdditionDistance(other)
+      if (otherDistance != myDistance) {
+        return myDistance.compare(otherDistance)
+      }
+      // Break ties based on depth
+      return tuple._1.compare(other._1)
+    }
+  }
+
+  def getDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
+    return storeAdditionDistance(tuple)
+  }
+
+  override def clearKey(tuple: DPORwHeuristics.BacktrackKey) = {
+    distances -= tuple
+  }
+}
 
 /**
  * DPOR scheduler.
@@ -46,21 +147,33 @@ import com.typesafe.scalalogging.LazyLogging,
  *     nextTrace does not show up, rather than picking a random pending event
  *     to proceed, instead pick the pending event that appears first in
  *     nextTrace.
+ *   - backtrackHeuristic: determines how backtrack points are prioritized.
  *   - If invariant_check_interval is <=0, only checks the invariant at the end of
  *     the execution. Otherwise, checks the invariant every
  *     invariant_check_interval message deliveries.
+ *   - depth_bound: determines the maximum depGraph path from the root to the messages
+ *     played. Note that this differs from maxMessagesToSchedule.
  */
 class DPORwHeuristics(enableCheckpointing: Boolean,
   messageFingerprinter: FingerprintFactory,
   prioritizePendingUponDivergence:Boolean=false,
+  backtrackHeuristic:BacktrackOrdering=new DefaultBacktrackOrdering,
   invariant_check_interval:Int=0,
-  depth_bound: Option[Int] = None) extends Scheduler with LazyLogging with TestOracle {
-  def this() = this(false, new FingerprintFactory, false, 0, None)
+  depth_bound:Option[Int]=None) extends Scheduler with LazyLogging with TestOracle {
+  def this() = this(false, new FingerprintFactory, false,
+                    new DefaultBacktrackOrdering, 0, None)
 
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
+  private[this] var _root = Unique(MsgEvent("null", "null", null), 0)
+  def getRootEvent() : Unique = {
+    require(_root != null)
+    addGraphNode(_root)
+    _root
+  }
+  
   var should_bound = false
   var stop_at_depth = 0
   depth_bound match {
@@ -70,6 +183,18 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   def setDepthBound(_stop_at_depth: Int) {
     should_bound = true
     stop_at_depth = _stop_at_depth
+  }
+  var should_cap_messages = false
+  var max_messages = 0
+  def setMaxMessagesToSchedule(_max_messages: Int) {
+    should_cap_messages = true
+    max_messages = _max_messages
+  }
+  var should_cap_distance = false
+  var stop_at_distance = 0
+  def setMaxDistance(_stop_at_distance: Int) {
+    should_cap_distance = true
+    stop_at_distance = _stop_at_distance
   }
 
   // Collection of all actors that could possibly have messages sent to them.
@@ -93,9 +218,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
   val quiescentPeriod = new HashMap[Unique, Int]
 
-  // Change the Ordering to try different ordering heuristics, currently exploration is in descending order of depth
-  val backTrack = new PriorityQueue[(Int, (Unique, Unique), List[Unique])]()(
-    Ordering.by[(Int, (Unique, Unique), List[Unique]), Int](_._1))
+  implicit def orderedBacktrackKey(t: DPORwHeuristics.BacktrackKey) = backtrackHeuristic.getOrdered(t)
+  val backTrack = new PriorityQueue[DPORwHeuristics.BacktrackKey]()
   var invariant : Queue[Unique] = Queue()
   var exploredTracker = new ExploredTacker
   
@@ -145,6 +269,13 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
   // Reset state between runs
   private[this] def reset() = {
+    /**
+     * We leave these as they are:
+    interleavingCounter = 0
+    exploredTracker.clear
+    depGraph.clear
+     */
+    backTrack.clear
     pendingEvents.clear()
     currentDepth = 0
     currentTrace.clear
@@ -154,14 +285,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     nextQuiescentPeriod = 0
     quiescentMarker = null
     currentQuiescentPeriod = 0
-    depGraph.clear
     externalEventIdx = 0
     currentTime = 0
-    interleavingCounter = 0
     actorNames.clear
     quiescentPeriod.clear
-    backTrack.clear
-    exploredTracker.clear
     blockedOnCheckpoint.set(false)
     foundLookingFor = false
     messagesScheduledSoFar = 0
@@ -185,7 +312,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
   private[this] def setParentEvent (event: Unique) {
     val graphNode = depGraph.get(event)
-    val rootNode = depGraph.get(getRootEvent)
+    val rootNode = depGraph.get(currentRoot)
     val pathLength = graphNode.pathTo(rootNode) match {
       case Some(p) => p.length
       case _ => 
@@ -197,16 +324,30 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   }
 
   private[this] def addGraphNode (event: Unique) = {
+    require(event != null)
     depGraph.add(event)
     quiescentPeriod(event) = currentQuiescentPeriod
   }
-  
-  private[this] var _root = Unique(MsgEvent("null", "null", null), 0)
-  def getRootEvent() : Unique = {
-    addGraphNode(_root)
-    _root
+
+  // Before adding a new WaitQuiescence/NetworkPartition/NetworkUnpartition to depGraph,
+  // first try to see if it already exists in depGraph.
+  def maybeAddGraphNode(unique: Unique): Unique = {
+    depGraph.get(currentRoot).inNeighbors.find {
+      x => x.value match {
+        case Unique(WaitQuiescence(), id) =>
+          println("Existing WaitQuiescence: " + id + ". looking for: " + unique.id)
+          id == unique.id
+        case _ => false
+      }
+    } match {
+      case Some(e) =>
+        return e.value
+      case None =>
+        addGraphNode(unique)
+        depGraph.addEdge(unique, currentRoot)(DiEdge)
+        return unique
+    }
   }
-  
   
   def decomposePartitionEvent(event: NetworkPartition) : Queue[(String, NodesUnreachable)] = {
     val queue = new Queue[(String, NodesUnreachable)]
@@ -333,7 +474,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     if (foundLookingFor) {
       return None
     }
-        
     
     
     def checkInvariant[T1](result : Option[T1]) = result match {
@@ -468,6 +608,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
     // Actual (non-priority) messages scheduled so far.
     messagesScheduledSoFar += 1
+    if (should_cap_messages && messagesScheduledSoFar > max_messages) {
+      return None
+    }
     
     
     val result = awaitingQuiescence match {
@@ -660,18 +803,18 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         case uniq @ Unique(par : NetworkPartition, id) =>  
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
-          addGraphNode(uniq)
+          maybeAddGraphNode(uniq)
 
         case uniq @ Unique(par : NetworkUnpartition, id) =>  
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
-          addGraphNode(uniq)
+          maybeAddGraphNode(uniq)
        
        
         case event @ Unique(WaitQuiescence(), _) =>
           val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, ActorCell, Envelope)])
           pendingEvents(SCHEDULER) = msgs += ((event, null, null))
-          addGraphNode(event)
+          maybeAddGraphNode(event)
           await = true
 
         // A unique ID needs to be associated with all network events.
@@ -707,8 +850,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       case par: NetworkUnpartition => 
         val unique = Unique(par)
         unique
-      case WaitQuiescence() =>
-        Unique(WaitQuiescence())
+      case w: WaitQuiescence =>
+        Unique(w, id=w._id)
       case other => other
     } }
     
@@ -848,11 +991,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       currentQuiescentPeriod = nextQuiescentPeriod
       nextQuiescentPeriod = 0
 
-      currentTrace += quiescentMarker
-      addGraphNode(quiescentMarker)
-      depGraph.addEdge(quiescentMarker, currentRoot)(DiEdge)
-      currentRoot = quiescentMarker
-      setParentEvent(quiescentMarker)
+      val marker = maybeAddGraphNode(quiescentMarker)
+      currentTrace += marker
+      currentRoot = marker
+      setParentEvent(marker)
       quiescentMarker = null
 
       runExternal()
@@ -867,6 +1009,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
             done(depGraph)
             return
           }
+          // fall through to next interleaving
         } else {
           // Initiate a checkpoint
           blockedOnCheckpoint.set(true)
@@ -963,6 +1106,31 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     }
   }
   
+  private[dispatch] def getCommonPrefix(earlier: Unique,
+                                        later: Unique) : Seq[DPORwHeuristics.this.depGraph.NodeT]= {
+    val rootN = ( depGraph get getRootEvent )
+    // Get the actual nodes in the dependency graph that
+    // correspond to those events
+    val earlierN = (depGraph get earlier)
+    val laterN = (depGraph get later)
+
+    // Get the dependency path between later event and the
+    // root event (root node) in the system.
+    val laterPath = laterN.pathTo(rootN) match {
+      case Some(path) => path.nodes.toList.reverse
+      case None => throw new Exception("no such path")
+    }
+
+    // Get the dependency path between earlier event and the
+    // root event (root node) in the system.
+    val earlierPath = earlierN.pathTo(rootN) match {
+      case Some(path) => path.nodes.toList.reverse
+      case None => throw new Exception("no such path")
+    }
+
+    // Find the common prefix for the above paths.
+    return laterPath.intersect(earlierPath)
+  }
 
   def dpor(trace: Trace) : Option[Trace] = {
     
@@ -1049,27 +1217,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
           return Some((branchI, needToReplay))
           
         case (_: MsgEvent, _: MsgEvent) =>
-          // Get the actual nodes in the dependency graph that
-          // correspond to those events
-          val earlierN = (depGraph get earlier)
-          val laterN = (depGraph get later)
-
-          // Get the dependency path between later event and the
-          // root event (root node) in the system.
-          val laterPath = laterN.pathTo(rootN) match {
-            case Some(path) => path.nodes.toList.reverse
-            case None => throw new Exception("no such path")
-          }
-
-          // Get the dependency path between earlier event and the
-          // root event (root node) in the system.
-          val earlierPath = earlierN.pathTo(rootN) match {
-            case Some(path) => path.nodes.toList.reverse
-            case None => throw new Exception("no such path")
-          }
-
-          // Find the common prefix for the above paths.
-          val commonPrefix = laterPath.intersect(earlierPath)
+          val commonPrefix = getCommonPrefix(earlier, later)
 
           // Figure out where in the provided trace this needs to be
           // replayed. In other words, get the last element of the
@@ -1154,6 +1302,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
      * 1) They are co-enabled.
      * 2) Such interleaving hasn't been explored before.
      */ 
+    logger.trace(Console.GREEN+ "Computing backtrack points. This may take awhile..." + Console.RESET)
     for(laterI <- 0 to trace.size - 1) {
       val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
 
@@ -1178,15 +1327,18 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     }
     
     def getNext() : Option[(Int, (Unique, Unique), Seq[Unique])] = {
-            // If the backtrack set is empty, this means we're done.
-      if (backTrack.isEmpty) {
+      // If the backtrack set is empty, this means we're done.
+      if (backTrack.isEmpty ||
+          (should_cap_distance && backtrackHeuristic.getDistance(backTrack.head) >= stop_at_distance)) {
         logger.info("Tutto finito!")
         done(depGraph)
         return None
         //System.exit(0);
       }
   
+      backtrackHeuristic.clearKey(backTrack.head)
       val (maxIndex, (e1, e2), replayThis) = backTrack.dequeue
+
 
       exploredTracker.isExplored((e1, e2)) match {
         case true => return getNext()
@@ -1244,6 +1396,9 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     }
 
     var traceSem = new Semaphore(0)
+    // N.B. reset() and Instrumenter().reinitialize_system
+    // are invoked at the beginning of run(), hence we don't need to clean up
+    // after ourselves at the end of test().
     run(events,
         f2 = (graph) => {
           _initialDegGraph ++= graph
@@ -1252,8 +1407,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         initialTrace=Some(_initialTrace),
         initialGraph=Some(_initialDegGraph))
     traceSem.acquire()
-    reset
-    Instrumenter().restart_system()
+    println("Returning from test()")
     if (foundLookingFor) {
       return Some(new EventTrace)
     } else {

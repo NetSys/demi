@@ -187,7 +187,7 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
   // N.B. we ignore quiescence and network paritions/unparitions for now.
   {
     // events occuring on the same machine
-    val receiver2priorReceives = new HashMap[String, Queue[Unique]]
+    var receiver2priorReceives = new HashMap[String, Queue[Unique]]
 
     println("computing first order happens-before..")
     trace foreach {
@@ -203,6 +203,10 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
         depGraph.get(u).inNeighbors.foreach(s => happensBefore += ((u,s)))
       case _ => None
     }
+
+    // We sometimes run into OOMs while computing the transitive closure, so
+    // just be extra paranoid about GC.
+    receiver2priorReceives = null
 
     // Now compute the transitive closure.
     // N.B. I initially tried a simple algorithm for computing transitive
@@ -239,12 +243,11 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
         unique2successors(parent) = unique2successors.getOrElse(
           parent, Set()) ++ unique2successors(u)
       }
-    }
-
-    for ((u1, sucessors) <- unique2successors) {
-      for (u2 <- sucessors) {
-        happensBefore += ((u1, u2))
+      // Now get rid of unique2successors(u), since we no longer need it.
+      for (u2 <- unique2successors(u)) {
+        happensBefore += ((u, u2))
       }
+      unique2successors -= u
     }
   }
 
@@ -273,6 +276,69 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
     // We return those that are *before* lastEvents
     println("computing concurrent events...")
     return trace.filterNot { concurrentOrAfterAllLastEvents(_, lastEvents) }
+  }
+}
+
+object AdditionDistance {
+  // Unlike traditional edit distance:
+  //  - do not consider any changes to word1, i.e. keep word1 fixed.
+  //  - do not penalize deletions.
+  //
+  // This strategy effectively counts:
+  //  - number of unexpected events in word2
+  //  - any reorderings of expected events from word1.
+  //
+  // Implementation strategy:
+  //  - first count unexpected events in word2.
+  //  - let word2' be word2 without unexpected events.
+  //  - let sub = longest matching subsequence between word2' and word1.
+  //  - finally, add |word2'| - |sub| to the count
+  def additionDistance(word1: Seq[Unique], word2: Seq[Unique]) : Int = {
+    // TODO(cs): fairly sure that explicitly accounting for unexpected is not
+    // strictly necessary, but it might make lcs computation more efficient.
+    val w1Set = word1.toSet
+    val (expected, unexpected) = word2.partition(e => w1Set contains e)
+    val lcsLen = new DynamicProgLcs().lcs(word1, expected).length
+    return unexpected.length + (expected.length - lcsLen)
+  }
+
+  def replaceCost(w1: Seq[Unique], w2: Seq[Unique], w1Index: Int, w2Index: Int): Int = {
+    return if (w1(w1Index) == w2(w2Index)) 0 else 1
+  }
+
+  // Traditional levenshtein distance.
+  def editDistance(word1: Seq[Unique], word2: Seq[Unique]) : Int = {
+    if (word2.isEmpty) return word1.length
+    if (word1.isEmpty) return word2.length
+
+    val word1Length = word1.length
+    val word2Length = word2.length
+
+    // minCosts(i)(j) represents the edit distance of the substrings
+    // word1.substring(i) and word2.substring(j)
+    val minCosts = Array.fill[Int](word1Length, word2Length)(0)
+
+    // This is the edit distance of the last char of word1 and the last char of word2
+    // It can be 0 or 1 depending on whether the two are different or equal
+    minCosts(word1Length - 1)(word2Length - 1) = replaceCost(word1, word2, word1Length - 1, word2Length - 1)
+
+    for (j <- Range.inclusive(word2Length - 2, 0, -1)) {
+      minCosts(word1Length - 1)(j) = 1 + minCosts(word1Length - 1)(j + 1)
+    }
+
+    for (i <- Range.inclusive(word1Length - 2, 0, -1)) {
+      minCosts(i)(word2Length - 1) = 1 + minCosts(i + 1)(word2Length - 1)
+    }
+
+    for (i <- Range.inclusive(word1Length - 2, 0, -1)) {
+      for (j <- Range.inclusive(word2Length - 2, 0, -1)) {
+        val replace = replaceCost(word1, word2, i, j) + minCosts(i + 1)(j + 1)
+        val delete = 1 + minCosts(i + 1)(j)
+        val insert = 1 + minCosts(i)(j + 1)
+        minCosts(i)(j) = List(replace, delete, insert).min
+      }
+    }
+    return minCosts(0)(0)
   }
 }
 

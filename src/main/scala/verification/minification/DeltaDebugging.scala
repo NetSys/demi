@@ -15,6 +15,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
   // Note that this differs from the 2001 version:
   //   https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf
   def minimize(events: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
+    MessageTypes.sanityCheckTrace(events)
     violation_fingerprint = _violation_fingerprint
 
     // First check if the initial trace violates the exception
@@ -64,8 +65,8 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
       val union = split.union(remainder)
       println("Checking split")
       val passes = oracle.test(union.get_all_events, violation_fingerprint, stats) == None
-      // There may have been many replays; record each one's iteration size
-      // from before we invoked test
+      // There may have been many replays since the last time we recorded
+      // iteration size; record each one's iteration size from before we invoked test()
       for (i <- (stats.iteration until stats.total_replays)) {
         stats.record_iteration_size(original_num_events - total_inputs_pruned)
       }
