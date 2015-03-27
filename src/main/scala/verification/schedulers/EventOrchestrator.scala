@@ -30,14 +30,14 @@ class EventOrchestrator[E] {
   type EnqueueMessage = (String, Any) => Unit
 
   // Callbacks
-  type KillCallback = (String, Set[String]) => Unit
-  type PartitionCallback = (String, String) => Unit
-  type UnPartitionCallback = (String, String) => Unit
-  var killCallback : KillCallback = (s: String, actors: Set[String]) => None
+  type KillCallback = (String, Set[String], Int) => Unit
+  type PartitionCallback = (String, String, Int) => Unit
+  type UnPartitionCallback = (String, String, Int) => Unit
+  var killCallback : KillCallback = (s: String, actors: Set[String], id: Int) => None
   def setKillCallback(c: KillCallback) = killCallback = c
-  var partitionCallback : PartitionCallback = (a: String, b: String) => None
+  var partitionCallback : PartitionCallback = (a: String, b: String, id: Int) => None
   def setPartitionCallback(c: PartitionCallback) = partitionCallback = c
-  var unPartitionCallback : UnPartitionCallback = (a: String, b: String) => None
+  var unPartitionCallback : UnPartitionCallback = (a: String, b: String, id: Int) => None
   def setUnPartitionCallback(c: UnPartitionCallback) = unPartitionCallback = c
 
   // Pairs of actors that cannot communicate
@@ -126,16 +126,16 @@ class EventOrchestrator[E] {
       current_event.asInstanceOf[ExternalEvent] match {
         case Start (_, name) =>
           trigger_start(name)
-        case Kill (name) =>
-          killCallback(name, actorToActorRef.keys.toSet)
+        case k @ Kill (name) =>
+          killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_kill(name)
         case Send (name, messageCtor) =>
           enqueue_message(name, messageCtor())
-        case Partition (a, b) =>
-          partitionCallback(a,b)
+        case p @ Partition (a, b) =>
+          partitionCallback(a,b,p._id)
           trigger_partition(a,b)
-        case UnPartition (a, b) =>
-          unPartitionCallback(a,b)
+        case u @ UnPartition (a, b) =>
+          unPartitionCallback(a,b,u._id)
           trigger_unpartition(a,b)
         case WaitQuiescence() =>
           events += BeginWaitQuiescence

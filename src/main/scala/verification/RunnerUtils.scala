@@ -248,18 +248,20 @@ object RunnerUtils {
     val filtered_externals = trace.original_externals flatMap {
       case s: Start => Some(s)
       case s: Send => Some(s)
+      // Convert the following externals into Unique's, since DPORwHeuristics
+      // needs ids to match them up correctly.
       case w: WaitQuiescence =>
         if (ignoreQuiescence) {
           None
         } else {
-          Some(w)
+          Some(Unique(w, id=w._id))
         }
-      case Kill(name) =>
-        Some(NetworkPartition(Set(name), allActorsSet))
-      case Partition(a,b) =>
-        Some(NetworkPartition(Set(a), Set(b)))
-      case UnPartition(a,b) =>
-        Some(NetworkUnpartition(Set(a), Set(b)))
+      case k @ Kill(name) =>
+        Some(Unique(NetworkPartition(Set(name), allActorsSet), id=k._id))
+      case p @ Partition(a,b) =>
+        Some(Unique(NetworkPartition(Set(a), Set(b)), id=p._id))
+      case u @ UnPartition(a,b) =>
+        Some(Unique(NetworkUnpartition(Set(a), Set(b)), id=u._id))
       case _ => None
     }
 

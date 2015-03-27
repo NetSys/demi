@@ -70,20 +70,20 @@ class DepTracker(messageFingerprinter: FingerprintFactory,
     }
   }
 
-  def reportKill(name: String, allActors: Set[String]) {
-    val unique = Unique(NetworkPartition(Set(name), allActors))
+  def reportKill(name: String, allActors: Set[String], id: Int) {
+    val unique = Unique(NetworkPartition(Set(name), allActors), id=id)
     g.add(unique)
     initialTrace += unique
   }
 
-  def reportPartition(a: String, b: String) {
-    val unique = Unique(NetworkPartition(Set(a), Set(b)))
+  def reportPartition(a: String, b: String, id: Int) {
+    val unique = Unique(NetworkPartition(Set(a), Set(b)), id=id)
     g.add(unique)
     initialTrace += unique
   }
 
-  def reportUnPartition(a: String, b: String) {
-    val unique = Unique(NetworkUnpartition(Set(a), Set(b)))
+  def reportUnPartition(a: String, b: String, id: Int) {
+    val unique = Unique(NetworkUnpartition(Set(a), Set(b)), id=id)
     g.add(unique)
     initialTrace += unique
   }
