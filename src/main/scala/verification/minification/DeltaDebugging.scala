@@ -63,7 +63,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
     // First, check both halves.
     for ((split, i) <- splits.zipWithIndex) {
       val union = split.union(remainder)
-      println("Checking split")
+      println("Checking split " + union.get_all_events.map(e => e.label).mkString(","))
       val passes = oracle.test(union.get_all_events, violation_fingerprint, stats) == None
       // There may have been many replays since the last time we recorded
       // iteration size; record each one's iteration size from before we invoked test()

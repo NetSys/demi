@@ -21,7 +21,9 @@ object IDGenerator {
 case class Unique(
   val event : Event,
   var id : Int = IDGenerator.get()
-) extends ExternalEvent
+) extends ExternalEvent {
+  def label: String = "e"+id
+}
 
 case class Uniq[E](
   val element : E,
@@ -38,12 +40,14 @@ case class SpawnEvent(
     parent: String, props: Props, name: String, actor: ActorRef) extends Event
 
 case class NetworkPartition(
-    first: Set[String], 
-    second: Set[String]) extends ExternalEvent with Event
+    first: Set[String],
+    second: Set[String]) extends
+  UniqueExternalEvent with ExternalEvent with Event
 
 case class NetworkUnpartition(
-    first: Set[String], 
-    second: Set[String]) extends ExternalEvent with Event
+    first: Set[String],
+    second: Set[String]) extends
+  UniqueExternalEvent with ExternalEvent with Event
 
 case object RootEvent extends Event
 
