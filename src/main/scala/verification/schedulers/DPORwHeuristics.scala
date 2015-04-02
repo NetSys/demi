@@ -233,7 +233,12 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   // When we took the last checkpoint.
   var lastCheckpoint = messagesScheduledSoFar
   
+  // sender -> receivers the sender is currently partitioned from.
+  // (Unidirectional)
   val partitionMap = new HashMap[String, HashSet[String]]
+  // similar to partitionMap, but only applies to actors that have been
+  // created but not yet Start()ed
+  val isolatedActors = new HashSet[String]
   
   var post: (Trace) => Unit = nullFunPost
   var done: (Graph[Unique, DiEdge]) => Unit = nullFunDone
@@ -662,6 +667,16 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     result match {
       
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
+        if ((isolatedActors contains snd) || (isolatedActors contains rcv)) {
+          logger.trace(Console.RED + "Discarding event " + nextEvent +
+            " due to not yet started node " + snd + " or " + rcv)
+          // Self-messages without any prior messages break our assumptions.
+          // Fix might be to store this message intead of dropping it.
+          if (snd == rcv) {
+            throw new RuntimeException("self message without prior messages! " + snd)
+          }
+          return schedule_new_message()
+        }
         partitionMap.get(snd) match {
           case Some(set) =>
             if (set.contains(rcv)) {
@@ -770,14 +785,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         None
     }
 
+    isolatedActors ++= actorNames
+
     if (enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
-
-    //actorNames.map(name =>
-    //  partitionMap(name) = partitionMap.getOrElse(name,
-    //    new HashSet[String]) ++ actorNames
-    //)
   }
   
   def runExternal() = {
@@ -792,8 +804,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
           // If not already started: start it and unisolate it
           if (!(instrumenter().actorMappings contains name)) {
             instrumenter().actorSystem().actorOf(propsCtor(), name)
-            //partitionMap -= name
           }
+          isolatedActors -= name
     
         case Send(rcv, msgCtor) =>
           val ref = instrumenter().actorMappings(rcv)
@@ -1329,7 +1341,6 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         logger.info("Tutto finito!")
         done(depGraph)
         return None
-        //System.exit(0);
       }
   
       backtrackHeuristic.clearKey(backTrack.head)

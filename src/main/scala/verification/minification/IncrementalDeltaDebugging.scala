@@ -84,7 +84,7 @@ class ResumableDPOR(ctor: ResumableDPOR.DPORConstructor) extends TestOracle {
 
   def getName: String = "DPOR"
 
-  def getFingerprintForSubseq(subseq: Seq[ExternalEvent]): String {
+  def getFingerprintForSubseq(subseq: Seq[ExternalEvent]): String = {
     return subseq.map(e => e.label).mkString(",")
   }
 
