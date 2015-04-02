@@ -221,7 +221,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   implicit def orderedBacktrackKey(t: DPORwHeuristics.BacktrackKey) = backtrackHeuristic.getOrdered(t)
   val backTrack = new PriorityQueue[DPORwHeuristics.BacktrackKey]()
   var invariant : Queue[Unique] = Queue()
-  var exploredTracker = new ExploredTacker
+  var exploredTracker = ExploredTacker()
   
   val currentTrace = new Trace
   val nextTrace = new Trace
@@ -274,8 +274,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     interleavingCounter = 0
     exploredTracker.clear
     depGraph.clear
-     */
     backTrack.clear
+     */
     pendingEvents.clear()
     currentDepth = 0
     currentTrace.clear
@@ -852,6 +852,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         unique
       case w: WaitQuiescence =>
         Unique(w, id=w._id)
+      case Unique(start : Start, _) =>
+        start
+      case Unique(send : Send, _) =>
+        send
       case other => other
     } }
     
@@ -1396,6 +1400,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     }
 
     var traceSem = new Semaphore(0)
+    var initialTrace = if (backTrack.isEmpty) Some(_initialTrace) else
+                                              dpor(currentTrace)
     // N.B. reset() and Instrumenter().reinitialize_system
     // are invoked at the beginning of run(), hence we don't need to clean up
     // after ourselves at the end of test().
@@ -1404,7 +1410,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
           _initialDegGraph ++= graph
           traceSem.release
         },
-        initialTrace=Some(_initialTrace),
+        initialTrace=initialTrace,
         initialGraph=Some(_initialDegGraph))
     traceSem.acquire()
     println("Returning from test()")

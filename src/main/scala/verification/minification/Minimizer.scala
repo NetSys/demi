@@ -19,6 +19,10 @@ class MinimizationStats(val minimization_strategy: String, val test_oracle: Stri
   // For the ith replay attempt, how many external events were left?
   val iterationSize = new HashMap[Int, Int]
   var iteration = 0
+  // For each increase in maxDistance, what was the current iteration when the
+  // increase occurred? (See IncrementalDeltaDebugging.scala)
+  // { new maxDistance -> current iteration }
+  val maxDistance = new HashMap[Int, Int]
 
   // Number of schedules attempted in order to find the MCS, not including the
   // initial replay to verify the bug is still triggered
@@ -31,6 +35,7 @@ class MinimizationStats(val minimization_strategy: String, val test_oracle: Stri
 
   def reset() {
     iterationSize.clear
+    maxDistance.clear
     iteration = 0
     stats.clear
     stats ++= Seq(
@@ -82,11 +87,17 @@ class MinimizationStats(val minimization_strategy: String, val test_oracle: Stri
     iteration += 1
   }
 
+  def record_distance_increase(newDistance: Integer) {
+    maxDistance(newDistance) = iteration
+  }
+
   def toJson(): String = {
     val map = new HashMap[String, Any]
     map("iteration_size") = JSONObject(iterationSize.map(
       pair => pair._1.toString -> pair._2).toMap)
     map("total_replays") = total_replays
+    map("maxDistance") = JSONObject(maxDistance.map(
+      pair => pair._1.toString -> pair._2).toMap)
     map ++= stats
     val json = JSONObject(map.toMap).toString()
     assert(json != "")

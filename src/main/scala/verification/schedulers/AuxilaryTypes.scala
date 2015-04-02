@@ -4,12 +4,15 @@ import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{Envelope}
 
 // External events used to specify a trace
-abstract trait ExternalEvent
+abstract trait ExternalEvent {
+  def label: String
+}
 
 trait UniqueExternalEvent {
   val _id : Int = IDGenerator.get()
 
-  def toStringWithId: String = "e"+_id+":"+toString()
+  def label: String = "e"+_id
+  def toStringWithId: String = label+":"+toString()
 
   override def equals(other: Any): Boolean = {
     if (other.isInstanceOf[UniqueExternalEvent]) {
@@ -28,7 +31,7 @@ abstract trait Event
 final case class Start (propCtor: () => Props, name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class Kill (name: String) extends
-    ExternalEvent with Event with UniqueExternalEvent {}
+    ExternalEvent with Event with UniqueExternalEvent
 // Allow the client to late-bind the construction of the message. Invoke the
 // function at the point that the Send is about to be injected.
 final case class Send (name: String, messageCtor: () => Any) extends
