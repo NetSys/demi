@@ -2,7 +2,6 @@ package akka.dispatch.verification
 
 import scala.collection.mutable.HashMap
 
-
 /**
  * User-defined fingerprint for uniquely describing how one or more safety
  * violations manifests.

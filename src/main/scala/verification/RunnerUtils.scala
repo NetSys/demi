@@ -200,40 +200,45 @@ object RunnerUtils {
                             ignoreQuiescence:Boolean=true) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
 
-    val heuristic = new AdditionDistanceOrdering
-    val sched = new DPORwHeuristics(true, fingerprintFactory,
-                                    prioritizePendingUponDivergence=true,
-                                    invariant_check_interval=5,
-                                    backtrackHeuristic=heuristic)
-    // XXX
-    sched.setMaxDistance(0)
-
-    sched.setInvariant(invariant)
-    Instrumenter().scheduler = sched
     val deserializer = new ExperimentDeserializer(experiment_dir)
-    sched.setActorNameProps(deserializer.get_actors)
-    // Start up actors so we can deserialize ActorRefs
-    sched.maybeStartActors()
-    val violation = deserializer.get_violation(messageDeserializer)
-    val trace = deserializer.get_events(messageDeserializer,
-      Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
+    val actorsNameProps = deserializer.get_actors
 
     val depGraphOpt = deserializer.get_dep_graph()
     var depGraph : Graph[Unique, DiEdge] = null
     depGraphOpt match {
       case Some(graph) =>
         depGraph = graph
-        sched.setInitialDepGraph(graph)
       case None => throw new IllegalArgumentException("Need a DepGraph to run DPORwHeuristics")
     }
     val initialTraceOpt = deserializer.get_filtered_initial_trace()
+    var initialTrace : Queue[Unique] = null
     initialTraceOpt match {
-      case Some(initialTrace) =>
-        heuristic.init(sched, initialTrace)
-        sched.setMaxMessagesToSchedule(initialTrace.size)
-        sched.setInitialTrace(new Queue[Unique] ++ initialTrace)
+      case Some(_initialTrace) =>
+        initialTrace = _initialTrace
       case None => throw new IllegalArgumentException("Need initialTrace to run DPORwHeuristics")
     }
+
+    def dporConstructor(): DPORwHeuristics = {
+      val heuristic = new AdditionDistanceOrdering
+      val dpor = new DPORwHeuristics(true, fingerprintFactory,
+                          prioritizePendingUponDivergence=true,
+                          invariant_check_interval=5,
+                          backtrackHeuristic=heuristic)
+      dpor.setActorNameProps(actorsNameProps)
+      dpor.setInitialDepGraph(depGraph)
+      dpor.setMaxMessagesToSchedule(initialTrace.size)
+      dpor.setInitialTrace(new Queue[Unique] ++ initialTrace)
+      heuristic.init(dpor, initialTrace)
+      return dpor
+    }
+    // Sched is just used as a dummy here to deserialize ActorRefs.
+    val sched = dporConstructor()
+    Instrumenter().scheduler = sched
+    // Start up actors so we can deserialize ActorRefs
+    sched.maybeStartActors()
+    val violation = deserializer.get_violation(messageDeserializer)
+    val trace = deserializer.get_events(messageDeserializer,
+      Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
 
     // Convert Trace to a format DPOR will understand. Start by getting a list
     // of all actors, to be used for Kill events.
@@ -246,6 +251,7 @@ object RunnerUtils {
     assert(allActors.size == allActorsSet.size)
 
     val filtered_externals = trace.original_externals flatMap {
+      // TODO(cs): DPOR ignores Start after we've invoked setActorNameProps... Ignore them here?
       case s: Start => Some(s)
       case s: Send => Some(s)
       // Convert the following externals into Unique's, since DPORwHeuristics
@@ -265,9 +271,10 @@ object RunnerUtils {
       case _ => None
     }
 
-    // Don't check unmodified execution, since it might take too long
-    // TODO(cs): codesign DDMin and DPOR. Or, just invoke DPOR and not DDMin.
-    val ddmin = new DDMin(sched, true)
+    val resumableDPOR = new ResumableDPOR(dporConstructor)
+    resumableDPOR.setInvariant(invariant)
+    val ddmin = new IncrementalDDMin(resumableDPOR,
+                                     checkUnmodifed=true)
     val mcs = ddmin.minimize(filtered_externals, violation)
     printMCS(mcs)
     // TODO(cs): write a verify_mcs method that uses Replayer instead of
