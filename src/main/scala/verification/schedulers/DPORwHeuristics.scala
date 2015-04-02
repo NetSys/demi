@@ -221,7 +221,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   implicit def orderedBacktrackKey(t: DPORwHeuristics.BacktrackKey) = backtrackHeuristic.getOrdered(t)
   val backTrack = new PriorityQueue[DPORwHeuristics.BacktrackKey]()
   var invariant : Queue[Unique] = Queue()
-  var exploredTracker = new ExploredTacker
+  var exploredTracker = ExploredTacker()
   
   val currentTrace = new Trace
   val nextTrace = new Trace

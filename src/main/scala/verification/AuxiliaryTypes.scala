@@ -220,3 +220,13 @@ class ExploredTacker {
     exploredStack.clear()
   }
 }
+
+object ExploredTacker {
+  var obj:ExploredTacker = null
+  def apply() = {
+    if (obj == null) {
+      obj = new ExploredTacker
+    }
+    obj
+  }
+}
