@@ -36,13 +36,15 @@ def load_json(json_input):
 
 DataInfo = namedtuple('DataInfo', ['filename', 'title'])
 
-def write_gpi_template(gpi_filename, output_filename, data_info_list, title=""):
+def write_gpi_template(gpi_filename, output_filename, data_info_list, xmax=None, title=""):
   with open(gpi_filename, "w") as gpi:
     # Finish off the rest of the template
     gpi.write(template)
     if title != "":
       gpi.write('''set title "%s"\n''' % title)
     gpi.write('''set output "%s"\n''' % output_filename)
+    if xmax != None:
+      gpi.write('''set xrange [0:%d]\n''' % xmax)
     gpi.write('''plot ''')
     first_iteration = True
     for i, data_info in enumerate(data_info_list):
@@ -60,6 +62,9 @@ if __name__ == '__main__':
   parser = argparse.ArgumentParser(description="generate a plot")
   parser.add_argument('input', metavar="INPUT",
                       help='''The input json file''')
+  parser.add_argument('-x', '--xmax', type=int,
+                      help='''Truncate the x dimension''')
+
   args = parser.parse_args()
 
   stats = load_json(args.input)
@@ -70,5 +75,6 @@ if __name__ == '__main__':
 
   write_data_file(dat_filename, stats)
   data_info_list = [DataInfo(title="", filename=dat_filename)]
-  write_gpi_template(gpi_filename, output_filename, data_info_list)
+  xmax = args.xmax if hasattr(args, "xmax") else None
+  write_gpi_template(gpi_filename, output_filename, data_info_list, xmax=xmax)
   invoke_gnuplot(gpi_filename)
