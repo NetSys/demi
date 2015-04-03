@@ -310,6 +310,8 @@ object RunnerUtils {
         } catch {
           case r: ReplayException =>
             println("MCS doesn't reproduce bug... ReplayScheduler")
+        } finally {
+          replayer.shutdown()
         }
     }
     return (mcs, ddmin.stats, verified_mcs, violation)
