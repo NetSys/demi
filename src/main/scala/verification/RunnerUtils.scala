@@ -13,7 +13,8 @@ object RunnerUtils {
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            fingerprintFactory: FingerprintFactory,
            validate_replay:Option[() => ReplayScheduler]=None,
-           invariant_check_interval:Int=30) :
+           invariant_check_interval:Int=30,
+           maxMessages:Option[Int]=None) :
         Tuple5[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -27,6 +28,10 @@ object RunnerUtils {
       // (waiting for a WaitQuiescene)
       val sched = new RandomScheduler(1, fingerprintFactory, false, invariant_check_interval, false)
       sched.setInvariant(invariant)
+      maxMessages match {
+        case Some(max) => sched.setMaxMessages(max)
+        case None => None
+      }
       Instrumenter().scheduler = sched
       sched.explore(fuzzTest) match {
         case None =>
@@ -107,9 +112,9 @@ object RunnerUtils {
     println("----------")
     println("MCS: ")
     mcs foreach {
-      case Send(rcv, msgCtor) =>
-        println("Send("+rcv+","+msgCtor()+")")
-      case e => println(e)
+      case s @ Send(rcv, msgCtor) =>
+        println(s.label + ":Send("+rcv+","+msgCtor()+")")
+      case e => println(e.label + ":"+e.toString)
     }
     println("----------")
   }
@@ -197,7 +202,8 @@ object RunnerUtils {
                             fingerprintFactory: FingerprintFactory,
                             messageDeserializer: MessageDeserializer,
                             invariant: TestOracle.Invariant,
-                            ignoreQuiescence:Boolean=true) :
+                            ignoreQuiescence:Boolean=true,
+                            event_mapper:Option[HistoricalScheduler.EventMapper]=None) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
 
     val deserializer = new ExperimentDeserializer(experiment_dir)
@@ -274,12 +280,38 @@ object RunnerUtils {
     val resumableDPOR = new ResumableDPOR(dporConstructor)
     resumableDPOR.setInvariant(invariant)
     val ddmin = new IncrementalDDMin(resumableDPOR,
-                                     checkUnmodifed=true)
+                                     checkUnmodifed=true,
+                                     stopAtSize=6, maxMaxDistance=8)
     val mcs = ddmin.minimize(filtered_externals, violation)
-    printMCS(mcs)
-    // TODO(cs): write a verify_mcs method that uses Replayer instead of
-    // TestOracle.
-    val verified_mcs = None
+
+    // Verify the MCS. First, verify that DPOR can reproduce it.
+    println("Validating MCS...")
+    var verified_mcs : Option[EventTrace] = None
+    val traceOpt = ddmin.verify_mcs(mcs, violation)
+    traceOpt match {
+      case None =>
+        println("MCS doesn't reproduce bug... DPOR")
+      case Some(toReplay) =>
+        // Now verify that ReplayScheduler can reproduce it.
+        println("DPOR reproduced successfully. Now trying ReplayScheduler")
+        val replayer = new ReplayScheduler(fingerprintFactory, false, false)
+        event_mapper match {
+          case Some(f) => replayer.setEventMapper(f)
+          case None => None
+        }
+        Instrumenter().scheduler = replayer
+        // Clean up after DPOR. Counterintuitively, use Replayer to do this, since
+        // DPORwHeuristics doesn't have shutdownSemaphore.
+        replayer.shutdown()
+        try {
+          replayer.populateActorSystem(actorsNameProps)
+          verified_mcs = Some(replayer.replay(toReplay))
+          println("MCS Validated!")
+        } catch {
+          case r: ReplayException =>
+            println("MCS doesn't reproduce bug... ReplayScheduler")
+        }
+    }
     return (mcs, ddmin.stats, verified_mcs, violation)
   }
 }

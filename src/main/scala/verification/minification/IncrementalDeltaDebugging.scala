@@ -1,6 +1,7 @@
 package akka.dispatch.verification
 
 import scala.collection.mutable.HashMap
+import scala.collection.mutable.Queue
 
 /**
  * Invoke DDMin with maxDistance=0, then again with maxDistance=2, ... up to
@@ -77,16 +78,11 @@ object ResumableDPOR {
  */
 class ResumableDPOR(ctor: ResumableDPOR.DPORConstructor) extends TestOracle {
   // External event subsequence -> DPOR instance
-  // subsequence is codified as an immutable string.
-  val subseqToDPOR = new HashMap[String, DPORwHeuristics]
+  val subseqToDPOR = new HashMap[Seq[ExternalEvent], DPORwHeuristics]
   var invariant : Invariant = null
   var currentMaxDistance : Int = 0
 
   def getName: String = "DPOR"
-
-  def getFingerprintForSubseq(subseq: Seq[ExternalEvent]): String = {
-    return subseq.map(e => e.label).mkString(",")
-  }
 
   def setInvariant(inv: Invariant) = {
     invariant = inv
@@ -99,12 +95,11 @@ class ResumableDPOR(ctor: ResumableDPOR.DPORConstructor) extends TestOracle {
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
            stats: MinimizationStats) : Option[EventTrace] = {
-    val subseqFingerprint = getFingerprintForSubseq(events)
-    if (!(subseqToDPOR contains subseqFingerprint)) {
-      subseqToDPOR(subseqFingerprint) = ctor()
-      subseqToDPOR(subseqFingerprint).setInvariant(invariant)
+    if (!(subseqToDPOR contains events)) {
+      subseqToDPOR(events) = ctor()
+      subseqToDPOR(events).setInvariant(invariant)
     }
-    val dpor = subseqToDPOR(subseqFingerprint)
+    val dpor = subseqToDPOR(events)
     dpor.setMaxDistance(currentMaxDistance)
     return dpor.test(events, violation_fingerprint, stats)
   }

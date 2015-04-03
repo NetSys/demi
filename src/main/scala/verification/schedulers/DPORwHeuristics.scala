@@ -225,6 +225,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   
   val currentTrace = new Trace
   val nextTrace = new Trace
+  // Shortest trace that has ended in an invariant violation.
+  var shortestTraceSoFar : Trace = null
   var parentEvent = getRootEvent
   var currentDepth = 0
   // N.B. slightly different in meaning than currentDepth. See
@@ -464,7 +466,13 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         if (lookingFor.matches(v)) {
           println("Found matching violation!")
           foundLookingFor = true
+          if (shortestTraceSoFar == null ||
+              currentTrace.length < shortestTraceSoFar.length) {
+            shortestTraceSoFar = currentTrace.clone()
+          }
           return
+        } else {
+          println("No matching violation. Proceeding...")
         }
       case None =>
         println("No matching violation. Proceeding...")
@@ -1383,11 +1391,18 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     test_invariant = invariant
   }
 
+  // Pre: test is only ever invoked with the same events. Sounds weird, but
+  // check out minimization/IncrementalDeltaDebugging.scala.
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
            _stats: MinimizationStats) : Option[EventTrace] = {
     assert(_initialDegGraph != null)
     assert(_initialTrace != null)
+    if (shortestTraceSoFar != null) {
+      println("Already have shortestTrace!")
+      return Some(DPORwHeuristicsUtil.convertToEventTrace(shortestTraceSoFar,
+                  events))
+    }
     currentSubsequence = events
     lookingFor = violation_fingerprint
     stats = _stats
@@ -1416,11 +1431,39 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         initialTrace=initialTrace,
         initialGraph=Some(_initialDegGraph))
     traceSem.acquire()
-    println("Returning from test()")
+    println("Returning from test("+stop_at_distance+")")
     if (foundLookingFor) {
-      return Some(new EventTrace)
+      return Some(DPORwHeuristicsUtil.convertToEventTrace(currentTrace,
+                  events))
     } else {
       return None
     }
+  }
+}
+
+object DPORwHeuristicsUtil {
+  def convertToEventTrace(trace: Queue[Unique], events: Seq[ExternalEvent]) : EventTrace = {
+    // Convert currentTrace to a format that ReplayScheduler will understand.
+    // First, convert Start()'s into SpawnEvents and Send()'s into MsgSends.
+    val toReplay = new EventTrace
+    toReplay.setOriginalExternalEvents(events)
+    events foreach {
+      case Start(propCtor, name) =>
+        toReplay += SpawnEvent("", propCtor(), name, null)
+      case Send(rcv, msgCtor) =>
+        toReplay += MsgSend("deadLetters", rcv, msgCtor())
+      case _ => None
+    }
+    // Then, convert Unique(MsgEvents) to MsgEvents.
+    trace foreach {
+      case Unique(m : MsgEvent, id) =>
+        if (id != 0) { // Not root
+          toReplay += m
+        }
+      case _ =>
+        // Probably no need to consider Kills or Partitions
+        None
+    }
+    return toReplay
   }
 }
