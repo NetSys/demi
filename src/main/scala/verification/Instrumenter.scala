@@ -159,6 +159,8 @@ class Instrumenter {
   //  so this is a way to replay the first message that started it all.
   def reinitialize_system(sys: ActorSystem, argQueue: Queue[Any]) {
     require(scheduler != null)
+
+    shutdownCallback()
     _actorSystem = ActorSystem("new-system-" + counter)
     _random = new Random(0)
     counter += 1
@@ -186,8 +188,6 @@ class Instrumenter {
   
   
   def shutdown_system(alsoRestart: Boolean) = {
-    shutdownCallback()
-
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
     for ((system, args) <- seenActors) {
       val argQueue = allSystems.getOrElse(system, new Queue[Any])
