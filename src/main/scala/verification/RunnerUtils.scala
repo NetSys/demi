@@ -225,7 +225,7 @@ object RunnerUtils {
     }
 
     def dporConstructor(): DPORwHeuristics = {
-      val heuristic = new AdditionDistanceOrdering
+      val heuristic = new ArvindDistanceOrdering
       val dpor = new DPORwHeuristics(true, fingerprintFactory,
                           prioritizePendingUponDivergence=true,
                           invariant_check_interval=5,
@@ -310,6 +310,8 @@ object RunnerUtils {
         } catch {
           case r: ReplayException =>
             println("MCS doesn't reproduce bug... ReplayScheduler")
+        } finally {
+          replayer.shutdown()
         }
     }
     return (mcs, ddmin.stats, verified_mcs, violation)

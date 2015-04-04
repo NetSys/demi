@@ -75,9 +75,26 @@ class DefaultBacktrackOrdering extends BacktrackOrdering {
   }
 }
 
-class AdditionDistanceOrdering extends BacktrackOrdering {
+// Unlike traditional edit distance:
+//  - do not consider any changes to word1, i.e. keep word1 fixed.
+//  - do not penalize deletions.
+//
+// This strategy is simply (i) the number of misordered pairs of events from
+// the original sequence, plus (ii) any events in the new sequence that aren't
+// in the original.
+//
+// This has a few nice properties:
+//    - It accounts for partial orderings (i.e. concurrent events), in the
+//      following sense: rather than simply penalizing all events not in the
+//      longest common subsequence (original proposal), it also adds extra
+//      penalization to reorderings of events not in the longest common
+//      subsequence.
+//    - It can be computed online
+//    - It's simpler than computing longest common subsequence
+class ArvindDistanceOrdering extends BacktrackOrdering {
   var sched : DPORwHeuristics = null
   var originalTrace : Queue[Unique] = null
+  var originalIndices = new HashMap[Unique, Int]
   // Store all distances globally, to avoid redundant computation.
   var distances = new HashMap[DPORwHeuristics.BacktrackKey, Int]
 
@@ -86,22 +103,12 @@ class AdditionDistanceOrdering extends BacktrackOrdering {
   def init(_sched: DPORwHeuristics, _originalTrace: Queue[Unique]) {
     sched = _sched
     originalTrace = _originalTrace
+    for ((e,i) <- originalTrace.zipWithIndex) {
+      originalIndices(e) = i
+    }
   }
 
-  // Unlike traditional edit distance:
-  //  - do not consider any changes to word1, i.e. keep word1 fixed.
-  //  - do not penalize deletions.
-  //
-  // This strategy effectively counts:
-  //  - number of unexpected events in word2
-  //  - any reorderings of expected events from word1.
-  //
-  // Implementation strategy:
-  //  - first count unexpected events in word2.
-  //  - let word2' be word2 without unexpected events.
-  //  - let sub = longest matching subsequence between word2' and word1.
-  //  - finally, add |word2'| - |sub| to the count
-  private[this] def additionDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
+  private[this] def arvindDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
     def getPath() : Seq[Unique] = {
       val commonPrefix = sched.getCommonPrefix(tuple._2._1, tuple._2._1).
                                map(node => node.value)
@@ -109,21 +116,40 @@ class AdditionDistanceOrdering extends BacktrackOrdering {
       return commonPrefix ++ postfix ++ Seq(tuple._2._1, tuple._2._2)
     }
 
-    return AdditionDistance.additionDistance(originalTrace, getPath())
+    val path = getPath()
+    // TODO(cs): make this computation online rather than offline, i.e. look
+    // up the distance for the longest known prefix of this path, then compute
+    // the remaining distance for the suffix.
+    var distance = 0
+    for ((e, i) <- path.zipWithIndex) {
+      if (!(originalIndices contains e)) {
+        // println "Not in original:", e
+        distance += 1
+      } else {
+        for (pred <- path.slice(0,i)) {
+          if ((originalIndices contains pred) &&
+              originalIndices(pred) > originalIndices(e)) {
+            // println "Reordered: ", pred, e
+            distance += 1
+          }
+        }
+      }
+    }
+    return distance
   }
 
-  private[this] def storeAdditionDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
+  private[this] def storeArvindDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
     if (distances contains tuple) {
       return distances(tuple)
     }
-    distances(tuple) = additionDistance(tuple)
+    distances(tuple) = arvindDistance(tuple)
     return distances(tuple)
   }
 
   def getOrdered(tuple: DPORwHeuristics.BacktrackKey) = new Ordered[DPORwHeuristics.BacktrackKey] {
     def compare(other: DPORwHeuristics.BacktrackKey) : Int = {
-      val myDistance = storeAdditionDistance(tuple)
-      val otherDistance = storeAdditionDistance(other)
+      val myDistance = storeArvindDistance(tuple)
+      val otherDistance = storeArvindDistance(other)
       if (otherDistance != myDistance) {
         return myDistance.compare(otherDistance)
       }
@@ -133,7 +159,7 @@ class AdditionDistanceOrdering extends BacktrackOrdering {
   }
 
   def getDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
-    return storeAdditionDistance(tuple)
+    return storeArvindDistance(tuple)
   }
 
   override def clearKey(tuple: DPORwHeuristics.BacktrackKey) = {
