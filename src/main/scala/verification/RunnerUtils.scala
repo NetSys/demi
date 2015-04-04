@@ -225,7 +225,7 @@ object RunnerUtils {
     }
 
     def dporConstructor(): DPORwHeuristics = {
-      val heuristic = new AdditionDistanceOrdering
+      val heuristic = new ArvindDistanceOrdering
       val dpor = new DPORwHeuristics(true, fingerprintFactory,
                           prioritizePendingUponDivergence=true,
                           invariant_check_interval=5,
