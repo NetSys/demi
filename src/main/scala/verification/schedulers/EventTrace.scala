@@ -271,6 +271,7 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       override def default(key:String) = false
     }
     actorToAlive("deadLetters") = true
+    actorToAlive("Timer") = true
 
     // { (sender, receiver) -> can the actors send messages between eachother? }
     var actorsToPartitioned = new HashMap[(String, String), Boolean]() {
@@ -278,7 +279,7 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       // it's reachable (so long as it's alive).
       // N.B. because we never partition the external world ("deadLetters")
       // from any actors, we always return false if either snd or rcv is
-      // "deadLetters"
+      // "deadLetters" or "Timer"
       override def default(key:(String, String)) = false
     }
     // IDs of message sends that we have pruned. Use case: if a message send
@@ -305,12 +306,15 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
 
     for (event <- events) {
       event match {
-        // TODO(cs): account for UniqueTimerDeliveries
         case UniqueMsgSend(m, id) =>
           if (messageSendable(m.sender, m.receiver)) {
             result += event
           } else {
             prunedMessageSends += id
+          }
+        case UniqueTimerDelivery(t, _) =>
+          if (messageDeliverable(t.sender, t.receiver, -1)) {
+            result += event
           }
         case UniqueMsgEvent(m, id) =>
           if (messageDeliverable(m.sender, m.receiver, id)) {
