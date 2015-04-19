@@ -97,8 +97,9 @@ object RunnerUtils {
 
   def replayExperiment(experiment_dir: String,
                        fingerprintFactory: FingerprintFactory,
-                       messageDeserializer: MessageDeserializer) : EventTrace = {
-    val replayer = new ReplayScheduler(fingerprintFactory, false, false)
+                       messageDeserializer: MessageDeserializer,
+                       invariant_check:Option[TestOracle.Invariant]): EventTrace = {
+    val replayer = new ReplayScheduler(fingerprintFactory, false, false, invariant_check)
     val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
 
     println("Trying replay:")

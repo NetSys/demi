@@ -29,12 +29,20 @@ class ReplayException(message:String=null, cause:Throwable=null) extends
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDetector:Boolean, strictChecking:Boolean)
+class ReplayScheduler(messageFingerprinter: FingerprintFactory,
+                      enableFailureDetector:Boolean,
+                      strictChecking:Boolean,
+                      invariant_check:Option[TestOracle.Invariant]=None)
     extends AbstractScheduler with ExternalEventInjector[Event] with HistoricalScheduler {
   def this() = this(new FingerprintFactory, false, false)
 
   if (!enableFailureDetector) {
     disableFailureDetector()
+  }
+
+  invariant_check match {
+    case Some(c) => enableCheckpointing()
+    case None =>
   }
 
   // Have we started off the execution yet?
@@ -44,6 +52,11 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
   // (snd, rcv, msg fingerprint) => Queue(rcv's cell, envelope of message)
   val pendingEvents = new HashMap[(String, String, MessageFingerprint),
                                   Queue[Uniq[(ActorCell, Envelope)]]]
+
+  // Current set of failure detector or CheckpointRequest messages destined for
+  // actors, to be delivered in the order they arrive.
+  // Always prioritized over internal messages.
+  var pendingSystemMessages = new Queue[(ActorCell, Envelope)]
 
   // Just do a cheap test to ensure that no new unexpected messages are sent. This
   // is not perfect.
@@ -68,6 +81,9 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
       fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
       event_orchestrator.set_failure_detector(fd)
       fd.startFD(instrumenter.actorSystem)
+    }
+    if (_enableCheckpointing) {
+      checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
     if (!alreadyPopulated) {
@@ -106,6 +122,14 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
     currentlyInjecting.set(false)
     if (nonDeterministicErrorMsg != "") {
       throw new ReplayException(message=nonDeterministicErrorMsg)
+    }
+    invariant_check match {
+      case Some(check) =>
+        val checkpoint = takeCheckpoint()
+        val violation = check(List.empty, checkpoint)
+        // TODO(cs): actually return this rather than printing it
+        println("Violation?: " + violation)
+      case None =>
     }
     return event_orchestrator.events
   }
@@ -161,10 +185,21 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
   }
 
   // Check no unexpected messages are enqueued
-  def event_produced(cell: ActorCell, envelope: Envelope) = {
+  def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+
+    if (MessageTypes.fromCheckpointCollector(msg)) {
+      pendingSystemMessages += ((cell, envelope))
+      return
+    }
+
+    if (rcv == CheckpointSink.name && _enableCheckpointing) {
+      checkpointer.handleCheckpointResponse(envelope.message, snd)
+      return
+    }
+
     val fingerprint = messageFingerprinter.fingerprint(msg)
     // N.B. we do not actually route messages destined for the
     // FailureDetector, we simply take note of them. This is because all
@@ -225,6 +260,10 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
     advanceReplay()
     // Make sure to send any external messages that just got enqueued
     send_external_messages()
+
+    if (!pendingSystemMessages.isEmpty) {
+      return Some(pendingSystemMessages.dequeue)
+    }
 
     if (event_orchestrator.trace_finished) {
       // We are done, let us wait for notify_quiescence to notice this
@@ -290,6 +329,11 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory, enableFailureDet
   override def notify_quiescence () {
     assert(started.get)
     started.set(false)
+
+    if (blockedOnCheckpoint.get()) {
+      checkpointSem.release()
+      return
+    }
     if (nonDeterministicErrorMsg != "") {
       traceSem.release
       return
