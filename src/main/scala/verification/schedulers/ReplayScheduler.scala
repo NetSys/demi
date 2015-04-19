@@ -227,7 +227,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
 
     // Record this MsgSend as a special if it was sent from a timer.
     val isTimer = (snd == "deadLetters" &&
-                   enqueuedExternalMessages.contains(msg))
+                   !enqueuedExternalMessages.contains(msg))
     snd = if (isTimer) "Timer" else snd
     event_orchestrator.events.appendMsgSend(snd, rcv, envelope.message, uniq.id)
   }
@@ -254,6 +254,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
     if (nonDeterministicErrorMsg != "") {
       return None
     }
+
     // First get us to kind of a good place: it should be the case after
     // invoking advanceReplay() that the next event is a MsgEvent or
     // TimerDelivery event.
