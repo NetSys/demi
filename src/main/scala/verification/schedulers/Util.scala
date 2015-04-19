@@ -44,6 +44,13 @@ class MultiSet[E] extends Set[E] {
     return m.contains(e)
   }
 
+  def count(e: E): Int = {
+    if (m.contains(e)) {
+      return m(e).length
+    }
+    return 0
+  }
+
   def +=(e: E) : this.type  = {
     if (m.contains(e)) {
       m(e) = e :: m(e)
