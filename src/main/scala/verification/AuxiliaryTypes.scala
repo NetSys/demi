@@ -13,7 +13,11 @@ object IDGenerator {
   var uniqueId = new AtomicInteger // DPOR root event is assumed to be ID 0, incrementAndGet ensures starting at 1
 
   def get() : Integer = {
-    return uniqueId.incrementAndGet()
+    val id = uniqueId.incrementAndGet()
+    if (id == Int.MaxValue) {
+      throw new RuntimeException("Deal with overflow..")
+    }
+    return id
   }
 }
 
