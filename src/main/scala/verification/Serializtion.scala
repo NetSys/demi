@@ -57,10 +57,14 @@ object ExperimentSerializer {
   val violation = "/violation.bin"
   val mcs = "/mcs.bin"
   val stats = "/minimization_stats.json"
+  // Stats when minimizing internal events.
+  val internal_stats = "/internal_minimization_stats.json"
   val depGraph = "/depGraph.bin"
   val initialTrace = "/initialTrace.bin"
   // initialTrace minus all events that were concurrent with the violation.
   val filteredTrace = "/filteredTrace.bin"
+  // trace that have had internal deliveries minimized.
+  val minimizedInternalTrace = "/minimizedInternalTrace.bin"
 
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
@@ -79,6 +83,39 @@ object ExperimentSerializer {
 }
 
 class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_serializer: MessageSerializer) {
+
+  def sanitize_trace(trace: Seq[Event]) : Iterable[Event] = {
+    return trace.flatMap(e =>
+      e match {
+        // Careful how we serialize SpawnEvents' ActorRefs
+        case SpawnEvent(parent, props, name, actor) =>
+          // For now, nobody uses the ActorRef field of SpawnEvents, so just
+          // put deadLetters.
+          Some(SerializedSpawnEvent(parent, props, name, "deadLetters"))
+        // Can't serialize Timer objects
+        case UniqueMsgSend(MsgSend(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
+          None
+        case UniqueMsgEvent(MsgEvent(snd, rcv, Timer(name, nestedMsg, repeat, generation)), id) =>
+          Some(UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
+            message_fingerprinter.fingerprint(nestedMsg), repeat, generation)), id=id))
+        // Need to serialize external messages
+        case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
+          Some(SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
+            message_serializer.serialize(msg).array()), id))
+        case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
+          Some(SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
+            message_serializer.serialize(msg).array()), id))
+        // Only need to serialize fingerprints for all other messages
+        case UniqueMsgSend(MsgSend(snd, rcv, msg), id) =>
+          Some(UniqueMsgSend(MsgSend(snd, rcv,
+            message_fingerprinter.fingerprint(msg)), id))
+        case UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
+          Some(UniqueMsgEvent(MsgEvent(snd, rcv,
+            message_fingerprinter.fingerprint(msg)), id))
+        case event => Some(event)
+      }
+    )
+  }
 
   def record_experiment(experiment_name: String, trace: EventTrace,
                         violation: ViolationFingerprint,
@@ -118,36 +155,7 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     // Now serialize the events, making sure to nest the serialization of
     // application messages, and making sure to deal with (non-serializable)
     // timers correctly.
-    val sanitized = trace.events.flatMap(e =>
-      e match {
-        // Careful how we serialize SpawnEvents' ActorRefs
-        case SpawnEvent(parent, props, name, actor) =>
-          // For now, nobody uses the ActorRef field of SpawnEvents, so just
-          // put deadLetters.
-          Some(SerializedSpawnEvent(parent, props, name, "deadLetters"))
-        // Can't serialize Timer objects
-        case UniqueMsgSend(MsgSend(snd, rcv, Timer(name, nestedMsg, repeat, _)), id) =>
-          None
-        case UniqueMsgEvent(MsgEvent(snd, rcv, Timer(name, nestedMsg, repeat, generation)), id) =>
-          Some(UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
-            message_fingerprinter.fingerprint(nestedMsg), repeat, generation)), id=id))
-        // Need to serialize external messages
-        case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
-          Some(SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
-            message_serializer.serialize(msg).array()), id))
-        case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
-          Some(SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
-            message_serializer.serialize(msg).array()), id))
-        // Only need to serialize fingerprints for all other messages
-        case UniqueMsgSend(MsgSend(snd, rcv, msg), id) =>
-          Some(UniqueMsgSend(MsgSend(snd, rcv,
-            message_fingerprinter.fingerprint(msg)), id))
-        case UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
-          Some(UniqueMsgEvent(MsgEvent(snd, rcv,
-            message_fingerprinter.fingerprint(msg)), id))
-        case event => Some(event)
-      }
-    )
+    val sanitized = sanitize_trace(trace.events)
     // Use a data structure that won't cause stackoverflow on
     // serialization. See:
     // http://stackoverflow.com/questions/25147565/serializing-java-object-without-stackoverflowerror
@@ -215,6 +223,21 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     // Overwrite actors.bin, to make sure we include all actors, not just
     // those left in the MCS.
     ("cp " + old_experiment_dir + ExperimentSerializer.actors + " " + new_experiment_dir).!
+  }
+
+  def recordMinimizedInternals(output_dir: String,
+        internalStats: MinimizationStats, minimized: EventTrace) {
+    val statsJson = internalStats.toJson()
+    JavaSerialization.withPrintWriter(output_dir,
+                                      ExperimentSerializer.internal_stats) { pw =>
+      pw.write(statsJson)
+    }
+
+    val sanitized = sanitize_trace(minimized.events)
+    val asArray : Array[Event] = sanitized.toArray
+    val sanitizedBuf = JavaSerialization.serialize(asArray)
+    JavaSerialization.writeToFile(output_dir + ExperimentSerializer.minimizedInternalTrace,
+                                  sanitizedBuf)
   }
 }
 

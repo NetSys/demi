@@ -703,7 +703,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
         if ((isolatedActors contains snd) || (isolatedActors contains rcv)) {
           logger.trace(Console.RED + "Discarding event " + nextEvent +
-            " due to not yet started node " + snd + " or " + rcv)
+            " due to not yet started node " + snd + " or " + rcv + Console.RESET)
           // Self-messages without any prior messages break our assumptions.
           // Fix might be to store this message intead of dropping it.
           if (snd == rcv) {
@@ -714,7 +714,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
         partitionMap.get(snd) match {
           case Some(set) =>
             if (set.contains(rcv)) {
-              logger.trace(Console.RED + "Discarding event " + nextEvent + " due to partition ")
+              logger.trace(Console.RED + "Discarding event " + nextEvent +
+                " due to partition" + Console.RESET)
               return schedule_new_message()
             }
           case _ =>

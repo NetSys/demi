@@ -44,6 +44,13 @@ class MultiSet[E] extends Set[E] {
     return m.contains(e)
   }
 
+  def count(e: E): Int = {
+    if (m.contains(e)) {
+      return m(e).length
+    }
+    return 0
+  }
+
   def +=(e: E) : this.type  = {
     if (m.contains(e)) {
       m(e) = e :: m(e)
@@ -191,6 +198,7 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
 
     println("computing first order happens-before..")
     trace foreach {
+      // TODO(cs): consider TimerDelivery...
       case u @ Unique(MsgEvent(snd, rcv, msg), id) =>
         // deal with prior events on the same machine.
         val priorReceives = receiver2priorReceives.getOrElse(rcv, new Queue[Unique]) += u
