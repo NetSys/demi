@@ -1,6 +1,9 @@
 package akka.dispatch.verification
 
 import scala.collection.mutable.Queue
+import scala.collection.mutable.HashSet
+
+import akka.actor.Props
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
@@ -9,6 +12,14 @@ import scalax.collection.mutable.Graph,
 
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
+
+  def countMsgEvents(trace: Iterable[Event]) : Int = {
+    return trace.filter {
+      case m: MsgEvent => true
+      case t: TimerDelivery => true
+      case _ => false
+    } size
+  }
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            fingerprintFactory: FingerprintFactory,
@@ -75,9 +86,12 @@ object RunnerUtils {
     // optimization...
     println("Pruning events not in provenance of violation. This may take awhile...")
     val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
+    val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
     val filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
-    val numberFiltered = initialTrace.size - filtered.size
-    println("Pruned " + numberFiltered + "/" + initialTrace.size + " concurrent events")
+    val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
+    // TODO(cs): track this number somewhere. Or reconstruct it from
+    // initialTrace/filtered.
+    println("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
     return (traceFound, violationFound, depGraph, initialTrace, filtered)
   }
 
@@ -93,6 +107,20 @@ object RunnerUtils {
     val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
     val dep_graph = deserializer.get_dep_graph()
     return (trace, violation, dep_graph)
+  }
+
+  def deserializeMCS(experiment_dir: String,
+      messageDeserializer: MessageDeserializer,
+      scheduler: ExternalEventInjector[_] with Scheduler):
+        Tuple4[Seq[ExternalEvent], EventTrace, ViolationFingerprint, Seq[Tuple2[Props, String]]] = {
+    val deserializer = new ExperimentDeserializer(experiment_dir)
+    Instrumenter().scheduler = scheduler
+    scheduler.populateActorSystem(deserializer.get_actors)
+    val violation = deserializer.get_violation(messageDeserializer)
+    val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val mcs = deserializer.get_mcs
+    val actorNameProps = deserializer.get_actors
+    return (mcs, trace, violation, actorNameProps)
   }
 
   def replayExperiment(experiment_dir: String,
@@ -306,7 +334,9 @@ object RunnerUtils {
         replayer.shutdown()
         try {
           replayer.populateActorSystem(actorsNameProps)
-          verified_mcs = Some(replayer.replay(toReplay))
+          val replayTrace = replayer.replay(toReplay)
+          replayTrace.setOriginalExternalEvents(mcs)
+          verified_mcs = Some(replayTrace)
           println("MCS Validated!")
         } catch {
           case r: ReplayException =>
@@ -316,5 +346,124 @@ object RunnerUtils {
         }
     }
     return (mcs, ddmin.stats, verified_mcs, violation)
+  }
+
+  def minimizeInternals(fingerprintFactory: FingerprintFactory,
+                        mcs: Seq[ExternalEvent],
+                        verified_mcs: EventTrace,
+                        actorNameProps: Seq[Tuple2[Props, String]],
+                        invariant: TestOracle.Invariant,
+                        violation: ViolationFingerprint,
+                        event_mapper:Option[HistoricalScheduler.EventMapper]=None) :
+      Tuple2[MinimizationStats, EventTrace] = {
+
+    // TODO(cs): factor this out to its own file, with nice interfaces.
+    println("Minimizing internals..")
+    println("verified_mcs.original_externals: " + verified_mcs.original_externals)
+    val stats = new MinimizationStats("InternalMin", "STSSched")
+
+    // TODO(cs): minor optimization: don't try to prune external messages.
+    // MsgEvents we've tried ignoring so far. MultiSet to account for duplicate MsgEvent's
+    val triedIgnoring = new MultiSet[(String, String, MessageFingerprint)]
+
+    // Filter out the next MsgEvent, and return the resulting EventTrace.
+    // If we've tried filtering out all MsgEvents, return None.
+    def getNextTrace(trace: EventTrace): Option[EventTrace] = {
+      // Track what events we've kept so far in this iteration because we
+      // already tried ignoring them previously. MultiSet to account for
+      // duplicate MsgEvent's. TODO(cs): this may lead to some ambiguous cases.
+      val keysThisIteration = new MultiSet[(String, String, MessageFingerprint)]
+      // Whether we've found the event we're going to try ignoring next.
+      var foundIgnoredEvent = false
+
+      // Return whether we should keep this event
+      def checkDelivery(snd: String, rcv: String, msg: Any): Boolean = {
+        val key = (snd, rcv, fingerprintFactory.fingerprint(msg))
+        keysThisIteration += key
+        if (foundIgnoredEvent) {
+          // We already chose our event to ignore. Keep all other events.
+          return true
+        } else {
+          // Check if we should ignore or keep this one.
+          if (keysThisIteration.count(key) > triedIgnoring.count(key)) {
+            // We found something to ignore
+            println("Ignoring next: " + key)
+            foundIgnoredEvent = true
+            triedIgnoring += key
+            return false
+          } else {
+            // Keep this one; we already tried ignoring it, but it was
+            // not prunable.
+            return true
+          }
+        }
+      }
+
+      // We accomplish two tasks as we iterate through trace:
+      //   - Finding the next event we want to ignore
+      //   - Filtering (keeping) everything that we don't want to ignore
+      val modified = trace flatMap {
+        case m @ MsgEvent(snd, rcv, msg) =>
+          if (checkDelivery(snd, rcv, msg)) {
+            Some(m)
+          } else {
+            None
+          }
+        case t @ TimerDelivery(snd, rcv, msg) =>
+          if (checkDelivery(snd, rcv, msg)) {
+            Some(t)
+          } else {
+            None
+          }
+        case e =>
+          Some(e)
+      }
+      if (foundIgnoredEvent) {
+        return Some(new EventTrace(new Queue[Event] ++ modified,
+                                   verified_mcs.original_externals))
+      }
+      // We didn't find anything else to ignore, so we're done
+      return None
+    }
+
+    val origTrace = verified_mcs.filterCheckpointMessages.filterFailureDetectorMessages
+    var lastFailingTrace = origTrace
+    // TODO(cs): make this more efficient? Currently O(n^2) overall.
+    var nextTrace = getNextTrace(lastFailingTrace)
+
+    while (!nextTrace.isEmpty) {
+      val sched = new STSScheduler(nextTrace.get, false, fingerprintFactory, false)
+      sched.setActorNamePropPairs(actorNameProps)
+      sched.setInvariant(invariant)
+      event_mapper match {
+        case Some(f) => sched.setEventMapper(f)
+        case None => None
+      }
+      Instrumenter().scheduler = sched
+      val prunedOpt = sched.test(mcs, violation, stats)
+      prunedOpt match {
+        case Some(trace) =>
+          // Some other events may have been pruned by virtue of being absent. So
+          // we reassign lastFailingTrace, then pick then next trace based on
+          // it.
+          val filteredTrace = trace.filterCheckpointMessages.filterFailureDetectorMessages
+          val origSize = countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
+          val newSize = countMsgEvents(filteredTrace)
+          val diff = origSize - newSize
+          println("Ignoring worked! Pruned " + diff + "/" + origSize + " deliveries")
+          lastFailingTrace = filteredTrace
+        case None =>
+          // We didn't trigger the violation.
+          println("Ignoring didn't work. Trying next")
+          None
+      }
+      nextTrace = getNextTrace(lastFailingTrace)
+    }
+    val origSize = countMsgEvents(origTrace)
+    val newSize = countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
+    val diff = origSize - newSize
+    println("Pruned " + diff + "/" + origSize + " deliveries in " +
+            stats.total_replays + " replays")
+    return (stats, lastFailingTrace)
   }
 }

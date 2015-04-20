@@ -246,7 +246,12 @@ class STSScheduler(var original_trace: EventTrace,
         //   event_orchestrator.trace.length + " " + event_orchestrator.current_event)
         event_orchestrator.current_event match {
           case SpawnEvent (_, _, name, _) =>
-            event_orchestrator.trigger_start(name)
+            if (event_orchestrator.actorToActorRef contains name) {
+              println("Already started.. " + name)
+              event_orchestrator.unisolate_node(name)
+            } else {
+              event_orchestrator.trigger_start(name)
+            }
           case KillEvent (name) =>
             event_orchestrator.trigger_kill(name)
           case PartitionEvent((a,b)) =>
