@@ -286,9 +286,10 @@ class ExperimentDeserializer(results_dir: String) {
     return readIfFileExists[Queue[Unique]](results_dir + ExperimentSerializer.filteredTrace)
   }
 
-  def get_events(message_deserializer: MessageDeserializer, actorSystem: ActorSystem) : EventTrace = {
-    val buf = JavaSerialization.readFromFile(results_dir +
-      ExperimentSerializer.event_trace)
+  def get_events(message_deserializer: MessageDeserializer,
+                 actorSystem: ActorSystem,
+                 traceFile:String=ExperimentSerializer.event_trace) : EventTrace = {
+    val buf = JavaSerialization.readFromFile(results_dir + traceFile)
     val events = JavaSerialization.deserialize[Array[Event]](buf).map(e =>
       e match {
         case SerializedSpawnEvent(parent, props, name, actor) =>
