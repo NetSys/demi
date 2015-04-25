@@ -97,14 +97,16 @@ object RunnerUtils {
 
   def deserializeExperiment(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
-      scheduler: ExternalEventInjector[_] with Scheduler):
+      scheduler: ExternalEventInjector[_] with Scheduler,
+      traceFile:String=ExperimentSerializer.event_trace):
                   Tuple3[EventTrace, ViolationFingerprint, Option[Graph[Unique, DiEdge]]] = {
     val deserializer = new ExperimentDeserializer(experiment_dir)
     Instrumenter().scheduler = scheduler
     scheduler.populateActorSystem(deserializer.get_actors)
     scheduler.setActorNamePropPairs(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
-    val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val trace = deserializer.get_events(messageDeserializer,
+                  Instrumenter().actorSystem, traceFile=traceFile)
     val dep_graph = deserializer.get_dep_graph()
     return (trace, violation, dep_graph)
   }
@@ -126,9 +128,12 @@ object RunnerUtils {
   def replayExperiment(experiment_dir: String,
                        fingerprintFactory: FingerprintFactory,
                        messageDeserializer: MessageDeserializer,
-                       invariant_check:Option[TestOracle.Invariant]): EventTrace = {
+                       invariant_check:Option[TestOracle.Invariant],
+                       traceFile:String=ExperimentSerializer.event_trace): EventTrace = {
     val replayer = new ReplayScheduler(fingerprintFactory, false, false, invariant_check)
-    val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, replayer)
+    val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir,
+                                        messageDeserializer, replayer,
+                                        traceFile=traceFile)
 
     println("Trying replay:")
     val events = replayer.replay(trace)
