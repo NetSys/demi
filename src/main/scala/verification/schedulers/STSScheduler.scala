@@ -69,7 +69,7 @@ class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
                    messageFingerprinter: FingerprintFactory,
                    enableFailureDetector:Boolean) extends AbstractScheduler
-    with ExternalEventInjector[Event] with TestOracle with HistoricalScheduler {
+    with ExternalEventInjector[Event] with TestOracle {
   def this(original_trace: EventTrace) =
       this(original_trace, false, new FingerprintFactory, true)
 
@@ -141,7 +141,7 @@ class STSScheduler(var original_trace: EventTrace,
     val filtered = original_trace.filterFailureDetectorMessages.
                                   subsequenceIntersection(subseq)
 
-    val updatedEvents = updateEvents(filtered.getEvents)
+    val updatedEvents = filtered.recomputeExternalMsgSends()
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
@@ -200,7 +200,6 @@ class STSScheduler(var original_trace: EventTrace,
 
     val peeker = new IntervalPeekScheduler(
       expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
-    peeker.eventMapper = eventMapper
 
     // N.B. "checkpoint" here means checkpoint of the network's state, as
     // opposed to a checkpoint of the applications state for checking

@@ -33,7 +33,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
                       enableFailureDetector:Boolean,
                       strictChecking:Boolean,
                       invariant_check:Option[TestOracle.Invariant]=None)
-    extends AbstractScheduler with ExternalEventInjector[Event] with HistoricalScheduler {
+    extends AbstractScheduler with ExternalEventInjector[Event] {
   def this() = this(new FingerprintFactory, false, false)
 
   if (!enableFailureDetector) {
@@ -108,7 +108,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
           None
       }
     }
-    val updatedEvents = updateEvents(_trace.getEvents)
+    val updatedEvents = _trace.recomputeExternalMsgSends()
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events

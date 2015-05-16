@@ -114,6 +114,25 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     }, original_externals)
   }
 
+  // Pre: original_externals corresponds exactly to our external MsgSend
+  // events, i.e. subsequenceIntersection() has been invoked.
+  def recomputeExternalMsgSends(): Seq[Event] = {
+    if (original_externals == null) {
+      throw new IllegalStateException("original_externals must not be null")
+    }
+    val sends = original_externals flatMap {
+      case s: Send => Some(s)
+      case _ => None
+    }
+    val sendsQueue = Queue(sends: _*)
+    return events map {
+      case UniqueMsgSend(MsgSend("deadLetters", receiver, _), id) =>
+        val send = sendsQueue.dequeue
+        UniqueMsgSend(MsgSend("deadLetters", receiver, send.messageCtor()), id)
+      case e => e
+    }
+  }
+
   // Filter all external events in original_trace that aren't in subseq.
   // As an optimization, also filter out some internal events that we know a priori
   // aren't going to occur in the subsequence execution.

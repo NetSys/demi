@@ -173,16 +173,11 @@ object RunnerUtils {
                     fingerprintFactory: FingerprintFactory,
                     messageDeserializer: MessageDeserializer,
                     allowPeek: Boolean,
-                    invariant: TestOracle.Invariant,
-                    event_mapper: Option[HistoricalScheduler.EventMapper]=None) :
+                    invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(new EventTrace, allowPeek,
         fingerprintFactory, false)
     sched.setInvariant(invariant)
-    event_mapper match {
-      case Some(f) => sched.setEventMapper(f)
-      case None => None
-    }
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
 
@@ -231,8 +226,7 @@ object RunnerUtils {
                             fingerprintFactory: FingerprintFactory,
                             messageDeserializer: MessageDeserializer,
                             invariant: TestOracle.Invariant,
-                            ignoreQuiescence:Boolean=true,
-                            event_mapper:Option[HistoricalScheduler.EventMapper]=None) :
+                            ignoreQuiescence:Boolean=true) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
 
     val deserializer = new ExperimentDeserializer(experiment_dir)
@@ -324,10 +318,6 @@ object RunnerUtils {
         // Now verify that ReplayScheduler can reproduce it.
         println("DPOR reproduced successfully. Now trying ReplayScheduler")
         val replayer = new ReplayScheduler(fingerprintFactory, false, false)
-        event_mapper match {
-          case Some(f) => replayer.setEventMapper(f)
-          case None => None
-        }
         Instrumenter().scheduler = replayer
         // Clean up after DPOR. Counterintuitively, use Replayer to do this, since
         // DPORwHeuristics doesn't have shutdownSemaphore.
@@ -348,13 +338,28 @@ object RunnerUtils {
     return (mcs, ddmin.stats, verified_mcs, violation)
   }
 
+  def testWithStsSched(fingerprintFactory: FingerprintFactory,
+                       mcs: Seq[ExternalEvent],
+                       trace: EventTrace,
+                       actorNameProps: Seq[Tuple2[Props, String]],
+                       invariant: TestOracle.Invariant,
+                       violation: ViolationFingerprint,
+                       stats: MinimizationStats)
+                     : Option[EventTrace] = {
+    val sched = new STSScheduler(trace, false,
+        fingerprintFactory, false)
+    sched.setInvariant(invariant)
+    Instrumenter().scheduler = sched
+    sched.setActorNamePropPairs(actorNameProps)
+    return sched.test(mcs, violation, stats)
+  }
+
   def minimizeInternals(fingerprintFactory: FingerprintFactory,
                         mcs: Seq[ExternalEvent],
                         verified_mcs: EventTrace,
                         actorNameProps: Seq[Tuple2[Props, String]],
                         invariant: TestOracle.Invariant,
-                        violation: ViolationFingerprint,
-                        event_mapper:Option[HistoricalScheduler.EventMapper]=None) :
+                        violation: ViolationFingerprint) :
       Tuple2[MinimizationStats, EventTrace] = {
 
     // TODO(cs): factor this out to its own file, with nice interfaces.
@@ -432,16 +437,8 @@ object RunnerUtils {
     var nextTrace = getNextTrace(lastFailingTrace)
 
     while (!nextTrace.isEmpty) {
-      val sched = new STSScheduler(nextTrace.get, false, fingerprintFactory, false)
-      sched.setActorNamePropPairs(actorNameProps)
-      sched.setInvariant(invariant)
-      event_mapper match {
-        case Some(f) => sched.setEventMapper(f)
-        case None => None
-      }
-      Instrumenter().scheduler = sched
-      val prunedOpt = sched.test(mcs, violation, stats)
-      prunedOpt match {
+      testWithStsSched(fingerprintFactory, mcs, nextTrace.get, actorNameProps,
+                       invariant, violation, stats) match {
         case Some(trace) =>
           // Some other events may have been pruned by virtue of being absent. So
           // we reassign lastFailingTrace, then pick then next trace based on
