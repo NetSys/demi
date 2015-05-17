@@ -86,6 +86,68 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     return getEvents().iterator
   }
 
+  // Take the result of ProvenanceTracker.pruneConcurrentEvents, and use that
+  // to filter out any MsgEvents in our events that were pruned.
+  // TODO(cs): have ProvenanceTracker act directly on us rather than on a
+  // separate Queue[Unique].
+  def intersection(uniqs: Queue[Unique], fingerprintFactory: FingerprintFactory) : EventTrace = {
+    val msgEvents = new Queue[MsgEvent] ++ uniqs flatMap {
+      case Unique(m: MsgEvent, id) =>
+        // Filter out the root event
+        if (id == 0) {
+          None
+        } else {
+          Some(m)
+        }
+      case u => throw new IllegalArgumentException("Non MsgEvent:" + u)
+    }
+
+    // first pass: remove any UniqueMsgEvents that don't show up in msgEvents
+    // track which UniqueMsgEvent ids were pruned
+    val pruned = new HashSet[Int]
+    var filtered = events flatMap {
+      case u @ UniqueMsgEvent(m, id) =>
+        msgEvents.headOption match {
+          case Some(msgEvent) =>
+            val fingerprinted = MsgEvent(m.sender, m.receiver,
+              fingerprintFactory.fingerprint(m.msg))
+            if (fingerprinted == msgEvent) {
+              msgEvents.dequeue
+              Some(u)
+            } else {
+              // u was filtered
+              pruned += id
+              None
+            }
+          case None =>
+            // u was filtered
+            pruned += id
+            None
+        }
+      case m: MsgEvent =>
+        throw new IllegalStateException("Should be UniqueMsgEvent")
+      case e => Some(e)
+    }
+
+    // Should always be a strict subsequence
+    assert(msgEvents.isEmpty)
+
+    // second pass: remove any UniqueMsgSends that correspond to
+    // UniqueMsgEvents that were pruned in the first pass
+    // TODO(cs): not sure this is actually necessary.
+    filtered = filtered flatMap {
+      case u @ UniqueMsgSend(m, id) =>
+        if (pruned contains id) {
+          None
+        } else {
+          Some(u)
+        }
+      case e => Some(e)
+    }
+
+    return new EventTrace(filtered, original_externals)
+  }
+
   // Ensure that all failure detector messages are pruned from the original trace,
   // since we are now in a divergent execution and the failure detector may
   // need to respond differently.
