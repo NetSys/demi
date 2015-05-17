@@ -43,7 +43,11 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
   // we hide UniqueMsgSend/Events here
   // TODO(cs): this is a dangerous API; easy to mix this up with .events...
   def getEvents() : Seq[Event] = {
-    return events.map(e =>
+    return getEvents(events)
+  }
+
+  private[this] def getEvents(_events: Seq[Event]): Seq[Event] = {
+    return _events.map(e =>
       e match {
         case UniqueMsgSend(m, id) => m
         case UniqueMsgEvent(m, id) => m
@@ -114,23 +118,35 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     }, original_externals)
   }
 
-  // Pre: original_externals corresponds exactly to our external MsgSend
-  // events, i.e. subsequenceIntersection() has been invoked.
-  def recomputeExternalMsgSends(): Seq[Event] = {
-    if (original_externals == null) {
+  // Pre: externals corresponds exactly to our external MsgSend
+  // events, i.e. subsequenceIntersection(externals) was used to create this
+  // EventTrace.
+  // Pre: no checkpoint messages in events
+  def recomputeExternalMsgSends(externals: Seq[ExternalEvent]): Seq[Event] = {
+    if (externals == null) {
       throw new IllegalStateException("original_externals must not be null")
     }
-    val sends = original_externals flatMap {
+    val sends = externals flatMap {
       case s: Send => Some(s)
       case _ => None
     }
-    val sendsQueue = Queue(sends: _*)
-    return events map {
-      case UniqueMsgSend(MsgSend("deadLetters", receiver, _), id) =>
-        val send = sendsQueue.dequeue
-        UniqueMsgSend(MsgSend("deadLetters", receiver, send.messageCtor()), id)
-      case e => e
+    if (sends.isEmpty) {
+      return getEvents
     }
+    val sendsQueue = Queue(sends: _*)
+    return getEvents(events map {
+      case u @ UniqueMsgSend(MsgSend("deadLetters", receiver, msg), id) =>
+        if (MessageTypes.fromCheckpointCollector(msg)) {
+          u
+        } else {
+          val send = sendsQueue.dequeue
+          val new_msg = send.messageCtor()
+          UniqueMsgSend(MsgSend("deadLetters", receiver, new_msg), id)
+        }
+      case m: MsgSend =>
+        throw new IllegalArgumentException("Must be UniqueMsgSend")
+      case e => e
+    })
   }
 
   // Filter all external events in original_trace that aren't in subseq.

@@ -80,6 +80,13 @@ object ExperimentSerializer {
     proc.exitValue
     return output_dir.trim
   }
+
+  def getActorNameProps(trace: EventTrace) : Seq[Tuple2[Props, String]] = {
+    return trace.events.flatMap {
+      case SpawnEvent(_,props,name,_) => Some((props, name))
+      case _ => None
+    }.toSet.toSeq
+  }
 }
 
 class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_serializer: MessageSerializer) {
@@ -144,11 +151,8 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.idGenerator,
       JavaSerialization.serialize(IDGenerator.uniqueId.get()))
 
-    val actorPropNamePairs = trace.events.flatMap {
-      case SpawnEvent(_,props,name,_) => Some((props, name))
-      case _ => None
-    }
-    val actorNameBuf = JavaSerialization.serialize(actorPropNamePairs.toSet.toArray)
+    val actorPropNamePairs = ExperimentSerializer.getActorNameProps(trace)
+    val actorNameBuf = JavaSerialization.serialize(actorPropNamePairs.toArray)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.actors,
                                   actorNameBuf)
 

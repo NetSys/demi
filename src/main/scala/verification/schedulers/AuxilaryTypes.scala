@@ -9,7 +9,7 @@ abstract trait ExternalEvent {
 }
 
 trait UniqueExternalEvent {
-  val _id : Int = IDGenerator.get()
+  var _id : Int = IDGenerator.get()
 
   def label: String = "e"+_id
   def toStringWithId: String = label+":"+toString()
@@ -28,13 +28,36 @@ trait UniqueExternalEvent {
 }
 abstract trait Event
 
+/**
+ * ExternalMessageConstructors are instance variables of Send() events.
+ * They serve two purposes:
+ *  - They allow the client to late-bind the construction of their message.
+ *    apply() is invoked after the ActorSystem and all actors have been
+ *    created.
+ *  - Optionally: they provide an interface for `shrinking` the contents of
+ *    the messages. This is achieved through `getComponents` and
+ *    `maskComponents`.
+ */
+// TODO(cs): should probably force this to be serializable
+trait ExternalMessageConstructor {
+  // Construct the message
+  def apply() : Any
+  // Optional, for `shrinking`:
+  // Get the components that make up the content of the message we construct
+  // in apply().
+  def getComponents() : Seq[Any] = List.empty
+  // Given a sequence of indices (pointing to elements in `getComponents()`),
+  // create a new ExternalMessageConstructor that does not include those
+  // components upon apply().
+  // Default: no-op
+  def maskComponents(indices: Set[Int]): ExternalMessageConstructor = this
+}
+
 final case class Start (propCtor: () => Props, name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class Kill (name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
-// Allow the client to late-bind the construction of the message. Invoke the
-// function at the point that the Send is about to be injected.
-final case class Send (name: String, messageCtor: () => Any) extends
+final case class Send (name: String, messageCtor: ExternalMessageConstructor) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class WaitQuiescence() extends
     ExternalEvent with Event with UniqueExternalEvent

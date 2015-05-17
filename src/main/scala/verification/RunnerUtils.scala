@@ -9,6 +9,12 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
+// Example minimization pipeline:
+//     fuzz()
+//  -> minimizeSendContents
+//  -> stsSchedDDmin
+//  -> minimizeInternals
+//  -> replayExperiment <- loop
 
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
@@ -137,6 +143,19 @@ object RunnerUtils {
     return events
   }
 
+  def replay(fingerprintFactory: FingerprintFactory,
+             trace: EventTrace,
+             actorNameProps: Seq[Tuple2[Props, String]],
+             invariant: TestOracle.Invariant) {
+    val replayer = new ReplayScheduler(fingerprintFactory, false, false, Some(invariant))
+    Instrumenter().scheduler = replayer
+    replayer.setActorNamePropPairs(actorNameProps)
+    println("Trying replay:")
+    val events = replayer.replay(trace)
+    println("Done with replay")
+    replayer.shutdown
+  }
+
   def printMCS(mcs: Seq[ExternalEvent]) {
     println("----------")
     println("MCS: ")
@@ -191,9 +210,12 @@ object RunnerUtils {
     val mcs = ddmin.minimize(filteredQuiescence, violation)
     printMCS(mcs)
     println("Validating MCS...")
-    val validated_mcs = ddmin.verify_mcs(mcs, violation)
+    var validated_mcs = ddmin.verify_mcs(mcs, violation)
     validated_mcs match {
-      case Some(_) => println("MCS Validated!")
+      case Some(trace) =>
+        println("MCS Validated!")
+        trace.setOriginalExternalEvents(mcs)
+        validated_mcs = Some(trace.filterCheckpointMessages)
       case None => println("MCS doesn't reproduce bug...")
     }
     return (mcs, ddmin.stats, validated_mcs, violation)
@@ -354,6 +376,7 @@ object RunnerUtils {
     return sched.test(mcs, violation, stats)
   }
 
+  // pre: replay(verified_mcs) reproduces the violation.
   def minimizeInternals(fingerprintFactory: FingerprintFactory,
                         mcs: Seq[ExternalEvent],
                         verified_mcs: EventTrace,
@@ -363,6 +386,7 @@ object RunnerUtils {
       Tuple2[MinimizationStats, EventTrace] = {
 
     // TODO(cs): factor this out to its own file, with nice interfaces.
+    // TODO(cs): this is a bit redundant with OneAtATimeRemoval + STSSched.
     println("Minimizing internals..")
     println("verified_mcs.original_externals: " + verified_mcs.original_externals)
     val stats = new MinimizationStats("InternalMin", "STSSched")
@@ -407,14 +431,14 @@ object RunnerUtils {
       // We accomplish two tasks as we iterate through trace:
       //   - Finding the next event we want to ignore
       //   - Filtering (keeping) everything that we don't want to ignore
-      val modified = trace flatMap {
-        case m @ MsgEvent(snd, rcv, msg) =>
+      val modified = trace.events.flatMap {
+        case m @ UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
           if (checkDelivery(snd, rcv, msg)) {
             Some(m)
           } else {
             None
           }
-        case t @ TimerDelivery(snd, rcv, msg) =>
+        case t @ UniqueTimerDelivery(TimerDelivery(snd, rcv, msg), id) =>
           if (checkDelivery(snd, rcv, msg)) {
             Some(t)
           } else {
@@ -449,6 +473,7 @@ object RunnerUtils {
           val diff = origSize - newSize
           println("Ignoring worked! Pruned " + diff + "/" + origSize + " deliveries")
           lastFailingTrace = filteredTrace
+          lastFailingTrace.setOriginalExternalEvents(mcs)
         case None =>
           // We didn't trigger the violation.
           println("Ignoring didn't work. Trying next")
@@ -461,6 +486,75 @@ object RunnerUtils {
     val diff = origSize - newSize
     println("Pruned " + diff + "/" + origSize + " deliveries in " +
             stats.total_replays + " replays")
-    return (stats, lastFailingTrace)
+    return (stats, lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
+  }
+
+  // Returns a new MCS, with Send contents shrinked as much as possible.
+  // Pre: all Send() events have the same message contents.
+  def shrinkSendContents(fingerprintFactory: FingerprintFactory,
+                         mcs: Seq[ExternalEvent],
+                         verified_mcs: EventTrace,
+                         actorNameProps: Seq[Tuple2[Props, String]],
+                         invariant: TestOracle.Invariant,
+                         violation: ViolationFingerprint) : Seq[ExternalEvent] = {
+    // Invariants (TODO(cs): specific to akka-raft?):
+    //   - Require that all Send() events have the same message contents
+    //   - Ensure that whenever a component is masked from one Send()'s
+    //     message contents, all other Send()'s have the same component
+    //     masked. i.e. throughout minimization, the first invariant holds!
+
+    // Pseudocode:
+    // for component in firstSend.messageConstructor.getComponents:
+    //   if (masking component still triggers bug):
+    //     firstSend.maskComponent!
+
+    println("Shrinking Send contents..")
+    val stats = new MinimizationStats("ShrinkSendContents", "STSSched")
+
+    val shrinkable_sends = mcs flatMap {
+      case s @ Send(dst, ctor) =>
+        if (!ctor.getComponents.isEmpty) {
+          Some(s)
+        } else {
+          None
+        }
+      case _ => None
+    } toSeq
+
+    if (shrinkable_sends.isEmpty) {
+      println("No shrinkable sends")
+      return mcs
+    }
+
+    var components = shrinkable_sends.head.messageCtor.getComponents
+    assert(shrinkable_sends.forall(s => s.messageCtor.getComponents == components))
+
+    def modifyMCS(mcs: Seq[ExternalEvent], maskedIndices: Set[Int]): Seq[ExternalEvent] = {
+      return (mcs map {
+        case s @ Send(dst, ctor) =>
+          val updated = Send(dst, ctor.maskComponents(maskedIndices))
+          // Be careful to make Send ids the same.
+          updated._id = s._id
+          updated
+        case e => e
+      })
+    }
+
+    var maskedIndices = Set[Int]()
+    for (i <- 0 until components.size) {
+      println("Trying to remove component " + i + ":" + components(i))
+      val modifiedMCS = modifyMCS(mcs, maskedIndices + i)
+      testWithStsSched(fingerprintFactory, modifiedMCS,
+                       verified_mcs, actorNameProps, invariant, violation, stats) match {
+        case Some(trace) =>
+          println("Violation reproducable after removing component " + i)
+          maskedIndices = maskedIndices + i
+        case None =>
+          println("Violation not reproducable")
+      }
+    }
+
+    println("Was able to remove the following components: " + maskedIndices)
+    return modifyMCS(mcs, maskedIndices)
   }
 }

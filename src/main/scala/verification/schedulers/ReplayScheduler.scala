@@ -108,7 +108,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
           None
       }
     }
-    val updatedEvents = _trace.recomputeExternalMsgSends()
+    val updatedEvents = _trace.recomputeExternalMsgSends(_trace.original_externals)
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
