@@ -578,4 +578,71 @@ object RunnerUtils {
     println("Was able to remove the following components: " + maskedIndices)
     return modifyMCS(mcs, maskedIndices)
   }
+
+  def printMinimizationStats(original_experiment_dir: String,
+                             mcs_dir: String,
+                             messageDeserializer: MessageDeserializer) {
+    // Print:
+    //  - number of original message deliveries
+    //  - deliveries removed by provenance
+    //  - number of deliveries pruned by minimizing external events
+    //    (including internal deliveries that disappeared "by chance")
+    //  - deliveries removed by internal minimization
+    //  - final number of deliveries
+    //  - number of non-delivery external events that were pruned by minimizing?
+    // TODO(cs): print how many replays went into each of these steps
+    // Make sure not to count checkpoint and failure detector messages.
+    var deserializer = new ExperimentDeserializer(original_experiment_dir)
+    val dummy_sched = new ReplayScheduler
+    Instrumenter().scheduler = dummy_sched
+    dummy_sched.populateActorSystem(deserializer.get_actors)
+    val orig_trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val orig_deliveries = orig_trace.filterFailureDetectorMessages.
+                                     filterCheckpointMessages.flatMap {
+      case m: MsgEvent => Some(m)
+      case e => None
+    }
+    val orig_external_deliveries = orig_deliveries.flatMap {
+      case m @ MsgEvent("deadLetters", _, _) => Some(m)
+      case m => None
+    }
+
+    // Assumes get_filtered_initial_trace only contains Unique(MsgEvent)s
+    val after_provenance_deliveries = deserializer.get_filtered_initial_trace().get
+
+    deserializer = new ExperimentDeserializer(mcs_dir)
+    // Should be same actors, so no need to populateActorSystem
+    val mcs_trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val mcs_deliveries = mcs_trace.filterFailureDetectorMessages.
+                                   filterCheckpointMessages.flatMap {
+      case m: MsgEvent => Some(m)
+      case e => None
+    }
+    val mcs_external_deliveries = mcs_deliveries.flatMap {
+      case m @ MsgEvent("deadLetters", _, _) => Some(m)
+      case m => None
+    }
+
+    val internal_minimized_trace = deserializer.get_events(
+          messageDeserializer, Instrumenter().actorSystem,
+          file=ExperimentSerializer.minimizedInternalTrace)
+    val internal_minimized_deliveries = internal_minimized_trace.
+                                        filterFailureDetectorMessages.
+                                        filterCheckpointMessages.flatMap {
+      case m: MsgEvent => Some(m)
+      case e => None
+    }
+    dummy_sched.shutdown
+
+    println("Original message deliveries: " + orig_deliveries.size +
+            " ("+orig_external_deliveries.size+" externals)")
+    println("Removed by provenance: " + (orig_deliveries.size - after_provenance_deliveries.size))
+    println("Removed by DDMin: " + (after_provenance_deliveries.size - mcs_deliveries.size) +
+            " ("+(orig_external_deliveries.size - mcs_external_deliveries.size)+" externals)")
+    println("Removed by internal minimization: " + (mcs_deliveries.size - internal_minimized_deliveries.size))
+    println("Final deliveries: " + internal_minimized_deliveries.size)
+    for (e <- internal_minimized_deliveries) {
+      println(e)
+    }
+  }
 }

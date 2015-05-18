@@ -60,6 +60,7 @@ object ExperimentSerializer {
   // Stats when minimizing internal events.
   val internal_stats = "/internal_minimization_stats.json"
   val depGraph = "/depGraph.bin"
+  // trace of Unique(MsgEvent)s
   val initialTrace = "/initialTrace.bin"
   // initialTrace minus all events that were concurrent with the violation.
   val filteredTrace = "/filteredTrace.bin"
@@ -298,9 +299,10 @@ class ExperimentDeserializer(results_dir: String) {
     return readIfFileExists[Queue[Unique]](results_dir + ExperimentSerializer.filteredTrace)
   }
 
-  def get_events(message_deserializer: MessageDeserializer, actorSystem: ActorSystem) : EventTrace = {
-    val buf = JavaSerialization.readFromFile(results_dir +
-      ExperimentSerializer.event_trace)
+  def get_events(message_deserializer: MessageDeserializer,
+                 actorSystem: ActorSystem,
+                 file:String=ExperimentSerializer.event_trace) : EventTrace = {
+    val buf = JavaSerialization.readFromFile(results_dir + file)
     val events = JavaSerialization.deserialize[Array[Event]](buf).map(e =>
       e match {
         case SerializedSpawnEvent(parent, props, name, actor) =>
