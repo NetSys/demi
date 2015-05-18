@@ -194,11 +194,29 @@ object RunnerUtils {
                     allowPeek: Boolean,
                     invariant: TestOracle.Invariant) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new STSScheduler(new EventTrace, allowPeek,
-        fingerprintFactory, false)
+    val sched = new STSScheduler(new EventTrace, allowPeek, fingerprintFactory, false)
     sched.setInvariant(invariant)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
+    stsSchedDDMin(allowPeek, fingerprintFactory, trace, invariant, violation,
+                  _sched=Some(sched))
+  }
+
+  def stsSchedDDMin(allowPeek: Boolean,
+                    fingerprintFactory: FingerprintFactory,
+                    trace: EventTrace,
+                    invariant: TestOracle.Invariant,
+                    violation: ViolationFingerprint,
+                    actorNameProps: Option[Seq[Tuple2[Props, String]]]=None,
+                    _sched:Option[STSScheduler]=None) :
+        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
+    val sched = if (_sched != None) _sched.get else
+                new STSScheduler(trace, allowPeek, fingerprintFactory, false)
+    Instrumenter().scheduler = sched
+    if (actorNameProps != None) {
+      sched.setActorNamePropPairs(actorNameProps.get)
+    }
+    sched.setInvariant(invariant)
 
     val ddmin = new DDMin(sched)
     // STSSched doesn't actually pay any attention to WaitQuiescence, so just
@@ -513,7 +531,7 @@ object RunnerUtils {
 
     val shrinkable_sends = mcs flatMap {
       case s @ Send(dst, ctor) =>
-        if (!ctor.getComponents.isEmpty) {
+        if (!ctor.getComponents.isEmpty ) {
           Some(s)
         } else {
           None
@@ -527,7 +545,10 @@ object RunnerUtils {
     }
 
     var components = shrinkable_sends.head.messageCtor.getComponents
-    assert(shrinkable_sends.forall(s => s.messageCtor.getComponents == components))
+    if (shrinkable_sends.forall(s => s.messageCtor.getComponents == components)) {
+      println("shrinkable_sends: " + shrinkable_sends)
+      throw new IllegalArgumentException("Not all shrinkable_sends the same")
+    }
 
     def modifyMCS(mcs: Seq[ExternalEvent], maskedIndices: Set[Int]): Seq[ExternalEvent] = {
       return (mcs map {

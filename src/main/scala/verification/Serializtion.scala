@@ -201,12 +201,17 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     }
   }
 
+  // shrunk: whether the external events have been shrunk
+  // (RunnerUtils.shrinkSendContents)
+  // Return: the MCS dir
   def serializeMCS(old_experiment_dir: String, mcs: Seq[ExternalEvent],
                    stats: MinimizationStats,
                    mcs_execution: Option[EventTrace],
-                   violation: ViolationFingerprint) {
+                   violation: ViolationFingerprint,
+                   shrunk: Boolean) : String = {
+    val shrunk_str = if (shrunk) "_shrunk" else ""
     val new_experiment_dir = old_experiment_dir + "_" +
-        stats.minimization_strategy + "_" + stats.test_oracle
+        stats.minimization_strategy + "_" + stats.test_oracle + shrunk_str
     ExperimentSerializer.create_experiment_dir(new_experiment_dir, add_timestamp=false)
 
     val mcsBuf = JavaSerialization.serialize(mcs.toArray)
@@ -226,7 +231,10 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
 
     // Overwrite actors.bin, to make sure we include all actors, not just
     // those left in the MCS.
+    // TODO(cs): figure out how to do this properly in scala
     ("cp " + old_experiment_dir + ExperimentSerializer.actors + " " + new_experiment_dir).!
+
+    return new_experiment_dir
   }
 
   def recordMinimizedInternals(output_dir: String,
