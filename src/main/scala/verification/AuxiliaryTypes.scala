@@ -121,7 +121,6 @@ object ActorTypes {
   }
 }
 
-
 trait TellEnqueue {
   def tell()
   def enqueue()

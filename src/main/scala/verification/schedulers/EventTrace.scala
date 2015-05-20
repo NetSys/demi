@@ -124,6 +124,10 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
             pruned += id
             None
         }
+      case t: TimerDelivery =>
+        throw new UnsupportedOperationException("TimerDelivery not yet supported")
+      case t: UniqueTimerDelivery =>
+        throw new UnsupportedOperationException("UniqueTimerDelivery not yet supported")
       case m: MsgEvent =>
         throw new IllegalStateException("Should be UniqueMsgEvent")
       case e => Some(e)
