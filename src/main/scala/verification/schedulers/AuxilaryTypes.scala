@@ -44,8 +44,8 @@ trait ExternalMessageConstructor {
   def apply() : Any
   // Optional, for `shrinking`:
   // Get the components that make up the content of the message we construct
-  // in apply().
-  def getComponents() : Seq[Any] = List.empty
+  // in apply(). For now, only relevant to cluster membership messages.
+  def getComponents() : Seq[ActorRef] = List.empty
   // Given a sequence of indices (pointing to elements in `getComponents()`),
   // create a new ExternalMessageConstructor that does not include those
   // components upon apply().

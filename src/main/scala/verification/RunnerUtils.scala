@@ -525,6 +525,8 @@ object RunnerUtils {
     //   - Ensure that whenever a component is masked from one Send()'s
     //     message contents, all other Send()'s have the same component
     //     masked. i.e. throughout minimization, the first invariant holds!
+    //   - (Definitely specific to akka-raft:) if an ActorRef component is
+    //     removed, also remove the Start event for that node.
 
     // Pseudocode:
     // for component in firstSend.messageConstructor.getComponents:
@@ -556,14 +558,25 @@ object RunnerUtils {
     }
 
     def modifyMCS(mcs: Seq[ExternalEvent], maskedIndices: Set[Int]): Seq[ExternalEvent] = {
-      return (mcs map {
+      // Also remove Start() events for masked actors
+      val maskedActors = components.zipWithIndex.filter {
+        case (e, i) => maskedIndices contains i
+      }.map { case (e, i) => e.path.name }.toSet
+
+      return mcs flatMap {
         case s @ Send(dst, ctor) =>
           val updated = Send(dst, ctor.maskComponents(maskedIndices))
           // Be careful to make Send ids the same.
           updated._id = s._id
-          updated
-        case e => e
-      })
+          Some(updated)
+        case s @ Start(_, name) =>
+          if (maskedActors contains name) {
+            None
+          } else {
+            Some(s)
+          }
+        case e => Some(e)
+      }
     }
 
     var maskedIndices = Set[Int]()
