@@ -43,7 +43,11 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
   // we hide UniqueMsgSend/Events here
   // TODO(cs): this is a dangerous API; easy to mix this up with .events...
   def getEvents() : Seq[Event] = {
-    return events.map(e =>
+    return getEvents(events)
+  }
+
+  private[this] def getEvents(_events: Seq[Event]): Seq[Event] = {
+    return _events.map(e =>
       e match {
         case UniqueMsgSend(m, id) => m
         case UniqueMsgEvent(m, id) => m
@@ -82,6 +86,72 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     return getEvents().iterator
   }
 
+  // Take the result of ProvenanceTracker.pruneConcurrentEvents, and use that
+  // to filter out any MsgEvents in our events that were pruned.
+  // TODO(cs): have ProvenanceTracker act directly on us rather than on a
+  // separate Queue[Unique].
+  def intersection(uniqs: Queue[Unique], fingerprintFactory: FingerprintFactory) : EventTrace = {
+    val msgEvents = new Queue[MsgEvent] ++ uniqs flatMap {
+      case Unique(m: MsgEvent, id) =>
+        // Filter out the root event
+        if (id == 0) {
+          None
+        } else {
+          Some(m)
+        }
+      case u => throw new IllegalArgumentException("Non MsgEvent:" + u)
+    }
+
+    // first pass: remove any UniqueMsgEvents that don't show up in msgEvents
+    // track which UniqueMsgEvent ids were pruned
+    val pruned = new HashSet[Int]
+    var filtered = events flatMap {
+      case u @ UniqueMsgEvent(m, id) =>
+        msgEvents.headOption match {
+          case Some(msgEvent) =>
+            val fingerprinted = MsgEvent(m.sender, m.receiver,
+              fingerprintFactory.fingerprint(m.msg))
+            if (fingerprinted == msgEvent) {
+              msgEvents.dequeue
+              Some(u)
+            } else {
+              // u was filtered
+              pruned += id
+              None
+            }
+          case None =>
+            // u was filtered
+            pruned += id
+            None
+        }
+      case t: TimerDelivery =>
+        throw new UnsupportedOperationException("TimerDelivery not yet supported")
+      case t: UniqueTimerDelivery =>
+        throw new UnsupportedOperationException("UniqueTimerDelivery not yet supported")
+      case m: MsgEvent =>
+        throw new IllegalStateException("Should be UniqueMsgEvent")
+      case e => Some(e)
+    }
+
+    // Should always be a strict subsequence
+    assert(msgEvents.isEmpty)
+
+    // second pass: remove any UniqueMsgSends that correspond to
+    // UniqueMsgEvents that were pruned in the first pass
+    // TODO(cs): not sure this is actually necessary.
+    filtered = filtered flatMap {
+      case u @ UniqueMsgSend(m, id) =>
+        if (pruned contains id) {
+          None
+        } else {
+          Some(u)
+        }
+      case e => Some(e)
+    }
+
+    return new EventTrace(filtered, original_externals)
+  }
+
   // Ensure that all failure detector messages are pruned from the original trace,
   // since we are now in a divergent execution and the failure detector may
   // need to respond differently.
@@ -112,6 +182,37 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       case UniqueMsgSend(MsgSend(_, _, CheckpointReply(_)), _) => None
       case e => Some(e)
     }, original_externals)
+  }
+
+  // Pre: externals corresponds exactly to our external MsgSend
+  // events, i.e. subsequenceIntersection(externals) was used to create this
+  // EventTrace.
+  // Pre: no checkpoint messages in events
+  def recomputeExternalMsgSends(externals: Seq[ExternalEvent]): Seq[Event] = {
+    if (externals == null) {
+      throw new IllegalStateException("original_externals must not be null")
+    }
+    val sends = externals flatMap {
+      case s: Send => Some(s)
+      case _ => None
+    }
+    if (sends.isEmpty) {
+      return getEvents
+    }
+    val sendsQueue = Queue(sends: _*)
+    return getEvents(events map {
+      case u @ UniqueMsgSend(MsgSend("deadLetters", receiver, msg), id) =>
+        if (MessageTypes.fromCheckpointCollector(msg)) {
+          u
+        } else {
+          val send = sendsQueue.dequeue
+          val new_msg = send.messageCtor()
+          UniqueMsgSend(MsgSend("deadLetters", receiver, new_msg), id)
+        }
+      case m: MsgSend =>
+        throw new IllegalArgumentException("Must be UniqueMsgSend")
+      case e => e
+    })
   }
 
   // Filter all external events in original_trace that aren't in subseq.
