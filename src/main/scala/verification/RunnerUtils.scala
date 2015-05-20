@@ -700,8 +700,13 @@ object RunnerUtils {
     println("Final deliveries: " + intmin_deliveries.size +
             " ("+intmin_externals + " externals, "+
             intmin_timers + " timers)")
-    for (e <- intmin_deliveries) {
-      println(e)
+    println("Final messages delivered:") // w/o fingerints
+    deserializer.get_events(
+          messageDeserializer, Instrumenter().actorSystem,
+          traceFile=ExperimentSerializer.minimizedInternalTrace) foreach {
+      case m: MsgEvent => println(m)
+      case t: TimerDelivery => println(t)
+      case _ =>
     }
   }
 }
