@@ -50,7 +50,7 @@ class BasicScheduler extends Scheduler {
   // Is this message a system message
   def isSystemMessage(src: String, dst: String): Boolean = {
     if ((actorNames contains src) || (actorNames contains dst))
-      return false
+      return dst == "deadLetters"
     
     return true
   }
@@ -202,9 +202,20 @@ class BasicScheduler extends Scheduler {
 
   def notify_quiescence () {
   }
+
+  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
+    val rcv = receiver.path.name
+    pendingEvents(rcv).dequeueFirst(tuple => tuple._2.message == msg)
+    if (pendingEvents(rcv).isEmpty) {
+      pendingEvents -= rcv
+    }
+  }
   
   def enqueue_message(receiver: String, msg: Any) {
     throw new Exception("NYI")
   }
 
+  def shutdown() {
+    instrumenter.restart_system
+  }
 }

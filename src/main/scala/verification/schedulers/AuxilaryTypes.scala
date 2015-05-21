@@ -4,19 +4,108 @@ import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{Envelope}
 
 // External events used to specify a trace
-abstract class ExternalEvent
-final case class Start (prop: Props, name: String) extends ExternalEvent
-final case class Kill (name: String) extends ExternalEvent {}
-final case class Send (name: String, message: Any) extends ExternalEvent
-final case object WaitQuiescence extends ExternalEvent
-final case class Partition (a: String, b: String) extends ExternalEvent
-final case class UnPartition (a: String, b: String) extends ExternalEvent
+abstract trait ExternalEvent {
+  def label: String
+}
+
+trait UniqueExternalEvent {
+  var _id : Int = IDGenerator.get()
+
+  def label: String = "e"+_id
+  def toStringWithId: String = label+":"+toString()
+
+  override def equals(other: Any): Boolean = {
+    if (other.isInstanceOf[UniqueExternalEvent]) {
+      return _id == other.asInstanceOf[UniqueExternalEvent]._id
+    } else {
+      return false
+    }
+  }
+
+  override def hashCode: Int = {
+    return _id
+  }
+}
+abstract trait Event
+
+/**
+ * ExternalMessageConstructors are instance variables of Send() events.
+ * They serve two purposes:
+ *  - They allow the client to late-bind the construction of their message.
+ *    apply() is invoked after the ActorSystem and all actors have been
+ *    created.
+ *  - Optionally: they provide an interface for `shrinking` the contents of
+ *    the messages. This is achieved through `getComponents` and
+ *    `maskComponents`.
+ */
+// TODO(cs): should probably force this to be serializable
+trait ExternalMessageConstructor {
+  // Construct the message
+  def apply() : Any
+  // Optional, for `shrinking`:
+  // Get the components that make up the content of the message we construct
+  // in apply(). For now, only relevant to cluster membership messages.
+  def getComponents() : Seq[ActorRef] = List.empty
+  // Given a sequence of indices (pointing to elements in `getComponents()`),
+  // create a new ExternalMessageConstructor that does not include those
+  // components upon apply().
+  // Default: no-op
+  def maskComponents(indices: Set[Int]): ExternalMessageConstructor = this
+}
+
+final case class Start (propCtor: () => Props, name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class Kill (name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class Send (name: String, messageCtor: ExternalMessageConstructor) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class WaitQuiescence() extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Bidirectional partitions.
+final case class Partition (a: String, b: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class UnPartition (a: String, b: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
 
 // Internal events in addition to those defined in ../AuxilaryTypes
-final case class MsgSend (sender: String, 
+// MsgSend is the initial send, not the delivery
+// N.B., if an event trace was serialized, it's possible that msg is of type
+// MessageFingerprint rather than a whole message!
+final case class MsgSend (sender: String,
                 receiver: String, msg: Any) extends Event
 final case class KillEvent (actor: String) extends Event 
 final case class PartitionEvent (endpoints: (String, String)) extends Event
 final case class UnPartitionEvent (endpoints: (String, String)) extends Event
-final case object Quiescence extends Event 
+// Marks when WaitQuiescence was first processed.
+final case object BeginWaitQuiescence extends Event
+// Marks when Quiescence was actually reached.
+final case object Quiescence extends Event
 final case class ChangeContext (actor: String) extends Event
+
+// Recording/Replaying Akka.FSM.Timer's (which aren't serializable! hence this madness)
+// N.B. these aren't explicitly recorded. We use them only when we want to serialize event
+// traces.
+final case class TimerFingerprint(name: String,
+  msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int) extends MessageFingerprint
+// Corresponds to MsgEvent.
+final case class TimerDelivery(sender: String, receiver: String, fingerprint: TimerFingerprint) extends Event
+
+
+object EventTypes {
+  // Internal events that correspond to ExternalEvents.
+  def isExternal(e: Event) : Boolean = {
+    return e match {
+      case _: KillEvent | _: SpawnEvent | _: PartitionEvent | _: UnPartitionEvent =>
+        return true
+      case MsgEvent(snd, _, _) =>
+        return snd == "deadLetters" // TODO(cs): Timers break this
+      case MsgSend(snd, _, _) =>
+        return snd == "deadLetters"
+      case UniqueMsgEvent(MsgEvent(snd, _, _), _) =>
+        return snd == "deadLetters"
+      case UniqueMsgSend(MsgSend(snd, _, _), _) =>
+        return snd == "deadLetters"
+      case _ => return false
+    }
+  }
+}

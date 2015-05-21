@@ -48,8 +48,9 @@ class NullScheduler extends Scheduler {
   def before_receive(cell: ActorCell) {}
   def after_receive(cell: ActorCell) {}
   def notify_quiescence () {}
+  def notify_timer_cancel(receiver: ActorRef, msg: Any) {}
   def enqueue_message(receiver: String, msg: Any) {
     throw new Exception("NYI")
   }
-
+  def shutdown() {}
 }
