@@ -27,8 +27,7 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
        
-import com.typesafe.scalalogging.LazyLogging,
-       org.slf4j.LoggerFactory,
+import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
@@ -37,7 +36,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
        
 // DPOR scheduler.
-class DPOR extends Scheduler with LazyLogging {
+class DPOR extends Scheduler {
+  val logger = LoggerFactory.getLogger("DPOR")
   
   var instrumenter = Instrumenter
 

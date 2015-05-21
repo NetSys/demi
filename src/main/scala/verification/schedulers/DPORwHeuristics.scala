@@ -34,8 +34,7 @@ import scalax.collection.mutable.Graph,
        scalax.collection.edge.LDiEdge
 
        
-import com.typesafe.scalalogging.LazyLogging,
-       org.slf4j.LoggerFactory,
+import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
@@ -185,7 +184,10 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   prioritizePendingUponDivergence:Boolean=false,
   backtrackHeuristic:BacktrackOrdering=new DefaultBacktrackOrdering,
   invariant_check_interval:Int=0,
-  depth_bound:Option[Int]=None) extends Scheduler with LazyLogging with TestOracle {
+  depth_bound:Option[Int]=None) extends Scheduler with TestOracle {
+
+  val logger = LoggerFactory.getLogger("DPOR")
+
   def this() = this(false, new FingerprintFactory, false,
                     new DefaultBacktrackOrdering, 0, None)
 

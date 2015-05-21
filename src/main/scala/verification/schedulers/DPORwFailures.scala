@@ -27,14 +27,15 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
        
-import com.typesafe.scalalogging.LazyLogging,
-       org.slf4j.LoggerFactory,
+import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
 
 // DPOR scheduler.
-class DPORwFailures extends Scheduler with LazyLogging {
+class DPORwFailures extends Scheduler {
+
+  val logger = LoggerFactory.getLogger("DPOR")
   
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
