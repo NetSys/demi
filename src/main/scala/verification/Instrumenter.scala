@@ -28,6 +28,11 @@ import scala.collection.mutable.HashSet
 import scala.util.Random
 import scala.util.control.Breaks
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
+
 // Wrap cancellable so we get notified about cancellation
 class WrappedCancellable (c: Cancellable, rcv: ActorRef, msg: Any) extends Cancellable {
   val instrumenter = Instrumenter()
@@ -88,6 +93,8 @@ class Instrumenter {
   // And vice versa
   var timerToCancellable = new HashMap[Tuple2[String,Any], Cancellable]
 
+  val logger = LoggerFactory.getLogger("Instrumenter")
+
   private[dispatch] def cancelTimer (c: Cancellable, rcv: ActorRef, msg: Any, success: Boolean) = {
     // Need this here since by the time DPORwHeuristics gets here the thing is already canceled
     if (cancellableToTimer contains c) {
@@ -132,6 +139,9 @@ class Instrumenter {
   
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
     if (!scheduler.isSystemCommunication(sender, receiver, msg)) {
+      if (logger.isTraceEnabled()) {
+        logger.trace("tellEnqueue.tell(): " + sender + " -> " + receiver + " " + msg)
+      }
       tellEnqueue.tell()
     }
   }
@@ -260,12 +270,20 @@ class Instrumenter {
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell, msg: Any) {
     if (scheduler.isSystemMessage(
-        cell.sender.path.name, 
+        cell.sender.path.name,
         cell.self.path.name,
         msg)) return
 
+    if (logger.isTraceEnabled()) {
+      logger.trace("afterMessageReceive: " + cell.sender.path.name + " -> " +
+        cell.self.path.name + " " + msg)
+      logger.trace("tellEnqueue.await()...")
+    }
+
     tellEnqueue.await()
-    
+
+    logger.trace("done tellEnqueue.await()")
+
     inActor = false
     currentActor = ""
     scheduler.after_receive(cell) 

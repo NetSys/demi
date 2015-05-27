@@ -53,6 +53,10 @@ trait ExternalMessageConstructor {
   def maskComponents(indices: Set[Int]): ExternalMessageConstructor = this
 }
 
+case class BasicMessageConstructor(msg: Any) extends ExternalMessageConstructor {
+  def apply(): Any = msg
+}
+
 final case class Start (propCtor: () => Props, name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class Kill (name: String) extends

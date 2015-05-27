@@ -17,6 +17,10 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Random
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 /**
  * Takes a list of ExternalEvents as input, and explores random interleavings
  * of internal messages until either a maximum number of interleavings is
@@ -43,6 +47,8 @@ class RandomScheduler(max_executions: Int,
       this(max_executions, new FingerprintFactory, enableFailureDetector, 0, false)
 
   def getName: String = "RandomScheduler"
+
+  val logger = LoggerFactory.getLogger("RandomScheduler")
 
   // Allow the user to place a bound on how many messages are delivered.
   // Useful for dealing with non-terminating systems.
@@ -214,6 +220,9 @@ class RandomScheduler(max_executions: Int,
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    if (logger.isTraceEnabled()) {
+      logger.trace("event_produced: " + snd + " -> " + rcv + " " + msg)
+    }
     val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
     var isTimer = false
 
@@ -315,6 +324,16 @@ class RandomScheduler(max_executions: Int,
     val (uniq, unique) = pendingEvents.removeRandomElement()
     event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
     depTracker.reportNewlyDelivered(unique)
+
+    if (logger.isTraceEnabled()) {
+      val cell = uniq.element._1
+      val envelope = uniq.element._2
+      val snd = envelope.sender.path.name
+      val rcv = cell.self.path.name
+      val msg = envelope.message
+      logger.trace("schedule_new_message: " + snd + " -> " + rcv + " " + msg)
+    }
+
     return Some(uniq.element)
   }
 
