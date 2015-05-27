@@ -114,7 +114,7 @@ trait ExternalEventInjector[E] {
     if (event_orchestrator.actorToActorRef contains receiver) {
       enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
     } else {
-      println("WARNING! Unknown receiver " + receiver)
+      println("WARNING! Unknown message receiver " + receiver)
     }
   }
 
@@ -128,7 +128,7 @@ trait ExternalEventInjector[E] {
     if (event_orchestrator.actorToActorRef contains receiver) {
       messagesToSend += ((event_orchestrator.actorToActorRef(receiver), msg))
     } else {
-      println("WARNING! Unknown receiver " + receiver)
+      println("WARNING! Unknown timer receiver " + receiver)
     }
   }
 
