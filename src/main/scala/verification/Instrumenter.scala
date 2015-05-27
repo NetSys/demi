@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Semaphore
 import java.io.Closeable
 
+import com.typesafe.config.Config
+
 import akka.dispatch.Envelope
 import akka.dispatch.MessageQueue
 import akka.dispatch.MessageDispatcher
@@ -99,13 +101,22 @@ class Instrumenter {
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
   private[this] var _actorSystem : ActorSystem = null
-  def actorSystem () : ActorSystem = {
+  def actorSystem (config:Option[com.typesafe.config.Config]) : ActorSystem = {
     if (_actorSystem == null) {
-      _actorSystem = ActorSystem("new-system-" + counter)
+      config match {
+        case Some(c) =>
+          _actorSystem = ActorSystem("new-system-" + counter, c)
+        case None =>
+          _actorSystem = ActorSystem("new-system-" + counter)
+      }
       _random = new Random(0)
       counter += 1
     }
     _actorSystem
+  }
+
+  def actorSystem () : ActorSystem = {
+    return actorSystem(None)
   }
 
   private[this] var _random = new Random(0)
