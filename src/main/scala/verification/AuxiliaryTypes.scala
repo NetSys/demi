@@ -121,6 +121,32 @@ object ActorTypes {
   }
 }
 
+/**
+ * TellEnqueue is a semaphore that ensures a linearizable execution, and protects
+ * schedulers' data structures during akka's concurrent processing of `tell`
+ * (the `!` operator).
+ *
+ * Instrumenter()'s control flow is as follows:
+ *  - Invoke scheduler.schedule_new_message to find a new message to deliver
+ *  - Call `dispatcher.dispatch` to deliver the message. Note that
+ *    `dispatcher.dispatch` hands off work to a separate thread and returns
+ *    immediately.
+ *  - The actor `receive()`ing the message now becomes active
+ *  - Every time that actor invokes `tell` to send a message to a known actor,
+ *    a ticket is taken from TellEnqueue via TellEnqueue.tell()
+ *  - Concurrently, akka will process the `tell`s by enqueuing the message in
+ *    the receiver's mailbox.
+ *  - Every time akka finishes enqueueing a message to the recevier's mailbox,
+ *    we first call scheduler.event_produced, and then replaces a ticket to
+ *    TellEnqueue via TellEnqueue.enqueue()
+ *  - When the actor returns from `receive`, we wait for all tickets to be
+ *    returned (via TellEnqueue.await()) before scheduling the next message.
+ *
+ * The `known actor` part is crucial. If the receiver is not an actor (e.g.
+ * the main thread) or we do not interpose on the receiving actor, we will not
+ * be able to return the ticket via TellEnqueue.enqueue(), and the system will
+ * block forever on TellEnqueue.await().
+ */
 trait TellEnqueue {
   def tell()
   def enqueue()
