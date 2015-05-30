@@ -17,6 +17,7 @@ import akka.actor.Cancellable;
 import akka.actor.LightArrayRevolverScheduler;
 
 import akka.pattern.AskSupport;
+import akka.pattern.PromiseActorRef;
 
 import akka.dispatch.Envelope;
 import akka.dispatch.MessageQueue;
@@ -30,6 +31,7 @@ import java.lang.Runnable;
 privileged public aspect WeaveActor {
   Instrumenter inst = Instrumenter.apply();
     
+  /*
   pointcut enqueueOperation(MessageQueue me, ActorRef receiver, Envelope handle): 
   execution(public * akka.dispatch.MessageQueue.enqueue(ActorRef, Envelope)) &&
   args(receiver, handle) && this(me);
@@ -38,6 +40,7 @@ privileged public aspect WeaveActor {
   enqueueOperation(me, receiver, handle) {
 	return proceed(me, receiver, handle);
   }
+  */
   
   
   
@@ -66,7 +69,21 @@ privileged public aspect WeaveActor {
    	else
    		return null;
   }
-  
+
+  // Interposition on `ask`. See this doc for more details:
+  // https://docs.google.com/document/d/1_LUceHvQoamlBtNNbqA4CxBH-zvUKlZhnSjLwTc16q4/edit#
+  pointcut receiveAnswer(PromiseActorRef me, Object message, ActorRef sender):
+  execution(public void akka.pattern.PromiseActorRef.$bang(Object, ActorRef)) &&
+  args(message, sender) && this(me);
+
+  Object around(PromiseActorRef me, Object message, ActorRef sender):
+  receiveAnswer(me, message, sender) {
+    if (inst.receiveAskAnswer(me, message, sender)) {
+      return proceed(me, message, sender);
+    }
+    return null;
+  }
+
   
   after(ActorSystem me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props)) &&

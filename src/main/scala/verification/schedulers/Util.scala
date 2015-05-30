@@ -6,7 +6,13 @@ import akka.actor.Cell,
        akka.actor.ActorRef,
        akka.actor.Actor,
        akka.actor.PoisonPill,
-       akka.actor.Props
+       akka.actor.Props,
+       akka.actor.ActorSystemImpl,
+       akka.actor.InternalActorRef,
+       akka.actor.ChildStats
+
+import akka.actor.dungeon.ChildrenContainer
+import akka.dispatch.sysmsg.SystemMessage
 
 import akka.dispatch.Envelope,
        akka.dispatch.MessageQueue,
@@ -187,6 +193,32 @@ class VCLogger () {
   def reset() {
     actor2vc = new HashMap[String, VectorClock]
   }
+}
+
+// A Cell that only provides functionality for `self()` (which is the only field we need anyway).
+// We use this class to shoehorn `ask` responses
+// (which don't go through the normal dispatch()->ActorCell pipeline)
+// into the schedulers' `event_produced` and `schedule_new_message` APIs.
+class FakeCell(receiver: ActorRef) extends Cell {
+  def self: ActorRef = receiver
+  def system: ActorSystem = throw new UnsupportedOperationException("")
+  def systemImpl: ActorSystemImpl = throw new UnsupportedOperationException("")
+  def start(): this.type = throw new UnsupportedOperationException("")
+  def suspend(): Unit = throw new UnsupportedOperationException("")
+  def resume(causedByFailure: Throwable): Unit = throw new UnsupportedOperationException("")
+  def restart(cause: Throwable): Unit = throw new UnsupportedOperationException("")
+  def stop(): Unit = throw new UnsupportedOperationException("")
+  def isTerminated: Boolean = throw new UnsupportedOperationException("")
+  def parent: InternalActorRef = throw new UnsupportedOperationException("")
+  def childrenRefs: ChildrenContainer = throw new UnsupportedOperationException("")
+  def getChildByName(name: String): Option[ChildStats] = throw new UnsupportedOperationException("")
+  def getSingleChild(name: String): InternalActorRef = throw new UnsupportedOperationException("")
+  def sendMessage(msg: Envelope): Unit = throw new UnsupportedOperationException("")
+  def sendSystemMessage(msg: SystemMessage): Unit = throw new UnsupportedOperationException("")
+  def isLocal: Boolean = throw new UnsupportedOperationException("")
+  def hasMessages: Boolean = throw new UnsupportedOperationException("")
+  def numberOfMessages: Int = throw new UnsupportedOperationException("")
+  def props: Props = throw new UnsupportedOperationException("")
 }
 
 class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
