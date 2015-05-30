@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -303,7 +303,7 @@ trait ExternalEventInjector[E] {
     event_orchestrator.handle_spawn_consumed(spawn_event)
   }
 
-  def handle_event_consumed(cell: ActorCell, envelope: Envelope) = {
+  def handle_event_consumed(cell: Cell, envelope: Envelope) = {
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (enqueuedExternalMessages.contains(msg)) {
@@ -346,11 +346,11 @@ trait ExternalEventInjector[E] {
     shutdownSem.release
   }
 
-  def handle_before_receive (cell: ActorCell) : Unit = {
+  def handle_before_receive (cell: Cell) : Unit = {
     event_orchestrator.events += ChangeContext(cell.self.path.name)
   }
 
-  def handle_after_receive (cell: ActorCell) : Unit = {
+  def handle_after_receive (cell: Cell) : Unit = {
     event_orchestrator.events += ChangeContext("scheduler")
   }
 

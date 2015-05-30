@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -73,12 +73,12 @@ class RandomScheduler(max_executions: Int,
   // Our use of Uniq and Unique is somewhat confusing. Uniq is used to
   // associate MsgSends with their subsequent MsgEvents.
   // Unique is used by DepTracker.
-  var pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
+  var pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
   // Always prioritized over internal messages.
-  var pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+  var pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
 
   // The violation we're looking for, if not None.
   var lookingFor : Option[ViolationFingerprint] = None
@@ -216,14 +216,14 @@ class RandomScheduler(max_executions: Int,
     return None
   }
 
-  override def event_produced(cell: ActorCell, envelope: Envelope) = {
+  override def event_produced(cell: Cell, envelope: Envelope) = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (logger.isTraceEnabled()) {
       logger.trace("event_produced: " + snd + " -> " + rcv + " " + msg)
     }
-    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     var isTimer = false
 
     handle_event_produced(snd, rcv, envelope) match {
@@ -271,11 +271,11 @@ class RandomScheduler(max_executions: Int,
   }
 
   // Record a message send event
-  override def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  override def event_consumed(cell: Cell, envelope: Envelope) = {
     handle_event_consumed(cell, envelope)
   }
 
-  override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  def schedule_new_message(blockedActors: scala.collection.immutable.Set[String]) : Option[(Cell, Envelope)] = {
     // First, check if we've found the violation. If so, stop.
     violationFound match {
       case Some(fingerprint) =>
@@ -307,34 +307,45 @@ class RandomScheduler(max_executions: Int,
     send_external_messages()
     // Always prioritize system messages.
     if (!pendingSystemMessages.isEmpty) {
-      val uniq = pendingSystemMessages.dequeue()
-      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      return Some(uniq.element)
+      // Find a non-blocked destination
+      Util.find_non_blocked_message[Uniq[(Cell, Envelope)]](
+        blockedActors,
+        pendingSystemMessages,
+        () => pendingSystemMessages.dequeue(),
+        (e: Uniq[(Cell, Envelope)]) => e.element._1.self.path.name) match {
+        case Some(uniq) =>
+          event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+          return Some(uniq.element)
+        case None =>
+      }
     }
 
-    // Do we have some pending events
-    if (pendingEvents.isEmpty) {
-      return None
-    }
+    // Find a non-blocked destination
+    Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
+      blockedActors,
+      pendingEvents,
+      () => pendingEvents.removeRandomElement(),
+      (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name) match {
+      case Some((uniq,  unique)) =>
+        messagesScheduledSoFar += 1
+        if (messagesScheduledSoFar == Int.MaxValue) {
+          messagesScheduledSoFar = 1
+        }
 
-    messagesScheduledSoFar += 1
-    if (messagesScheduledSoFar == Int.MaxValue) {
-      messagesScheduledSoFar = 1
-    }
-    val (uniq, unique) = pendingEvents.removeRandomElement()
-    event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-    depTracker.reportNewlyDelivered(unique)
+        event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+        depTracker.reportNewlyDelivered(unique)
 
-    if (logger.isTraceEnabled()) {
-      val cell = uniq.element._1
-      val envelope = uniq.element._2
-      val snd = envelope.sender.path.name
-      val rcv = cell.self.path.name
-      val msg = envelope.message
-      logger.trace("schedule_new_message: " + snd + " -> " + rcv + " " + msg)
+        if (logger.isTraceEnabled()) {
+          val cell = uniq.element._1
+          val envelope = uniq.element._2
+          val snd = envelope.sender.path.name
+          val rcv = cell.self.path.name
+          val msg = envelope.message
+          logger.trace("schedule_new_message: " + snd + " -> " + rcv + " " + msg)
+        }
+        return Some(uniq.element)
+      case None => return None
     }
-
-    return Some(uniq.element)
   }
 
   override def notify_quiescence () {
@@ -360,11 +371,11 @@ class RandomScheduler(max_executions: Int,
     handle_start_trace
   }
 
-  override def before_receive(cell: ActorCell) : Unit = {
+  override def before_receive(cell: Cell) : Unit = {
     handle_before_receive(cell)
   }
 
-  override def after_receive(cell: ActorCell) : Unit = {
+  override def after_receive(cell: Cell) : Unit = {
     handle_after_receive(cell)
   }
 
@@ -402,8 +413,8 @@ class RandomScheduler(max_executions: Int,
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
-    pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
-    pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+    pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
+    pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
     lookingFor = None
     violationFound = None
     trace = null

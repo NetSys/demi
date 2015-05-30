@@ -1,6 +1,6 @@
 package akka.dispatch.verification
 
-import akka.actor.{ActorCell, ActorRef}
+import akka.actor.{Cell, ActorRef}
 
 import akka.dispatch.Envelope
 
@@ -13,7 +13,7 @@ import scala.collection.mutable.HashSet
 // Subclasses need to at least implement:
 //   - schedule_new_message
 //   - enqueue_message
-//   - event_produced(cell: ActorCell, envelope: Envelope)
+//   - event_produced(cell: Cell, envelope: Envelope)
 abstract class AbstractScheduler extends Scheduler {
   
   var instrumenter = Instrumenter()
@@ -47,7 +47,7 @@ abstract class AbstractScheduler extends Scheduler {
   def event_consumed(event: Event) = {
   }
   
-  def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  def event_consumed(cell: Cell, envelope: Envelope) = {
   }
   
   // Record that an event was produced 
@@ -63,12 +63,12 @@ abstract class AbstractScheduler extends Scheduler {
   
   
   // Called before we start processing a newly received event
-  def before_receive(cell: ActorCell) {
+  def before_receive(cell: Cell) {
     currentTime += 1
   }
   
   // Called after receive is done being processed 
-  def after_receive(cell: ActorCell) {
+  def after_receive(cell: Cell) {
   }
   
   def notify_quiescence () {

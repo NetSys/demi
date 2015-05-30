@@ -1,6 +1,6 @@
 package akka.dispatch.verification
 
-import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Cell, ActorRef, ActorSystem, Props}
 import akka.dispatch.Envelope
 
 import scala.collection.mutable.ListBuffer
@@ -68,7 +68,7 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     this.+=(m)
   }
 
-  def appendMsgEvent(pair: (ActorCell, Envelope), id: Int) = {
+  def appendMsgEvent(pair: (Cell, Envelope), id: Int) = {
     val cell = pair._1
     val envelope = pair._2
     val snd = envelope.sender.path.name

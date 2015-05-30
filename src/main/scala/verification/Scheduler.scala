@@ -1,6 +1,6 @@
 package akka.dispatch.verification
 
-import akka.actor.ActorCell
+import akka.actor.Cell
 import akka.actor.ActorRef
 import akka.actor.Props;
 import akka.actor.AutoReceivedMessage;
@@ -36,30 +36,31 @@ trait Scheduler {
     
   // Notification that the system has been reset
   def start_trace() : Unit
-  // Get the next message to schedule
-  def schedule_new_message() : Option[(ActorCell, Envelope)]  
+  // Get the next message to schedule. Make sure not to return a message that
+  // is destined for a blocked actor! Otherwise an exception will be thrown.
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)]  
   // Get next event to schedule (used while restarting the system)
   def next_event() : Event
   // Notify that there are no more events to run
   def notify_quiescence () : Unit
   
   // Called before we start processing a newly received event
-  def before_receive(cell: ActorCell) : Unit
+  def before_receive(cell: Cell) : Unit
   // Called after receive is done being processed 
-  def after_receive(cell: ActorCell) : Unit
+  def after_receive(cell: Cell) : Unit
   
-  def before_receive(cell: ActorCell, msg: Any) : Unit =
+  def before_receive(cell: Cell, msg: Any) : Unit =
     before_receive(cell)
-  def after_receive(cell: ActorCell, msg: Any) : Unit =
+  def after_receive(cell: Cell, msg: Any) : Unit =
     after_receive(cell)
     
   // Record that an event was produced 
   def event_produced(event: Event) : Unit
-  def event_produced(cell: ActorCell, envelope: Envelope) : Unit
+  def event_produced(cell: Cell, envelope: Envelope) : Unit
   
   // Record that an event was consumed
   def event_consumed(event: Event) : Unit  
-  def event_consumed(cell: ActorCell, envelope: Envelope)
+  def event_consumed(cell: Cell, envelope: Envelope)
   // Tell the scheduler that it should eventually schedule the given message.
   // Used to feed messages from the external world into actor systems.
 

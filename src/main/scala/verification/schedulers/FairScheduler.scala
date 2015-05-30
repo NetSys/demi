@@ -1,6 +1,6 @@
 package akka.dispatch.verification
 
-import akka.actor.{ActorCell, ActorRef}
+import akka.actor.{Cell, ActorRef}
 
 import akka.dispatch.Envelope
 
@@ -16,14 +16,14 @@ class FairScheduler extends AbstractScheduler {
   var index = 0
 
   // Current set of enabled events.
-  val pendingEvents = new HashMap[String, Queue[Uniq[(ActorCell, Envelope)]]]  
+  val pendingEvents = new HashMap[String, Queue[Uniq[(Cell, Envelope)]]]  
 
-  def event_produced(cell: ActorCell, envelope: Envelope) = {
+  def event_produced(cell: Cell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(ActorCell, Envelope)]])
+    val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(Cell, Envelope)]])
     
-    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     pendingEvents(rcv) = msgs += uniq
     // Start dispatching events
     if (!instrumenter.started.get) {
@@ -31,17 +31,22 @@ class FairScheduler extends AbstractScheduler {
     }
   }
 
-  def nextActor () : String = {
+  def nextActor (blockedActors: Set[String]) : String = {
     if (actorQueue.size == 0) {
       actorQueue = actorQueue ++ actorNames.toList
     }
-    val next = actorQueue(index)
+    var next = actorQueue(index)
     index = (index + 1) % actorQueue.size
+    // Assume: never the case that all actors are blocked at the same time.
+    while (!(blockedActors contains next)) {
+      next = actorQueue(index)
+      index = (index + 1) % actorQueue.size
+    }
     next
   }
   
-  def find_message_to_schedule() : Option[Uniq[(ActorCell, Envelope)]] = {
-    val receiver = nextActor()
+  def find_message_to_schedule(blockedActors: Set[String]) : Option[Uniq[(Cell, Envelope)]] = {
+    val receiver = nextActor(blockedActors)
     // Do we have some pending events
     if (pendingEvents.isEmpty) {
       None
@@ -50,7 +55,7 @@ class FairScheduler extends AbstractScheduler {
         case Some(queue) =>
           if (queue.isEmpty == true) {
             pendingEvents.remove(receiver) match {
-              case Some(key) => find_message_to_schedule()
+              case Some(key) => find_message_to_schedule(blockedActors)
               case None => throw new Exception("Internal error") // Really this is saying pendingEvents does not have 
                                                                  // receiver as a key
             }
@@ -59,14 +64,14 @@ class FairScheduler extends AbstractScheduler {
             Some(uniq)
           }
         case None =>
-          find_message_to_schedule()
+          find_message_to_schedule(blockedActors)
       }
     }
   }
   
   // Figure out what is the next message to schedule.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
-    find_message_to_schedule match {
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
+    find_message_to_schedule(blockedActors) match {
       case Some(uniq) =>
         return Some(uniq.element)
       case None =>

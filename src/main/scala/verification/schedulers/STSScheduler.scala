@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -90,12 +90,12 @@ class STSScheduler(var original_trace: EventTrace,
   // failure detector messages, which are always sent in FIFO order.
   // (snd, rcv, msg) => Queue(rcv's cell, envelope of message)
   val pendingEvents = new HashMap[(String, String, MessageFingerprint),
-                                  Queue[Uniq[(ActorCell, Envelope)]]]
+                                  Queue[Uniq[(Cell, Envelope)]]]
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
   // Always prioritized over internal messages.
-  var pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+  var pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
 
   // Are we currently pausing the ActorSystem in order to invoke Peek()
   var pausing = new AtomicBoolean(false)
@@ -278,7 +278,9 @@ class STSScheduler(var original_trace: EventTrace,
                          messageFingerprinter.fingerprint(m.msg))
               return pendingEvents.get(key) match {
                 case Some(queue) =>
-                  !queue.isEmpty
+                  // The message is pending, but also double check that the
+                  // destination isn't currently blocked.
+                  !queue.isEmpty && !(Instrumenter().blockedActors contains m.receiver)
                 case None =>
                   false
               }
@@ -318,12 +320,12 @@ class STSScheduler(var original_trace: EventTrace,
     }
   }
 
-  def event_produced(cell: ActorCell, envelope: Envelope) = {
+  def event_produced(cell: Cell, envelope: Envelope) = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
     val fingerprint = messageFingerprinter.fingerprint(msg)
-    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     var isTimer = false
 
     handle_event_produced(snd, rcv, envelope) match {
@@ -335,7 +337,7 @@ class STSScheduler(var original_trace: EventTrace,
           pendingSystemMessages += uniq
         } else {
           val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
-                              new Queue[Uniq[(ActorCell, Envelope)]])
+                              new Queue[Uniq[(Cell, Envelope)]])
           pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
         }
       }
@@ -346,7 +348,7 @@ class STSScheduler(var original_trace: EventTrace,
         // Drop any messages that crosses a partition.
         if (!event_orchestrator.crosses_partition(snd, rcv)) {
           val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
-                              new Queue[Uniq[(ActorCell, Envelope)]])
+                              new Queue[Uniq[(Cell, Envelope)]])
           pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
         }
       }
@@ -370,13 +372,13 @@ class STSScheduler(var original_trace: EventTrace,
   }
 
   // Record a message send event
-  override def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  override def event_consumed(cell: Cell, envelope: Envelope) = {
     handle_event_consumed(cell, envelope)
   }
 
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     if (pausing.get) {
       // Return None to stop dispatching.
       return None
@@ -385,9 +387,17 @@ class STSScheduler(var original_trace: EventTrace,
     // Flush checkpoint/fd messages before proceeding with other messages.
     send_external_messages()
     if (!pendingSystemMessages.isEmpty) {
-      val uniq = pendingSystemMessages.dequeue()
-      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      return Some(uniq.element)
+      // Find a non-blocked destination
+      Util.find_non_blocked_message[Uniq[(Cell, Envelope)]](
+        blockedActors,
+        pendingSystemMessages,
+        () => pendingSystemMessages.dequeue(),
+        (e: Uniq[(Cell, Envelope)]) => e.element._1.self.path.name) match {
+        case Some(uniq) =>
+          event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+          return Some(uniq.element)
+        case None =>
+      }
     }
 
     // OK, now we first need to get to a good place: it should be the case after
@@ -427,7 +437,7 @@ class STSScheduler(var original_trace: EventTrace,
         // send. So, we need to invoke advanceReplay() once again to get us up
         // to a pending MsgEvent.
         schedSemaphore.release
-        return schedule_new_message()
+        return schedule_new_message(blockedActors)
     }
 
     // Both check if expected message exists, and dequeue() it if it does.
@@ -507,13 +517,13 @@ class STSScheduler(var original_trace: EventTrace,
   }
 
   // Called before we start processing a newly received event
-  override def before_receive(cell: ActorCell) {
+  override def before_receive(cell: Cell) {
     super.before_receive(cell)
     handle_before_receive(cell)
   }
 
   // Called after receive is done being processed
-  override def after_receive(cell: ActorCell) {
+  override def after_receive(cell: Cell) {
     handle_after_receive(cell)
   }
 

@@ -1,6 +1,6 @@
 package akka.dispatch.verification
 
-import akka.actor.ActorCell
+import akka.actor.Cell
 import akka.actor.ActorSystem
 import akka.actor.ActorRef
 import akka.actor.Actor
@@ -38,7 +38,7 @@ class BasicScheduler extends Scheduler {
   var prevConsumedEvents = new Queue[ (Integer, CurrentTimeQueueT) ]
  
   // Current set of enabled events.
-  val pendingEvents = new HashMap[String, Queue[(ActorCell, Envelope)]]  
+  val pendingEvents = new HashMap[String, Queue[(Cell, Envelope)]]  
 
   val actorNames = new HashSet[String]
   
@@ -94,16 +94,17 @@ class BasicScheduler extends Scheduler {
   
   
   // Figure out what is the next message to schedule.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  // TODO(cs): make sure not to send to blockedActors!
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
   
     // Filter for messages belong to a particular actor.
-    def is_the_same(e: MsgEvent, c: (ActorCell, Envelope)) : Boolean = {
+    def is_the_same(e: MsgEvent, c: (Cell, Envelope)) : Boolean = {
       val (cell, env) = c
       e.receiver == cell.self.path.name
     }
 
     // Get from the current set of pending events.
-    def get_pending_event()  : Option[(ActorCell, Envelope)] = {
+    def get_pending_event()  : Option[(Cell, Envelope)] = {
       // Do we have some pending events
       pendingEvents.headOption match {
         case Some((receiver, queue)) =>
@@ -151,7 +152,7 @@ class BasicScheduler extends Scheduler {
   }
   
   
-  def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  def event_consumed(cell: Cell, envelope: Envelope) = {
     currentlyConsumed.enqueue(new MsgEvent(
         envelope.sender.path.name, cell.self.path.name, envelope.message))
   }
@@ -165,10 +166,10 @@ class BasicScheduler extends Scheduler {
   }
   
   
-  def event_produced(cell: ActorCell, envelope: Envelope) = {
+  def event_produced(cell: Cell, envelope: Envelope) = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msgs = pendingEvents.getOrElse(rcv, new Queue[(ActorCell, Envelope)])
+    val msgs = pendingEvents.getOrElse(rcv, new Queue[(Cell, Envelope)])
     
     pendingEvents(rcv) = msgs += ((cell, envelope))
     currentlyProduced.enqueue(new MsgEvent(snd, rcv, envelope.message))
@@ -179,7 +180,7 @@ class BasicScheduler extends Scheduler {
   
   
   // Called before we start processing a newly received event
-  def before_receive(cell: ActorCell) {
+  def before_receive(cell: Cell) {
     producedEvents.enqueue( (currentTime, currentlyProduced) )
     consumedEvents.enqueue( (currentTime, currentlyConsumed) )
     currentlyProduced = new CurrentTimeQueueT
@@ -192,7 +193,7 @@ class BasicScheduler extends Scheduler {
   
   
   // Called after receive is done being processed 
-  def after_receive(cell: ActorCell) {
+  def after_receive(cell: Cell) {
     println(Console.RED 
         + " ↑↑↑↑↑↑↑↑↑ ⌚  " + currentTime + " | " + cell.self.path.name + " ↑↑↑↑↑↑↑↑↑ " 
         + Console.RESET)

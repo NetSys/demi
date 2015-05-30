@@ -1,6 +1,6 @@
 package akka.dispatch.verification
 
-import akka.actor.ActorCell
+import akka.actor.Cell
 import akka.actor.ActorSystem
 import akka.actor.ActorRef
 import akka.actor.Actor
@@ -33,7 +33,7 @@ class NullScheduler extends Scheduler {
   
   def start_trace() : Unit = {}
   
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     return None
   }
   
@@ -42,11 +42,11 @@ class NullScheduler extends Scheduler {
   }
   
   def event_consumed(event: Event) = {}
-  def event_consumed(cell: ActorCell, envelope: Envelope) = {}
+  def event_consumed(cell: Cell, envelope: Envelope) = {}
   def event_produced(event: Event) = {}
-  def event_produced(cell: ActorCell, envelope: Envelope) = {}
-  def before_receive(cell: ActorCell) {}
-  def after_receive(cell: ActorCell) {}
+  def event_produced(cell: Cell, envelope: Envelope) = {}
+  def before_receive(cell: Cell) {}
+  def after_receive(cell: Cell) {}
   def notify_quiescence () {}
   def notify_timer_cancel(receiver: ActorRef, msg: Any) {}
   def enqueue_message(receiver: String, msg: Any) {

@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 
-import akka.actor.ActorCell,
+import akka.actor.Cell,
        akka.actor.ActorSystem,
        akka.actor.ActorRef,
        akka.actor.LocalActorRef,
@@ -56,7 +56,7 @@ class DPOR extends Scheduler {
   val producedEvents = new Queue[Event]
   val consumedEvents = new Queue[Event]
   
-  val pendingEvents = new HashMap[String, Queue[(Unique, ActorCell, Envelope)]]  
+  val pendingEvents = new HashMap[String, Queue[(Unique, Cell, Envelope)]]  
   val actorNames = new HashSet[String]
   val actorToActorRef = new HashMap[String, ActorRef]
  
@@ -87,7 +87,7 @@ class DPOR extends Scheduler {
 
   // Analogous to pendingEvents, except we always dispatch external events
   // in the order they arrived.
-  val pendingExternalEvents = new Queue[(ActorCell, Envelope)]
+  val pendingExternalEvents = new Queue[(Cell, Envelope)]
   
   
   def getRootEvent : Unique = {
@@ -167,7 +167,8 @@ class DPOR extends Scheduler {
   
   
   // Figure out what is the next message to schedule.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  // TODO(cs): make sure not to send to blockedActors!
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     
     // First, try to enqueue and dispatch external messages, if there are any.
     enqueue_external_messages
@@ -178,7 +179,7 @@ class DPOR extends Scheduler {
     // When there are no external message, proceed with DPOR-controlled messages.
 
     // Filter messages belonging to a particular actor.
-    def is_the_same(u1: Unique, other: (Unique, ActorCell, Envelope)) : 
+    def is_the_same(u1: Unique, other: (Unique, Cell, Envelope)) : 
     Boolean = (u1, other) match {
       case (Unique(MsgEvent(snd1, rcv1, msg1), id1), 
             (Unique(MsgEvent(snd2, rcv2, msg2), id2) , cell, env) ) =>
@@ -189,7 +190,7 @@ class DPOR extends Scheduler {
 
 
     // Get from the current set of pending events.
-    def get_pending_event(): Option[(Unique, ActorCell, Envelope)] = {
+    def get_pending_event(): Option[(Unique, Cell, Envelope)] = {
       // Do we have some pending events
       pendingEvents.headOption match {
         case Some((receiver, queue)) =>
@@ -283,7 +284,7 @@ class DPOR extends Scheduler {
     consumedEvents.enqueue(event)
   
   
-  def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  def event_consumed(cell: Cell, envelope: Envelope) = {
     var event = new MsgEvent(
         envelope.sender.path.name, cell.self.path.name, 
         envelope.message)
@@ -341,7 +342,7 @@ class DPOR extends Scheduler {
     
     instrumenter().tellEnqueue.await()
     
-    schedule_new_message() match {
+    schedule_new_message(instrumenter().blockedActors) match {
       case Some((cell, env)) =>
         instrumenter().dispatch_new_message(cell, env)
       case None => 
@@ -356,7 +357,7 @@ class DPOR extends Scheduler {
   }
   
   
-  def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
+  def getMessage(cell: Cell, envelope: Envelope) : Unique = {
     
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
@@ -384,7 +385,7 @@ class DPOR extends Scheduler {
   
   
   
-  def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
+  def event_produced(cell: Cell, envelope: Envelope) : Unit = {
     if (cell.self.path.name == FailureDetector.fdName) {
       fd.handle_fd_message(envelope.message, envelope.sender.path.name)
       return
@@ -400,7 +401,7 @@ class DPOR extends Scheduler {
     // Else, it's an internal event.
 
     val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
-    val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
+    val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, Cell, Envelope)])
     pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
     
     logger.trace(Console.BLUE + "New event: " +
@@ -416,12 +417,12 @@ class DPOR extends Scheduler {
   
   
   // Called before we start processing a newly received event
-  def before_receive(cell: ActorCell) {
+  def before_receive(cell: Cell) {
   }
   
   
   // Called after receive is done being processed 
-  def after_receive(cell: ActorCell) {
+  def after_receive(cell: Cell) {
   }
   
 

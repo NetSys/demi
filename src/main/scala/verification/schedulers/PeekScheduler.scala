@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -55,11 +55,11 @@ class PeekScheduler(enableFailureDetector: Boolean)
     return execute_trace(_trace)
   }
 
-  override def event_produced(cell: ActorCell, envelope: Envelope) = {
+  override def event_produced(cell: Cell, envelope: Envelope) = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(ActorCell, Envelope)]])
-    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(Cell, Envelope)]])
+    val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     var isTimer = false
     handle_event_produced(snd, rcv, envelope) match {
       case FailureDetectorQuery => None
@@ -91,11 +91,12 @@ class PeekScheduler(enableFailureDetector: Boolean)
   }
 
   // Record a message send event
-  override def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  override def event_consumed(cell: Cell, envelope: Envelope) = {
     handle_event_consumed(cell, envelope)
   }
 
-  override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  // TODO(cs): make sure not to send to blockedActors!
+  override def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     // Check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
       println("Exceeded maxMessages")
@@ -105,7 +106,7 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
     send_external_messages()
     // FairScheduler gives us round-robin message dispatches.
-    val uniq_option = find_message_to_schedule()
+    val uniq_option = find_message_to_schedule(blockedActors)
     uniq_option match {
       case Some(uniq) =>
         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
@@ -138,11 +139,11 @@ class PeekScheduler(enableFailureDetector: Boolean)
     handle_start_trace
   }
 
-  override def after_receive(cell: ActorCell) : Unit = {
+  override def after_receive(cell: Cell) : Unit = {
     handle_after_receive(cell)
   }
 
-  override def before_receive(cell: ActorCell) : Unit = {
+  override def before_receive(cell: Cell) : Unit = {
     handle_before_receive(cell)
   }
 
