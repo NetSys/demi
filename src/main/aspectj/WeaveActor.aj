@@ -112,10 +112,13 @@ privileged public aspect WeaveActor {
   }
 
 
-  before(ActorRef me, Object msg, ActorRef sender):
+  Object around(ActorRef me, Object msg, ActorRef sender):
   execution(* akka.actor.ScalaActorRef.$bang(Object, ActorRef)) &&
   args(msg, sender) && this(me) {
-  	inst.tell(me, msg, sender);
+    if (inst.tell(me, msg, sender)) {
+      return proceed(me, msg, sender);
+    }
+    return null;
   }
   
   before(ActorRef me, Object msg, ActorRef sender):

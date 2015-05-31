@@ -479,9 +479,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.
-    for ((actor, request) <- checkpointRequests) {
-      Instrumenter().actorMappings(actor) ! request
-    }
+    Instrumenter().sendKnownExternalMessages(() => {
+      for ((actor, request) <- checkpointRequests) {
+        Instrumenter().actorMappings(actor) ! request
+      }
+    })
     Instrumenter().await_enqueue
   }
 
@@ -835,52 +837,54 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   def runExternal() = {
     logger.trace(Console.RED + " RUN EXTERNAL CALLED initial IDX = " + externalEventIdx +Console.RESET) 
    
-    var await = false
-    while (externalEventIdx < externalEventList.length && !await) {
-      val event = externalEventList(externalEventIdx)
-      event match {
-    
-        case Start(propsCtor, name) => 
-          // If not already started: start it and unisolate it
-          if (!(instrumenter().actorMappings contains name)) {
-            instrumenter().actorSystem().actorOf(propsCtor(), name)
-          }
-          isolatedActors -= name
-    
-        case Send(rcv, msgCtor) =>
-          val ref = instrumenter().actorMappings(rcv)
-          logger.trace(Console.BLUE + " sending " + rcv + " messge " + msgCtor() + Console.RESET)
-          instrumenter().actorMappings(rcv) ! msgCtor()
+    def processExternal() {
+      var await = false
+      while (externalEventIdx < externalEventList.length && !await) {
+        val event = externalEventList(externalEventIdx)
+        event match {
+      
+          case Start(propsCtor, name) => 
+            // If not already started: start it and unisolate it
+            if (!(instrumenter().actorMappings contains name)) {
+              instrumenter().actorSystem().actorOf(propsCtor(), name)
+            }
+            isolatedActors -= name
+      
+          case Send(rcv, msgCtor) =>
+            val ref = instrumenter().actorMappings(rcv)
+            logger.trace(Console.BLUE + " sending " + rcv + " messge " + msgCtor() + Console.RESET)
+            instrumenter().actorMappings(rcv) ! msgCtor()
 
-        case uniq @ Unique(par : NetworkPartition, id) =>  
-          val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
-          pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
-          maybeAddGraphNode(uniq)
+          case uniq @ Unique(par : NetworkPartition, id) =>  
+            val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
+            pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
+            maybeAddGraphNode(uniq)
 
-        case uniq @ Unique(par : NetworkUnpartition, id) =>  
-          val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
-          pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
-          maybeAddGraphNode(uniq)
-       
-       
-        case event @ Unique(WaitQuiescence(), _) =>
-          val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
-          pendingEvents(SCHEDULER) = msgs += ((event, null, null))
-          maybeAddGraphNode(event)
-          await = true
+          case uniq @ Unique(par : NetworkUnpartition, id) =>  
+            val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
+            pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
+            maybeAddGraphNode(uniq)
+         
+         
+          case event @ Unique(WaitQuiescence(), _) =>
+            val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
+            pendingEvents(SCHEDULER) = msgs += ((event, null, null))
+            maybeAddGraphNode(event)
+            await = true
 
-        // A unique ID needs to be associated with all network events.
-        case par : NetworkPartition => throw new Exception("internal error")
-        case par : NetworkUnpartition => throw new Exception("internal error")
-        case _ => throw new Exception("unsuported external event " + event)
+          // A unique ID needs to be associated with all network events.
+          case par : NetworkPartition => throw new Exception("internal error")
+          case par : NetworkUnpartition => throw new Exception("internal error")
+          case _ => throw new Exception("unsuported external event " + event)
+        }
+        externalEventIdx += 1
       }
-      externalEventIdx += 1
+
+      logger.trace(Console.RED + " RUN EXTERNAL LOOP ENDED idx = " + externalEventIdx + Console.RESET) 
     }
-    
-    logger.trace(Console.RED + " RUN EXTERNAL LOOP ENDED idx = " + externalEventIdx + Console.RESET) 
-    
+
+    instrumenter().sendKnownExternalMessages(processExternal)
     instrumenter().tellEnqueue.await()
-    
     instrumenter().start_dispatch
   }
  
@@ -1117,6 +1121,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   }
   
   
+  // Assume: only used for timers (which implies that it's always an
+  // akka-dispatcher thread calling this method).
   def enqueue_message(receiver: String,msg: Any): Unit = {
     logger.trace(Console.BLUE + "Enqueuing timer to " + receiver + " with msg " + msg + Console.RESET)
     instrumenter().actorMappings(receiver) ! msg

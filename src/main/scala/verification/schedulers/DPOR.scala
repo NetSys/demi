@@ -152,9 +152,11 @@ class DPOR extends Scheduler {
     // Send all pending fd responses
     fd.send_all_pending_responses()
     // Drain message queue
-    for ((receiver, msg) <- messagesToSend) {
-      receiver ! msg
-    }
+    Instrumenter().sendKnownExternalMessages(() => {
+      for ((receiver, msg) <- messagesToSend) {
+        receiver ! msg
+      }
+    })
     messagesToSend.clear()
 
     // Wait to make sure all messages are enqueued

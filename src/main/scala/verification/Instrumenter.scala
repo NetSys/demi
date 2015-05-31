@@ -101,6 +101,9 @@ class Instrumenter {
   // delivery, we store the temp actor (receipient) here to mark it as
   // pending.
   var askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
+  // Set to true an when external thread signals that it wants to send
+  // messages in a thread-safe manner (rather than having its sends delayed)
+  var sendingKnownExternalMessages = new AtomicBoolean(false)
   var shutdownCallback : ShutdownCallback = () => {}
   var checkpointCallback : CheckpointCallback = () => {null}
   var restoreCheckpointCallback : RestoreCheckpointCallback = (a: Any) => {}
@@ -154,9 +157,52 @@ class Instrumenter {
   def await_enqueue() {
     tellEnqueue.await()
   }
-  
-  
-  def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Unit = {
+
+  /**
+   * When an external thread (one not named .*dispatcher.*) wants to send
+   * messages at a known (thread-safe) point, it should invoke this interface.
+   *
+   * If an external thread sends messages outside of this interface, its
+   * messages will not be sent right away; instead they will be passed to
+   * scheduler.enqueue_message() to be sent later at known point.
+   */
+  def sendKnownExternalMessages(sendBlock: () => Any) {
+    sendingKnownExternalMessages.set(true)
+    sendBlock()
+    sendingKnownExternalMessages.set(false)
+  }
+
+  /**
+   * Two cases:
+   *  - In a normal `tell` from actor to actor, we need to mark
+   *    tellEnqueue.tell() to let us know that there should later be a
+   *    tellEnqueue.enqueue(). [See TellEnqueue class docs].
+   *
+   *  - If the thread doing the `tell` is external (outside of akka's thread
+   *    pool and any of our schedulers), we can't let them send right
+   *    now, since that won't be thread-safe. Instead, send it through
+   *    scheduler.enqueue_message.
+   */
+  def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
+    assert(receiver != null)
+
+    // Hack: check if name matches `.*dispatcher.*`. Hope that external
+    // thread names don't match this pattern!
+    def threadNameIsAkkaInternal() : Boolean = {
+      return Thread.currentThread.getName().contains("dispatcher")
+    }
+
+    // First check if it's an external thread sending outside of
+    // sendKnownExternalMessages.
+    if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
+        !threadNameIsAkkaInternal() &&
+        !sendingKnownExternalMessages.get()) {
+      println("tell(): " + sender + " " + receiver + " " + msg)
+      scheduler.enqueue_message(receiver.path.name, msg)
+      return false
+    }
+
+    // Now deal with normal messages.
     if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
         receiver.path.parent.name != "temp") {
       if (logger.isTraceEnabled()) {
@@ -164,6 +210,7 @@ class Instrumenter {
       }
       tellEnqueue.tell()
     }
+    return true
   }
   
   
