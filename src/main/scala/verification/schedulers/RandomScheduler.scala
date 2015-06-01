@@ -143,6 +143,62 @@ class RandomScheduler(max_executions: Int,
     }
   }
 
+  private[this] def checkIfBugFound(event_trace: EventTrace): Option[(EventTrace, ViolationFingerprint)] = {
+    violationFound match {
+      // If the violation has already been found, return.
+      case Some(fingerprint) =>
+        // Prune off any external events that we didn't end up using.
+        event_trace.original_externals =
+          event_trace.original_externals.slice(0, event_orchestrator.traceIdx)
+        return Some((event_trace, fingerprint))
+      // Else, check the invariant condition one last time.
+      case None =>
+        if (!disableCheckpointing) {
+          var checkpoint : HashMap[String, Option[CheckpointReply]] = null
+          checkpoint = takeCheckpoint()
+          val violation = test_invariant(trace, checkpoint)
+          violationFound = violationMatches(violation)
+          violationFound match {
+            case Some(fingerprint) =>
+              return Some((event_trace, fingerprint))
+            case None => None
+          }
+        }
+    }
+    return None
+  }
+
+  // Explore exactly one execution, invoke terminationCallback when the
+  // execution has finished.
+  def nonBlockingExplore(_trace: Seq[ExternalEvent],
+                         terminationCallback: (Option[(EventTrace,ViolationFingerprint)]) => Any) {
+    nonBlockingExplore(_trace, None, terminationCallback)
+  }
+
+  def nonBlockingExplore(_trace: Seq[ExternalEvent],
+                         _lookingFor: Option[ViolationFingerprint],
+                         terminationCallback: (Option[(EventTrace,ViolationFingerprint)]) => Any) {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
+    trace = _trace
+    lookingFor = _lookingFor
+
+    if (test_invariant == null) {
+      throw new IllegalArgumentException("Must invoke setInvariant before test()")
+    }
+
+    event_orchestrator.events.setOriginalExternalEvents(_trace)
+    if (stats != null) {
+      stats.increment_replays()
+    }
+
+    execute_trace(_trace, Some((event_trace: EventTrace) => {
+      val ret = checkIfBugFound(event_trace)
+      terminationCallback(ret)
+    }))
+  }
+
   /**
    * Given an external event trace, randomly explore executions involving those
    * external events.
@@ -157,7 +213,7 @@ class RandomScheduler(max_executions: Int,
    * Precondition: setInvariant has been invoked.
    */
   def explore (_trace: Seq[ExternalEvent]) : Option[(EventTrace, ViolationFingerprint)] = {
-    return explore(_trace, None)
+    return explore(_trace, None, None)
   }
 
   /**
@@ -165,7 +221,9 @@ class RandomScheduler(max_executions: Int,
    * matches looking_for
    */
   def explore (_trace: Seq[ExternalEvent],
-               _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
+               _lookingFor: Option[ViolationFingerprint],
+               terminationCallback: Option[(Option[(EventTrace,ViolationFingerprint)])=>Any]=None) :
+       Option[(EventTrace, ViolationFingerprint)] = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -182,28 +240,12 @@ class RandomScheduler(max_executions: Int,
       if (stats != null) {
         stats.increment_replays()
       }
-      val event_trace = execute_trace(_trace)
 
-      // If the violation has already been found, return.
-      violationFound match {
-        case Some(fingerprint) =>
-          // Prune off any external events that we didn't end up using.
-          event_trace.original_externals =
-            event_trace.original_externals.slice(0, event_orchestrator.traceIdx)
+      val event_trace = execute_trace(_trace)
+      checkIfBugFound(event_trace) match {
+        case Some((event_trace, fingerprint)) =>
           return Some((event_trace, fingerprint))
-        // Else, check the invariant condition one last time.
         case None =>
-          if (!disableCheckpointing) {
-            var checkpoint : HashMap[String, Option[CheckpointReply]] = null
-            checkpoint = takeCheckpoint()
-            val violation = test_invariant(_trace, checkpoint)
-            violationFound = violationMatches(violation)
-            violationFound match {
-              case Some(fingerprint) =>
-                return Some((event_trace, fingerprint))
-              case None => None
-            }
-          }
       }
 
       if (i != max_executions) {

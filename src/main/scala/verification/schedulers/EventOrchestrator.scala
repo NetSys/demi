@@ -119,7 +119,7 @@ class EventOrchestrator[E] {
    *
    * Should not be invoked if E != ExternalEvent.
    */
-  def inject_until_quiescence(enqueue_message: EnqueueMessage) = {
+  def inject_until_quiescence(enqueue_message: EnqueueMessage): Unit = {
     var loop = true
     while (loop && !trace_finished) {
       println("Injecting " + traceIdx + "/" + trace.length + " " + current_event)
@@ -137,6 +137,10 @@ class EventOrchestrator[E] {
         case u @ UnPartition (a, b) =>
           unPartitionCallback(a,b,u._id)
           trigger_unpartition(a,b)
+        case WaitCondition(cond) =>
+           // Don't let trace advance here. Only let it advance when we have
+           // reached quiescence and the condition holds.
+          return
         case WaitQuiescence() =>
           events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence

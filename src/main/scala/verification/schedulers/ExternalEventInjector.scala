@@ -103,6 +103,14 @@ trait ExternalEventInjector[E] {
   // Whether populateActors has been invoked.
   var alreadyPopulated = false
 
+  // In case we're in non-blocking mode.
+  var terminationCallback : Option[(EventTrace) => Any] = None
+
+  // If the last event we replayed is WaitCondition, and we've reached
+  // quiescence, signal that once we've waited for enqueue_message() to be
+  // invoked we should start dispatch again.
+  var dispatchAfterEnqueueMessage = new AtomicBoolean(false)
+
   // An optional callback that will be invoked when a WaitQuiescence has just
   // caused us to arrive at Quiescence.
   type QuiescenceCallback = () => Unit
@@ -121,6 +129,14 @@ trait ExternalEventInjector[E] {
   def enqueue_message(actor: ActorRef, msg: Any) {
     enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
+
+    if (dispatchAfterEnqueueMessage.get()) {
+      dispatchAfterEnqueueMessage.set(false)
+      println("dispatching after enqueue_message")
+      started.set(true)
+      send_external_messages()
+      Instrumenter().start_dispatch()
+    }
   }
 
   // Enqueue a timer message for future delivery
@@ -179,7 +195,10 @@ trait ExternalEventInjector[E] {
   }
 
   // Given an external event trace, see the events produced
-  def execute_trace (_trace: Seq[E with ExternalEvent]) : EventTrace = {
+  // if terminationCallback != None, don't block the main thread!
+  def execute_trace (_trace: Seq[E with ExternalEvent],
+                     _terminationCallback: Option[(EventTrace) => Any]=None) : EventTrace = {
+    terminationCallback = _terminationCallback
     MessageTypes.sanityCheckTrace(_trace)
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
@@ -205,11 +224,17 @@ trait ExternalEventInjector[E] {
     currentlyInjecting.set(true)
     // Start playing back trace
     advanceTrace()
-    // Have this thread wait until the trace is down. This allows us to safely notify
-    // the caller.
-    traceSem.acquire
-    currentlyInjecting.set(false)
-    return event_orchestrator.events
+    terminationCallback match {
+      case None =>
+        // Have this thread wait until the trace is down. This allows us to safely notify
+        // the caller.
+        traceSem.acquire
+        currentlyInjecting.set(false)
+        return event_orchestrator.events
+      case Some(f) =>
+        // Don't block. We'll call terminationCallback when we're done.
+        return null
+    }
   }
 
   // Advance the trace
@@ -326,12 +351,28 @@ trait ExternalEventInjector[E] {
     if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       event_orchestrator.events += Quiescence
-      quiescenceCallback()
-      advanceTrace()
+      event_orchestrator.current_event match {
+        case WaitCondition(cond) =>
+          if (cond()) {
+            event_orchestrator.trace_advanced()
+            advanceTrace()
+          } else {
+            // wait for enqueue_message to be invoked.
+            println("waiting for enqueue_message...")
+            dispatchAfterEnqueueMessage.set(true)
+          }
+        case _ =>
+          quiescenceCallback()
+          advanceTrace()
+      }
     } else {
+      quiescenceCallback()
       if (currentlyInjecting.get) {
         // Tell the calling thread we are done
-        traceSem.release
+        terminationCallback match {
+          case None => traceSem.release
+          case Some(f) => f(event_orchestrator.events)
+        }
       } else {
         throw new RuntimeException("currentlyInjecting.get returned false")
       }
