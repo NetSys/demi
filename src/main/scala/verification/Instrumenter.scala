@@ -186,16 +186,10 @@ class Instrumenter {
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
     assert(receiver != null)
 
-    // Hack: check if name matches `.*dispatcher.*`. Hope that external
-    // thread names don't match this pattern!
-    def threadNameIsAkkaInternal() : Boolean = {
-      return Thread.currentThread.getName().contains("dispatcher")
-    }
-
     // First check if it's an external thread sending outside of
     // sendKnownExternalMessages.
     if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
-        !threadNameIsAkkaInternal() &&
+        !Instrumenter.threadNameIsAkkaInternal() &&
         !sendingKnownExternalMessages.get()) {
       println("tell(): " + sender + " " + receiver + " " + msg)
       scheduler.enqueue_message(receiver.path.name, msg)
@@ -340,6 +334,11 @@ class Instrumenter {
    * To make progress, dispatch a new message.
    */
   def actorBlocked() {
+    if (!Instrumenter.threadNameIsAkkaInternal) {
+      // External thread, so we don't care if it blocks.
+      return
+    }
+
     // Mark the current actor as blocked.
     blockedActors = blockedActors + currentActor
 
@@ -640,5 +639,11 @@ object Instrumenter {
       obj = new Instrumenter
     }
     obj
+  }
+
+  // Hack: check if name matches `.*dispatcher.*`. Hope that external
+  // thread names don't match this pattern!
+  def threadNameIsAkkaInternal() : Boolean = {
+    return Thread.currentThread.getName().contains("dispatcher")
   }
 }
