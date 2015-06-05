@@ -151,8 +151,8 @@ class PeekScheduler(enableFailureDetector: Boolean)
     test_invariant = invariant
   }
 
-  override def enqueue_message(receiver: String, msg: Any) = {
-    super[ExternalEventInjector].enqueue_message(receiver, msg)
+  override def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) = {
+    super[ExternalEventInjector].enqueue_message(sender, receiver, msg)
   }
 
   override def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {

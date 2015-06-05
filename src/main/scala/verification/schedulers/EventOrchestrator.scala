@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class EventOrchestrator[E] {
   // Function that queues a message to be sent later.
-  type EnqueueMessage = (String, Any) => Unit
+  type EnqueueMessage = (Option[ActorRef], String, Any) => Unit
 
   // Callbacks
   type KillCallback = (String, Set[String], Int) => Unit
@@ -130,7 +130,7 @@ class EventOrchestrator[E] {
           killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_kill(name)
         case Send (name, messageCtor) =>
-          enqueue_message(name, messageCtor())
+          enqueue_message(None, name, messageCtor())
         case p @ Partition (a, b) =>
           partitionCallback(a,b,p._id)
           trigger_partition(a,b)

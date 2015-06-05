@@ -97,8 +97,8 @@ trait ExternalEventInjector[E] {
   var enqueuedExternalMessages = new MultiSet[Any]
 
   // A set of external messages to send. Messages sent between actors are not
-  // queued here.
-  var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
+  // queued here. Tuple is: (sender, receiver, msg)
+  var messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]()
 
   // Whether populateActors has been invoked.
   var alreadyPopulated = false
@@ -118,17 +118,17 @@ trait ExternalEventInjector[E] {
   def setQuiescenceCallback(c: QuiescenceCallback) { quiescenceCallback = c }
 
   // Enqueue an external message for future delivery
-  def enqueue_message(receiver: String, msg: Any) {
+  def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
-      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
+      enqueue_message(sender, event_orchestrator.actorToActorRef(receiver), msg)
     } else {
       println("WARNING! Unknown message receiver " + receiver)
     }
   }
 
-  def enqueue_message(actor: ActorRef, msg: Any) {
+  def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
     enqueuedExternalMessages += msg
-    messagesToSend += ((actor, msg))
+    messagesToSend += ((sender, actor, msg))
 
     if (dispatchAfterEnqueueMessage.get()) {
       dispatchAfterEnqueueMessage.set(false)
@@ -142,7 +142,7 @@ trait ExternalEventInjector[E] {
   // Enqueue a timer message for future delivery
   def handle_timer(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
-      messagesToSend += ((event_orchestrator.actorToActorRef(receiver), msg))
+      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
     } else {
       println("WARNING! Unknown timer receiver " + receiver)
     }
@@ -166,8 +166,13 @@ trait ExternalEventInjector[E] {
     fd.send_all_pending_responses()
     // Drain message queue
     Instrumenter().sendKnownExternalMessages(() => {
-      for ((receiver, msg) <- messagesToSend) {
-        receiver ! msg
+      for ((senderOpt, receiver, msg) <- messagesToSend) {
+        senderOpt match {
+          case Some(sendRef) =>
+            receiver.!(msg)(sendRef)
+          case None =>
+            receiver ! msg
+        }
       }
     })
     messagesToSend.clear()
@@ -202,6 +207,8 @@ trait ExternalEventInjector[E] {
     MessageTypes.sanityCheckTrace(_trace)
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
+
+    Instrumenter().executionStarted
 
     if (!_disableFailureDetector) {
       fd.startFD(Instrumenter().actorSystem)
@@ -282,10 +289,10 @@ trait ExternalEventInjector[E] {
     val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.
-    val existingExternals = new Queue[(ActorRef, Any)] ++ messagesToSend
+    val existingExternals = new Queue[(Option[ActorRef], ActorRef, Any)] ++ messagesToSend
     messagesToSend.clear
     for ((actor, request) <- checkpointRequests) {
-      enqueue_message(actor, request)
+      enqueue_message(None, actor, request)
     }
     messagesToSend ++= existingExternals
   }
@@ -400,7 +407,7 @@ trait ExternalEventInjector[E] {
   // Return true if we found the timer in our messagesToSend
   def handle_timer_cancel(rcv: ActorRef, msg: Any): Boolean = {
     messagesToSend.dequeueFirst(tuple =>
-      tuple._1.path.name == rcv.path.name && tuple._2 == msg) match {
+      tuple._2.path.name == rcv.path.name && tuple._3 == msg) match {
       case Some(_) => return true
       case None => return false
     }
@@ -428,7 +435,7 @@ trait ExternalEventInjector[E] {
     started.set(false)
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
-    messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
+    messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]
     alreadyPopulated = false
     println("state reset.")
   }

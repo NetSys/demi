@@ -68,10 +68,10 @@ trait Scheduler {
   def notify_timer_cancel(receiver: ActorRef, msg: Any)
   
   // Interface for (safely) sending external messages
-  def enqueue_message(receiver: String, msg: Any)
+  def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any)
 
   // Interface for (safely) sending timers (akka.scheduler messages)
-  def enqueue_timer(receiver: String, msg: Any) = enqueue_message(receiver, msg)
+  def enqueue_timer(receiver: String, msg: Any) = enqueue_message(None, receiver, msg)
 
   // Shut down the actor system.
   def shutdown()

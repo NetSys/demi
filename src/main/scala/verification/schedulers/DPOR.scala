@@ -337,7 +337,7 @@ class DPOR extends Scheduler {
         fd.handle_start_event(name)
         
       case Send(rcv, msgCtor) =>
-        enqueue_message(rcv, msgCtor())
+        enqueue_message(None, rcv, msgCtor())
         
       case _ => throw new Exception("unsuported external event")
     }
@@ -685,15 +685,16 @@ class DPOR extends Scheduler {
   // Enqueue a message for future delivery
   // TODO(cs): redundant with ExternalEventInjector's enqueue_message. Consider
   // mixing in ExternalEventInjector.
-  override def enqueue_message(receiver: String, msg: Any) {
+  override def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) {
     if (actorNames contains receiver) {
-      enqueue_message(actorToActorRef(receiver), msg)
+      enqueue_message(sender, actorToActorRef(receiver), msg)
     } else {
       throw new IllegalArgumentException("Unknown receiver " + receiver)
     }
   }
 
-  private[this] def enqueue_message(actor: ActorRef, msg: Any) {
+  private[this] def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
+    // TODO(cs): track sender
     enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
   }

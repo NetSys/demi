@@ -79,7 +79,7 @@ class FairScheduler extends AbstractScheduler {
     }
   }
   
-  def enqueue_message(receiver: String, msg: Any) {
+  def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) {
     throw new Exception("NYI")
   }
 

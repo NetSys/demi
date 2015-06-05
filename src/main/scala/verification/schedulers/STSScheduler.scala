@@ -259,7 +259,7 @@ class STSScheduler(var original_trace: EventTrace,
             // detector -> actors from event_orchestrator.trace, to ensure
             // that we don't send redundant messages.
             if (sender == "deadLetters") {
-              enqueue_message(receiver, message)
+              enqueue_message(None, receiver, message)
             }
           case TimerDelivery(snd, rcv, fingerprint) =>
             send_external_messages(false)

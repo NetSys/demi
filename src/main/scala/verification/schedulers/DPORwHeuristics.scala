@@ -1123,7 +1123,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   
   // Assume: only used for timers (which implies that it's always an
   // akka-dispatcher thread calling this method).
-  def enqueue_message(receiver: String,msg: Any): Unit = {
+  def enqueue_message(sender: Option[ActorRef], receiver: String,msg: Any): Unit = {
+    // TODO(cs): deal with sender.
     logger.trace(Console.BLUE + "Enqueuing timer to " + receiver + " with msg " + msg + Console.RESET)
     instrumenter().actorMappings(receiver) ! msg
     instrumenter().await_enqueue()

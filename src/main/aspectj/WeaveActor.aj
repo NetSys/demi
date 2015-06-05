@@ -111,7 +111,6 @@ privileged public aspect WeaveActor {
   	inst.new_actor(me.system(), props, name, actor);
   }
 
-
   Object around(ActorRef me, Object msg, ActorRef sender):
   execution(* akka.actor.ScalaActorRef.$bang(Object, ActorRef)) &&
   args(msg, sender) && this(me) {

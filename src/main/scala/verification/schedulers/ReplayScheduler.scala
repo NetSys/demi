@@ -78,7 +78,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
     // since all the failure detector messages are recorded in _trace. So we
     // give it a no-op enqueue_message parameter.
     if (enableFailureDetector) {
-      fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
+      fd = new FDMessageOrchestrator((o: Option[ActorRef], s: String, m: Any) => Unit)
       event_orchestrator.set_failure_detector(fd)
       fd.startFD(instrumenter.actorSystem)
     }
@@ -154,7 +154,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
           case MsgSend (sender, receiver, message) =>
             // sender == "deadLetters" means the message is external.
             if (sender == "deadLetters") {
-              enqueue_message(receiver, message)
+              enqueue_message(None, receiver, message)
             }
           case t: TimerDelivery =>
             // Check that the Timer wasn't destined for a dead actor.

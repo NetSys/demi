@@ -62,7 +62,6 @@ class InstrumenterCheckpoint(
   val applicationCheckpoint: Any
 ) {}
 
-
 class Instrumenter {
   // Provides the application a hook to compute after each shutdown
   type ShutdownCallback = () => Unit
@@ -85,7 +84,13 @@ class Instrumenter {
   var currentActor = ""
   var inActor = false
   var counter = 0   
+  // Whether we're currently dispatching.
   var started = new AtomicBoolean(false)
+  // Whether the scheduler has started actively controlling the execution.
+  var _executionStarted = new AtomicBoolean(false)
+  // Whether to ignore (pass-through) all events until executionStarted() has
+  // been invoked.
+  var _waitForExecutionStart = new AtomicBoolean(false)
   // If an actor blocks while it is `receive`ing, we need to continue making
   // progress by finding a new message to schedule. While that actor is
   // blocked, we should not deliver any messages to it. This data structure
@@ -158,6 +163,16 @@ class Instrumenter {
     tellEnqueue.await()
   }
 
+  // Whether to ignore (pass-through) all events until executionStarted() has
+  // been invoked.
+  def waitForExecutionStart() {
+    _waitForExecutionStart.set(true)
+  }
+
+  def executionStarted() {
+    _executionStarted.set(true)
+  }
+
   /**
    * When an external thread (one not named .*dispatcher.*) wants to send
    * messages at a known (thread-safe) point, it should invoke this interface.
@@ -186,13 +201,16 @@ class Instrumenter {
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
     assert(receiver != null)
 
+    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
+      return true
+    }
+
     // First check if it's an external thread sending outside of
     // sendKnownExternalMessages.
     if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
         !Instrumenter.threadNameIsAkkaInternal() &&
         !sendingKnownExternalMessages.get()) {
-      println("tell(): " + sender + " " + receiver + " " + msg)
-      scheduler.enqueue_message(receiver.path.name, msg)
+      scheduler.enqueue_message(Some(sender), receiver.path.name, msg)
       return false
     }
 
@@ -211,6 +229,10 @@ class Instrumenter {
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
       props: Props, name: String, actor: ActorRef) : Unit = {
+
+    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
+      return
+    }
    
     val event = new SpawnEvent(currentActor, props, name, actor)
     scheduler.event_produced(event : SpawnEvent)
@@ -290,6 +312,7 @@ class Instrumenter {
       ongoingCancellableTasks.clear
       cancellableToTimer.clear
       timerToCancellable.clear
+      _executionStarted.set(false)
 
       system.shutdown()
 
@@ -365,6 +388,10 @@ class Instrumenter {
         cell.self.path.name,
         msg)) return
 
+    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
+      return
+    }
+
     if (logger.isTraceEnabled()) {
       logger.trace("afterMessageReceive: just finished: " + cell.sender.path.name + " -> " +
         cell.self.path.name + " " + msg)
@@ -404,6 +431,11 @@ class Instrumenter {
       // temp actor was spawned by an external thread
       return true
     }
+    // Assume it's impossible for an internal actor to `ask` the outside world
+    // anything (which would need to be the case if the external thread is now
+    // answering).
+    assert(Instrumenter.threadNameIsAkkaInternal)
+
     if (!(askAnswerNotYetScheduled contains temp)) {
       // Hasn't been scheduled for delivery yet.
       askAnswerNotYetScheduled += temp
@@ -418,6 +450,7 @@ class Instrumenter {
     askAnswerNotYetScheduled -= temp
     // Mark parent as unblocked.
     blockedActors = blockedActors - tempToParent(temp.path)
+    currentActor = tempToParent(temp.path)
     tempToParent -= temp.path
     return true
   }
@@ -459,6 +492,14 @@ class Instrumenter {
       }
     }
   }
+
+  def isRepeatingTimer(rcv: String, msg: Any) : Boolean = {
+    if (timerToCancellable contains (rcv, msg)) {
+      val cancellable = timerToCancellable((rcv, msg))
+      return ongoingCancellableTasks contains cancellable
+    }
+    return false
+  }
   
   
   // Called when dispatch is called.
@@ -469,19 +510,32 @@ class Instrumenter {
     val snd = envelope.sender.path.name
     val rcv = receiver.path.name
 
+    // If this is a system message just let it through.
+    if (scheduler.isSystemMessage(snd, rcv, envelope.message)) {
+      return true
+    }
+
+    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
+      return true
+    }
+
+    // At this point, this should only ever be an internal thread.
+    // TODO(cs): except, there is a bug where at the beginning of the
+    // execution, the first sent message goes through aroundDispatch twice
+    // (right as start_dispatch is invoked). Need to figure out why that is
+    // before uncommenting this assert.
+    // assert(Instrumenter.threadNameIsAkkaInternal || sendingKnownExternalMessages.get(),
+    //   "external thread in aroundDispatch:" + snd + " -> " + rcv + " " + envelope.message)
+
     // Check it's an outgoing `ask` message, i.e. from a temp actor.
-    // If so, do a bit of bookkeepting.
+    // If so, do a bit of bookkeeping.
     // TODO(cs): assume that temp actors aren't used for anything other than
     // ask. Which probably isn't a good assumption.
     if (envelope.sender.path.parent.name == "temp" && currentActor != "") {
       tempToParent(envelope.sender.path) = currentActor
     }
     
-    // If this is a system message just let it through.
-    if (scheduler.isSystemMessage(snd, rcv, envelope.message)) {
-      return true
-    }
-    
+        
     // If this is not a system message then check if we have already recorded
     // this event. Recorded => we are injecting this event (as opposed to some 
     // actor doing it in which case we need to report it)

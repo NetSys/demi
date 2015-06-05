@@ -107,6 +107,19 @@ class RandomScheduler(max_executions: Int,
   // the DepGraph (used by DPOR).
   var depTracker = new DepTracker(messageFingerprinter)
 
+  // Avoid infinite loops with repeating timers: if we just scheduled one,
+  // don't schedule the exact same one immediately again until we've scheduled
+  // some other message first.
+  // Tuple is : (receiver, timer object)
+  // TODO(cs): could still have *cycles* of repeating timer deliveries... Deal with that
+  // if it comes up.
+  // Implementation note: if justScheduledRepeatingTimer == Some, that implies
+  // that we just blocked the second repeat timer from being sent. (since repeat
+  // timers are normally sent immediately after they are delivered). To make
+  // sure that the repeat timer is correctly repeated, resend it as soon as we
+  // deliver a non-repeat timer.
+  var justScheduledRepeatingTimer : Option[(String, Any)] = None
+
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
   setQuiescenceCallback(() => {
@@ -262,9 +275,11 @@ class RandomScheduler(max_executions: Int,
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    assert(started.get(), "!started.get():" + snd + " -> " + rcv + " " + msg)
     if (logger.isTraceEnabled()) {
       logger.trace("event_produced: " + snd + " -> " + rcv + " " + msg)
     }
+
     val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     var isTimer = false
 
@@ -345,6 +360,23 @@ class RandomScheduler(max_executions: Int,
       prepareCheckpoint()
     }
 
+    // Invoked when we're about to schedule a non-repeating timer.
+    def updateRepeatingTimer(aboutToDeliver: (Cell, Envelope)) {
+      justScheduledRepeatingTimer match {
+        case None =>
+        case Some((rcv, timer)) =>
+          // Send (but don't yet schedule) it, and reset.
+          justScheduledRepeatingTimer = None
+          handle_timer(rcv, timer)
+      }
+
+      if (Instrumenter().isRepeatingTimer(
+            aboutToDeliver._1.self.path.name, aboutToDeliver._2.message)) {
+        justScheduledRepeatingTimer = Some(
+          (aboutToDeliver._1.self.path.name, aboutToDeliver._2.message))
+      }
+    }
+
     // Proceed normally.
     send_external_messages()
     // Always prioritize system messages.
@@ -357,6 +389,7 @@ class RandomScheduler(max_executions: Int,
         (e: Uniq[(Cell, Envelope)]) => e.element._1.self.path.name) match {
         case Some(uniq) =>
           event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+          updateRepeatingTimer(uniq.element)
           return Some(uniq.element)
         case None =>
       }
@@ -385,8 +418,11 @@ class RandomScheduler(max_executions: Int,
           val msg = envelope.message
           logger.trace("schedule_new_message: " + snd + " -> " + rcv + " " + msg)
         }
+
+        updateRepeatingTimer(uniq.element)
         return Some(uniq.element)
-      case None => return None
+      case None =>
+        return None
     }
   }
 
@@ -447,7 +483,17 @@ class RandomScheduler(max_executions: Int,
     }
   }
 
-  override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
+  override def enqueue_timer(receiver: String, msg: Any) {
+    justScheduledRepeatingTimer match {
+      case Some((rcv, timer)) =>
+        // avoid infinite loop; don't enqueue it, just keep it stored in
+        // justScheduledRepeatingTimer.
+        if (receiver == rcv && timer == msg) return
+      case None =>
+    }
+
+    handle_timer(receiver, msg)
+  }
 
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
