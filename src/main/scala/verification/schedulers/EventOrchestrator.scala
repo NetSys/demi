@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class EventOrchestrator[E] {
   // Function that queues a message to be sent later.
-  type EnqueueMessage = (String, Any) => Unit
+  type EnqueueMessage = (Option[ActorRef], String, Any) => Unit
 
   // Callbacks
   type KillCallback = (String, Set[String], Int) => Unit
@@ -119,7 +119,7 @@ class EventOrchestrator[E] {
    *
    * Should not be invoked if E != ExternalEvent.
    */
-  def inject_until_quiescence(enqueue_message: EnqueueMessage) = {
+  def inject_until_quiescence(enqueue_message: EnqueueMessage): Unit = {
     var loop = true
     while (loop && !trace_finished) {
       println("Injecting " + traceIdx + "/" + trace.length + " " + current_event)
@@ -130,13 +130,17 @@ class EventOrchestrator[E] {
           killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_kill(name)
         case Send (name, messageCtor) =>
-          enqueue_message(name, messageCtor())
+          enqueue_message(None, name, messageCtor())
         case p @ Partition (a, b) =>
           partitionCallback(a,b,p._id)
           trigger_partition(a,b)
         case u @ UnPartition (a, b) =>
           unPartitionCallback(a,b,u._id)
           trigger_unpartition(a,b)
+        case WaitCondition(cond) =>
+           // Don't let trace advance here. Only let it advance when we have
+           // reached quiescence and the condition holds.
+          return
         case WaitQuiescence() =>
           events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence

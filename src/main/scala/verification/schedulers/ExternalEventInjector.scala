@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -97,11 +97,19 @@ trait ExternalEventInjector[E] {
   var enqueuedExternalMessages = new MultiSet[Any]
 
   // A set of external messages to send. Messages sent between actors are not
-  // queued here.
-  var messagesToSend = new SynchronizedQueue[(ActorRef, Any)]()
+  // queued here. Tuple is: (sender, receiver, msg)
+  var messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]()
 
   // Whether populateActors has been invoked.
   var alreadyPopulated = false
+
+  // In case we're in non-blocking mode.
+  var terminationCallback : Option[(EventTrace) => Any] = None
+
+  // If the last event we replayed is WaitCondition, and we've reached
+  // quiescence, signal that once we've waited for enqueue_message() to be
+  // invoked we should start dispatch again.
+  var dispatchAfterEnqueueMessage = new AtomicBoolean(false)
 
   // An optional callback that will be invoked when a WaitQuiescence has just
   // caused us to arrive at Quiescence.
@@ -110,25 +118,33 @@ trait ExternalEventInjector[E] {
   def setQuiescenceCallback(c: QuiescenceCallback) { quiescenceCallback = c }
 
   // Enqueue an external message for future delivery
-  def enqueue_message(receiver: String, msg: Any) {
+  def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
-      enqueue_message(event_orchestrator.actorToActorRef(receiver), msg)
+      enqueue_message(sender, event_orchestrator.actorToActorRef(receiver), msg)
     } else {
-      println("WARNING! Unknown receiver " + receiver)
+      println("WARNING! Unknown message receiver " + receiver)
     }
   }
 
-  def enqueue_message(actor: ActorRef, msg: Any) {
+  def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
     enqueuedExternalMessages += msg
-    messagesToSend += ((actor, msg))
+    messagesToSend += ((sender, actor, msg))
+
+    if (dispatchAfterEnqueueMessage.get()) {
+      dispatchAfterEnqueueMessage.set(false)
+      println("dispatching after enqueue_message")
+      started.set(true)
+      send_external_messages()
+      Instrumenter().start_dispatch()
+    }
   }
 
   // Enqueue a timer message for future delivery
   def handle_timer(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
-      messagesToSend += ((event_orchestrator.actorToActorRef(receiver), msg))
+      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
     } else {
-      println("WARNING! Unknown receiver " + receiver)
+      println("WARNING! Unknown timer receiver " + receiver)
     }
   }
 
@@ -149,9 +165,16 @@ trait ExternalEventInjector[E] {
     // Send all pending fd responses
     fd.send_all_pending_responses()
     // Drain message queue
-    for ((receiver, msg) <- messagesToSend) {
-      receiver ! msg
-    }
+    Instrumenter().sendKnownExternalMessages(() => {
+      for ((senderOpt, receiver, msg) <- messagesToSend) {
+        senderOpt match {
+          case Some(sendRef) =>
+            receiver.!(msg)(sendRef)
+          case None =>
+            receiver ! msg
+        }
+      }
+    })
     messagesToSend.clear()
 
     // Wait to make sure all messages are enqueued
@@ -177,10 +200,15 @@ trait ExternalEventInjector[E] {
   }
 
   // Given an external event trace, see the events produced
-  def execute_trace (_trace: Seq[E with ExternalEvent]) : EventTrace = {
+  // if terminationCallback != None, don't block the main thread!
+  def execute_trace (_trace: Seq[E with ExternalEvent],
+                     _terminationCallback: Option[(EventTrace) => Any]=None) : EventTrace = {
+    terminationCallback = _terminationCallback
     MessageTypes.sanityCheckTrace(_trace)
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
+
+    Instrumenter().executionStarted
 
     if (!_disableFailureDetector) {
       fd.startFD(Instrumenter().actorSystem)
@@ -203,11 +231,17 @@ trait ExternalEventInjector[E] {
     currentlyInjecting.set(true)
     // Start playing back trace
     advanceTrace()
-    // Have this thread wait until the trace is down. This allows us to safely notify
-    // the caller.
-    traceSem.acquire
-    currentlyInjecting.set(false)
-    return event_orchestrator.events
+    terminationCallback match {
+      case None =>
+        // Have this thread wait until the trace is down. This allows us to safely notify
+        // the caller.
+        traceSem.acquire
+        currentlyInjecting.set(false)
+        return event_orchestrator.events
+      case Some(f) =>
+        // Don't block. We'll call terminationCallback when we're done.
+        return null
+    }
   }
 
   // Advance the trace
@@ -255,10 +289,10 @@ trait ExternalEventInjector[E] {
     val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.
-    val existingExternals = new Queue[(ActorRef, Any)] ++ messagesToSend
+    val existingExternals = new Queue[(Option[ActorRef], ActorRef, Any)] ++ messagesToSend
     messagesToSend.clear
     for ((actor, request) <- checkpointRequests) {
-      enqueue_message(actor, request)
+      enqueue_message(None, actor, request)
     }
     messagesToSend ++= existingExternals
   }
@@ -303,7 +337,7 @@ trait ExternalEventInjector[E] {
     event_orchestrator.handle_spawn_consumed(spawn_event)
   }
 
-  def handle_event_consumed(cell: ActorCell, envelope: Envelope) = {
+  def handle_event_consumed(cell: Cell, envelope: Envelope) = {
     val rcv = cell.self.path.name
     val msg = envelope.message
     if (enqueuedExternalMessages.contains(msg)) {
@@ -324,12 +358,28 @@ trait ExternalEventInjector[E] {
     if (!event_orchestrator.trace_finished) {
       // If waiting for quiescence.
       event_orchestrator.events += Quiescence
-      quiescenceCallback()
-      advanceTrace()
+      event_orchestrator.current_event match {
+        case WaitCondition(cond) =>
+          if (cond()) {
+            event_orchestrator.trace_advanced()
+            advanceTrace()
+          } else {
+            // wait for enqueue_message to be invoked.
+            println("waiting for enqueue_message...")
+            dispatchAfterEnqueueMessage.set(true)
+          }
+        case _ =>
+          quiescenceCallback()
+          advanceTrace()
+      }
     } else {
+      quiescenceCallback()
       if (currentlyInjecting.get) {
         // Tell the calling thread we are done
-        traceSem.release
+        terminationCallback match {
+          case None => traceSem.release
+          case Some(f) => f(event_orchestrator.events)
+        }
       } else {
         throw new RuntimeException("currentlyInjecting.get returned false")
       }
@@ -346,18 +396,18 @@ trait ExternalEventInjector[E] {
     shutdownSem.release
   }
 
-  def handle_before_receive (cell: ActorCell) : Unit = {
+  def handle_before_receive (cell: Cell) : Unit = {
     event_orchestrator.events += ChangeContext(cell.self.path.name)
   }
 
-  def handle_after_receive (cell: ActorCell) : Unit = {
+  def handle_after_receive (cell: Cell) : Unit = {
     event_orchestrator.events += ChangeContext("scheduler")
   }
 
   // Return true if we found the timer in our messagesToSend
   def handle_timer_cancel(rcv: ActorRef, msg: Any): Boolean = {
     messagesToSend.dequeueFirst(tuple =>
-      tuple._1.path.name == rcv.path.name && tuple._2 == msg) match {
+      tuple._2.path.name == rcv.path.name && tuple._3 == msg) match {
       case Some(_) => return true
       case None => return false
     }
@@ -385,7 +435,7 @@ trait ExternalEventInjector[E] {
     started.set(false)
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
-    messagesToSend = new SynchronizedQueue[(ActorRef, Any)]
+    messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]
     alreadyPopulated = false
     println("state reset.")
   }

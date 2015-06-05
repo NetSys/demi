@@ -53,6 +53,10 @@ trait ExternalMessageConstructor {
   def maskComponents(indices: Set[Int]): ExternalMessageConstructor = this
 }
 
+case class BasicMessageConstructor(msg: Any) extends ExternalMessageConstructor {
+  def apply(): Any = msg
+}
+
 final case class Start (propCtor: () => Props, name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class Kill (name: String) extends
@@ -60,6 +64,13 @@ final case class Kill (name: String) extends
 final case class Send (name: String, messageCtor: ExternalMessageConstructor) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class WaitQuiescence() extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Stronger than WaitQuiescence: if quiescence has been reached but cond does
+// not return true, wait indefinitely until scheduler.enqueue_message is
+// invoked, schedule it, and again wait for quiescence. Repeat until cond
+// returns true. (Useful for systems that use external threads to send
+// messages indefinitely.
+final case class WaitCondition(cond: () => Boolean) extends
     ExternalEvent with Event with UniqueExternalEvent
 // Bidirectional partitions.
 final case class Partition (a: String, b: String) extends

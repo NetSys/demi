@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -16,6 +16,10 @@ import scala.reflect.ClassTag
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.Random
+
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
 
 /**
  * Takes a list of ExternalEvents as input, and explores random interleavings
@@ -44,6 +48,8 @@ class RandomScheduler(max_executions: Int,
 
   def getName: String = "RandomScheduler"
 
+  val logger = LoggerFactory.getLogger("RandomScheduler")
+
   // Allow the user to place a bound on how many messages are delivered.
   // Useful for dealing with non-terminating systems.
   var maxMessages = Int.MaxValue
@@ -67,12 +73,12 @@ class RandomScheduler(max_executions: Int,
   // Our use of Uniq and Unique is somewhat confusing. Uniq is used to
   // associate MsgSends with their subsequent MsgEvents.
   // Unique is used by DepTracker.
-  var pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
+  var pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
   // Always prioritized over internal messages.
-  var pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+  var pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
 
   // The violation we're looking for, if not None.
   var lookingFor : Option[ViolationFingerprint] = None
@@ -100,6 +106,19 @@ class RandomScheduler(max_executions: Int,
   // result of our delivering that message. This can be used later to recreate
   // the DepGraph (used by DPOR).
   var depTracker = new DepTracker(messageFingerprinter)
+
+  // Avoid infinite loops with repeating timers: if we just scheduled one,
+  // don't schedule the exact same one immediately again until we've scheduled
+  // some other message first.
+  // Tuple is : (receiver, timer object)
+  // TODO(cs): could still have *cycles* of repeating timer deliveries... Deal with that
+  // if it comes up.
+  // Implementation note: if justScheduledRepeatingTimer == Some, that implies
+  // that we just blocked the second repeat timer from being sent. (since repeat
+  // timers are normally sent immediately after they are delivered). To make
+  // sure that the repeat timer is correctly repeated, resend it as soon as we
+  // deliver a non-repeat timer.
+  var justScheduledRepeatingTimer : Option[(String, Any)] = None
 
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
@@ -137,6 +156,62 @@ class RandomScheduler(max_executions: Int,
     }
   }
 
+  private[this] def checkIfBugFound(event_trace: EventTrace): Option[(EventTrace, ViolationFingerprint)] = {
+    violationFound match {
+      // If the violation has already been found, return.
+      case Some(fingerprint) =>
+        // Prune off any external events that we didn't end up using.
+        event_trace.original_externals =
+          event_trace.original_externals.slice(0, event_orchestrator.traceIdx)
+        return Some((event_trace, fingerprint))
+      // Else, check the invariant condition one last time.
+      case None =>
+        if (!disableCheckpointing) {
+          var checkpoint : HashMap[String, Option[CheckpointReply]] = null
+          checkpoint = takeCheckpoint()
+          val violation = test_invariant(trace, checkpoint)
+          violationFound = violationMatches(violation)
+          violationFound match {
+            case Some(fingerprint) =>
+              return Some((event_trace, fingerprint))
+            case None => None
+          }
+        }
+    }
+    return None
+  }
+
+  // Explore exactly one execution, invoke terminationCallback when the
+  // execution has finished.
+  def nonBlockingExplore(_trace: Seq[ExternalEvent],
+                         terminationCallback: (Option[(EventTrace,ViolationFingerprint)]) => Any) {
+    nonBlockingExplore(_trace, None, terminationCallback)
+  }
+
+  def nonBlockingExplore(_trace: Seq[ExternalEvent],
+                         _lookingFor: Option[ViolationFingerprint],
+                         terminationCallback: (Option[(EventTrace,ViolationFingerprint)]) => Any) {
+    if (!(Instrumenter().scheduler eq this)) {
+      throw new IllegalStateException("Instrumenter().scheduler not set!")
+    }
+    trace = _trace
+    lookingFor = _lookingFor
+
+    if (test_invariant == null) {
+      throw new IllegalArgumentException("Must invoke setInvariant before test()")
+    }
+
+    event_orchestrator.events.setOriginalExternalEvents(_trace)
+    if (stats != null) {
+      stats.increment_replays()
+    }
+
+    execute_trace(_trace, Some((event_trace: EventTrace) => {
+      val ret = checkIfBugFound(event_trace)
+      terminationCallback(ret)
+    }))
+  }
+
   /**
    * Given an external event trace, randomly explore executions involving those
    * external events.
@@ -151,7 +226,7 @@ class RandomScheduler(max_executions: Int,
    * Precondition: setInvariant has been invoked.
    */
   def explore (_trace: Seq[ExternalEvent]) : Option[(EventTrace, ViolationFingerprint)] = {
-    return explore(_trace, None)
+    return explore(_trace, None, None)
   }
 
   /**
@@ -159,7 +234,9 @@ class RandomScheduler(max_executions: Int,
    * matches looking_for
    */
   def explore (_trace: Seq[ExternalEvent],
-               _lookingFor: Option[ViolationFingerprint]) : Option[(EventTrace, ViolationFingerprint)] = {
+               _lookingFor: Option[ViolationFingerprint],
+               terminationCallback: Option[(Option[(EventTrace,ViolationFingerprint)])=>Any]=None) :
+       Option[(EventTrace, ViolationFingerprint)] = {
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
     }
@@ -176,28 +253,12 @@ class RandomScheduler(max_executions: Int,
       if (stats != null) {
         stats.increment_replays()
       }
-      val event_trace = execute_trace(_trace)
 
-      // If the violation has already been found, return.
-      violationFound match {
-        case Some(fingerprint) =>
-          // Prune off any external events that we didn't end up using.
-          event_trace.original_externals =
-            event_trace.original_externals.slice(0, event_orchestrator.traceIdx)
+      val event_trace = execute_trace(_trace)
+      checkIfBugFound(event_trace) match {
+        case Some((event_trace, fingerprint)) =>
           return Some((event_trace, fingerprint))
-        // Else, check the invariant condition one last time.
         case None =>
-          if (!disableCheckpointing) {
-            var checkpoint : HashMap[String, Option[CheckpointReply]] = null
-            checkpoint = takeCheckpoint()
-            val violation = test_invariant(_trace, checkpoint)
-            violationFound = violationMatches(violation)
-            violationFound match {
-              case Some(fingerprint) =>
-                return Some((event_trace, fingerprint))
-              case None => None
-            }
-          }
       }
 
       if (i != max_executions) {
@@ -210,11 +271,16 @@ class RandomScheduler(max_executions: Int,
     return None
   }
 
-  override def event_produced(cell: ActorCell, envelope: Envelope) = {
+  override def event_produced(cell: Cell, envelope: Envelope) = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    assert(started.get(), "!started.get():" + snd + " -> " + rcv + " " + msg)
+    if (logger.isTraceEnabled()) {
+      logger.trace("event_produced: " + snd + " -> " + rcv + " " + msg)
+    }
+
+    val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     var isTimer = false
 
     handle_event_produced(snd, rcv, envelope) match {
@@ -262,11 +328,11 @@ class RandomScheduler(max_executions: Int,
   }
 
   // Record a message send event
-  override def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  override def event_consumed(cell: Cell, envelope: Envelope) = {
     handle_event_consumed(cell, envelope)
   }
 
-  override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  def schedule_new_message(blockedActors: scala.collection.immutable.Set[String]) : Option[(Cell, Envelope)] = {
     // First, check if we've found the violation. If so, stop.
     violationFound match {
       case Some(fingerprint) =>
@@ -294,28 +360,70 @@ class RandomScheduler(max_executions: Int,
       prepareCheckpoint()
     }
 
+    // Invoked when we're about to schedule a non-repeating timer.
+    def updateRepeatingTimer(aboutToDeliver: (Cell, Envelope)) {
+      justScheduledRepeatingTimer match {
+        case None =>
+        case Some((rcv, timer)) =>
+          // Send (but don't yet schedule) it, and reset.
+          justScheduledRepeatingTimer = None
+          handle_timer(rcv, timer)
+      }
+
+      if (Instrumenter().isRepeatingTimer(
+            aboutToDeliver._1.self.path.name, aboutToDeliver._2.message)) {
+        justScheduledRepeatingTimer = Some(
+          (aboutToDeliver._1.self.path.name, aboutToDeliver._2.message))
+      }
+    }
+
     // Proceed normally.
     send_external_messages()
     // Always prioritize system messages.
     if (!pendingSystemMessages.isEmpty) {
-      val uniq = pendingSystemMessages.dequeue()
-      event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-      return Some(uniq.element)
+      // Find a non-blocked destination
+      Util.find_non_blocked_message[Uniq[(Cell, Envelope)]](
+        blockedActors,
+        pendingSystemMessages,
+        () => pendingSystemMessages.dequeue(),
+        (e: Uniq[(Cell, Envelope)]) => e.element._1.self.path.name) match {
+        case Some(uniq) =>
+          event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+          updateRepeatingTimer(uniq.element)
+          return Some(uniq.element)
+        case None =>
+      }
     }
 
-    // Do we have some pending events
-    if (pendingEvents.isEmpty) {
-      return None
-    }
+    // Find a non-blocked destination
+    Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
+      blockedActors,
+      pendingEvents,
+      () => pendingEvents.removeRandomElement(),
+      (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name) match {
+      case Some((uniq,  unique)) =>
+        messagesScheduledSoFar += 1
+        if (messagesScheduledSoFar == Int.MaxValue) {
+          messagesScheduledSoFar = 1
+        }
 
-    messagesScheduledSoFar += 1
-    if (messagesScheduledSoFar == Int.MaxValue) {
-      messagesScheduledSoFar = 1
+        event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
+        depTracker.reportNewlyDelivered(unique)
+
+        if (logger.isTraceEnabled()) {
+          val cell = uniq.element._1
+          val envelope = uniq.element._2
+          val snd = envelope.sender.path.name
+          val rcv = cell.self.path.name
+          val msg = envelope.message
+          logger.trace("schedule_new_message: " + snd + " -> " + rcv + " " + msg)
+        }
+
+        updateRepeatingTimer(uniq.element)
+        return Some(uniq.element)
+      case None =>
+        return None
     }
-    val (uniq, unique) = pendingEvents.removeRandomElement()
-    event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
-    depTracker.reportNewlyDelivered(unique)
-    return Some(uniq.element)
   }
 
   override def notify_quiescence () {
@@ -341,11 +449,11 @@ class RandomScheduler(max_executions: Int,
     handle_start_trace
   }
 
-  override def before_receive(cell: ActorCell) : Unit = {
+  override def before_receive(cell: Cell) : Unit = {
     handle_before_receive(cell)
   }
 
-  override def after_receive(cell: ActorCell) : Unit = {
+  override def after_receive(cell: Cell) : Unit = {
     handle_after_receive(cell)
   }
 
@@ -375,7 +483,17 @@ class RandomScheduler(max_executions: Int,
     }
   }
 
-  override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
+  override def enqueue_timer(receiver: String, msg: Any) {
+    justScheduledRepeatingTimer match {
+      case Some((rcv, timer)) =>
+        // avoid infinite loop; don't enqueue it, just keep it stored in
+        // justScheduledRepeatingTimer.
+        if (receiver == rcv && timer == msg) return
+      case None =>
+    }
+
+    handle_timer(receiver, msg)
+  }
 
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
@@ -383,8 +501,8 @@ class RandomScheduler(max_executions: Int,
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
-    pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(ActorCell,Envelope)],Unique]]
-    pendingSystemMessages = new Queue[Uniq[(ActorCell, Envelope)]]
+    pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
+    pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
     lookingFor = None
     violationFound = None
     trace = null

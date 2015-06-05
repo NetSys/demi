@@ -1,12 +1,18 @@
 package akka.dispatch.verification
 
 
-import akka.actor.ActorCell,
+import akka.actor.Cell,
        akka.actor.ActorSystem,
        akka.actor.ActorRef,
        akka.actor.Actor,
        akka.actor.PoisonPill,
-       akka.actor.Props
+       akka.actor.Props,
+       akka.actor.ActorSystemImpl,
+       akka.actor.InternalActorRef,
+       akka.actor.ChildStats
+
+import akka.actor.dungeon.ChildrenContainer
+import akka.dispatch.sysmsg.SystemMessage
 
 import akka.dispatch.Envelope,
        akka.dispatch.MessageQueue,
@@ -18,7 +24,8 @@ import scala.collection.concurrent.TrieMap,
        scala.collection.mutable.HashSet,
        scala.collection.mutable.Set,
        scala.collection.mutable.ArrayBuffer,
-       scala.annotation.tailrec
+       scala.annotation.tailrec,
+       scala.collection.generic.Growable
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphPredef._, 
@@ -77,7 +84,7 @@ class MultiSet[E] extends Set[E] {
 }
 
 // Provides O(1) insert and removeRandomElement
-class RandomizedHashSet[E] {
+class RandomizedHashSet[E] extends Set[E] {
   // We store a counter along with each element E to ensure uniqueness
   var arr = new ArrayBuffer[(E,Int)]
   // Value is index into array
@@ -86,6 +93,12 @@ class RandomizedHashSet[E] {
   // This multiset is only used for .contains().. can't use hash's keys since
   // we ensure that they're unique.
   var multiset = new MultiSet[E]
+
+  def +=(e: E) : this.type  = {
+    // backwards-compatibility:
+    insert(e)
+    return this
+  }
 
   def insert(value: E) = {
     var uniqueness_counter = 0
@@ -97,6 +110,14 @@ class RandomizedHashSet[E] {
     hash(tuple) = i
     arr += tuple
     multiset += value
+  }
+
+  def -=(e: E) : this.type = {
+    throw new UnsupportedOperationException("Use removeRandomElement()")
+  }
+
+  def iterator: Iterator[E] = {
+    return multiset.iterator
   }
 
   def remove(value: (E,Int)) = {
@@ -138,10 +159,6 @@ class RandomizedHashSet[E] {
     val v = arr(random_idx)
     return v._1
   }
-
-  def isEmpty () : Boolean = {
-    return arr.isEmpty
-  }
 }
 
 // Used by applications to log messages to the console. Transparently attaches vector
@@ -176,6 +193,32 @@ class VCLogger () {
   def reset() {
     actor2vc = new HashMap[String, VectorClock]
   }
+}
+
+// A Cell that only provides functionality for `self()` (which is the only field we need anyway).
+// We use this class to shoehorn `ask` responses
+// (which don't go through the normal dispatch()->ActorCell pipeline)
+// into the schedulers' `event_produced` and `schedule_new_message` APIs.
+class FakeCell(receiver: ActorRef) extends Cell {
+  def self: ActorRef = receiver
+  def system: ActorSystem = throw new UnsupportedOperationException("")
+  def systemImpl: ActorSystemImpl = throw new UnsupportedOperationException("")
+  def start(): this.type = throw new UnsupportedOperationException("")
+  def suspend(): Unit = throw new UnsupportedOperationException("")
+  def resume(causedByFailure: Throwable): Unit = throw new UnsupportedOperationException("")
+  def restart(cause: Throwable): Unit = throw new UnsupportedOperationException("")
+  def stop(): Unit = throw new UnsupportedOperationException("")
+  def isTerminated: Boolean = throw new UnsupportedOperationException("")
+  def parent: InternalActorRef = throw new UnsupportedOperationException("")
+  def childrenRefs: ChildrenContainer = throw new UnsupportedOperationException("")
+  def getChildByName(name: String): Option[ChildStats] = throw new UnsupportedOperationException("")
+  def getSingleChild(name: String): InternalActorRef = throw new UnsupportedOperationException("")
+  def sendMessage(msg: Envelope): Unit = throw new UnsupportedOperationException("")
+  def sendSystemMessage(msg: SystemMessage): Unit = throw new UnsupportedOperationException("")
+  def isLocal: Boolean = throw new UnsupportedOperationException("")
+  def hasMessages: Boolean = throw new UnsupportedOperationException("")
+  def numberOfMessages: Int = throw new UnsupportedOperationException("")
+  def props: Props = throw new UnsupportedOperationException("")
 }
 
 class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
@@ -356,6 +399,41 @@ object Util {
   // Global logger instance.
   val logger = new VCLogger()
 
+  /**
+   * Find a pending message (of type E) that isn't destined for a
+   * blockedActor (or None if there are no such messages).
+   * For all pending messages that we dequeue() but are destined
+   * for a blockedActor, append them back onto the collection.
+   *
+   * dequeueNext: this is awkward. What we really want is a "Dequeable" trait.
+   *              Scala doesn't such a trait for Queue, so instead we just have
+   *              a lambda do the dequeue for us, and hope that the lambda
+   *              actually acts on the collection we were passed.
+   * getActor: different schedulers store different kinds of tuples. This is a
+   *           lambda to allow us to access the actor name, form whatever type
+   *           of tuple the scheduler happens to use.
+   */
+  def find_non_blocked_message[E](blockedActors: scala.collection.immutable.Set[String],
+                                  collection: Iterable[E] with Growable[E], // Iterable: has .isEmpty
+                                  dequeueNext: () => E, // Side-effect: mutate collection
+                                  getActor: (E) => String) : Option[E] = {
+    if (collection.isEmpty) {
+      return None
+    }
+    val blocked = new Queue[E]
+    var e = dequeueNext()
+    while (blockedActors contains getActor(e)) {
+      blocked += e
+      if (collection.isEmpty) {
+        collection ++= blocked
+        return None
+      }
+      e = dequeueNext()
+    }
+    collection ++= blocked
+    return Some(e)
+  }
+
   def map_from_iterable[A,B](in: Iterable[(A,B)]) : collection.mutable.Map[A,B] = {
     val dest = collection.mutable.Map[A,B]()
     for (e @ (k,v) <- in) {
@@ -412,7 +490,7 @@ object Util {
       case None =>  None
     }
 
-  def queueStr(queue: Queue[(Unique, ActorCell, Envelope)]) : String = {
+  def queueStr(queue: Queue[(Unique, Cell, Envelope)]) : String = {
     var str = "Queue content: "
     
     for((item, _ , _) <- queue) item match {
