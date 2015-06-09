@@ -91,8 +91,6 @@ class RandomScheduler(max_executions: Int,
   // The trace we're exploring
   var trace : Seq[ExternalEvent] = null
 
-  enableCheckpointing()
-
   // how many non-checkpoint messages we've scheduled so far.
   var messagesScheduledSoFar = 0
 
@@ -416,7 +414,7 @@ class RandomScheduler(max_executions: Int,
           val snd = envelope.sender.path.name
           val rcv = cell.self.path.name
           val msg = envelope.message
-          logger.trace("schedule_new_message: " + snd + " -> " + rcv + " " + msg)
+          logger.trace("schedule_new_message("+unique.id+"): " + snd + " -> " + rcv + " " + msg)
         }
 
         updateRepeatingTimer(uniq.element)
