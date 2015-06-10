@@ -208,8 +208,6 @@ trait ExternalEventInjector[E] {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
 
-    Instrumenter().executionStarted
-
     if (!_disableFailureDetector) {
       fd.startFD(Instrumenter().actorSystem)
     }

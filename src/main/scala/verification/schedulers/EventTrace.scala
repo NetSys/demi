@@ -5,19 +5,20 @@ import akka.dispatch.Envelope
 
 import scala.collection.mutable.ListBuffer
 import scala.collection.generic.Growable
-import scala.collection.mutable.Queue
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.SynchronizedQueue
+import scala.collection.mutable.Queue
 
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 case class UniqueTimerDelivery(t: TimerDelivery, id: Int) extends Event
 
-case class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
-  def this() = this(new Queue[Event], null)
-  def this(original_externals: Seq[ExternalEvent]) = this(new Queue[Event], original_externals)
+case class EventTrace(val events: SynchronizedQueue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
+  def this() = this(new SynchronizedQueue[Event], null)
+  def this(original_externals: Seq[ExternalEvent]) = this(new SynchronizedQueue[Event], original_externals)
 
   override def hashCode = this.events.hashCode
   override def equals(other: Any) : Boolean = other match {
@@ -35,7 +36,11 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     assume(original_externals != null)
     assume(!events.isEmpty)
     assume(!original_externals.isEmpty)
-    return new EventTrace(new Queue[Event] ++ events,
+    // I can't figure out the type signature for SynchronizedQueue's ++ operator, so we
+    // do it in two separate steps here
+    val copy = new SynchronizedQueue[Event]
+    copy ++= events
+    return new EventTrace(copy,
                           new Queue[ExternalEvent] ++ original_externals)
   }
 
@@ -149,7 +154,10 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       case e => Some(e)
     }
 
-    return new EventTrace(filtered, original_externals)
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+
+    return new EventTrace(filteredQueue, original_externals)
   }
 
   // Ensure that all failure detector messages are pruned from the original trace,
@@ -164,24 +172,34 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       return MessageTypes.fromFailureDetector(msg)
     }
 
-    return new EventTrace(events.filterNot(e => e match {
+    val filtered = events.filterNot(e => e match {
         case UniqueMsgEvent(m, _) =>
           fromFD(m.sender, m.msg) || m.receiver == FailureDetector.fdName
         case UniqueMsgSend(m, _) =>
           fromFD(m.sender, m.msg) || m.receiver == FailureDetector.fdName
         case _ => false
       }
-    ), original_externals)
+    )
+
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+
+    return new EventTrace(filteredQueue, original_externals)
   }
 
   def filterCheckpointMessages(): EventTrace = {
-    return new EventTrace(events flatMap {
+    val filtered = events flatMap {
       case UniqueMsgEvent(MsgEvent(_, _, CheckpointRequest), _) => None
       case UniqueMsgEvent(MsgEvent(_, _, CheckpointReply(_)), _) => None
       case UniqueMsgSend(MsgSend(_, _, CheckpointRequest), _) => None
       case UniqueMsgSend(MsgSend(_, _, CheckpointReply(_)), _) => None
       case e => Some(e)
-    }, original_externals)
+    }
+
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+
+    return new EventTrace(filteredQueue, original_externals)
   }
 
   // Pre: externals corresponds exactly to our external MsgSend
@@ -286,7 +304,11 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
         } // close match
       } // close else
     } // close for
-    return new EventTrace(filterSends(result, subseq), original_externals)
+
+    val filtered = filterSends(result, subseq)
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+    return new EventTrace(filteredQueue, original_externals)
   }
 
   private[this] def filterSends(events: Queue[Event],

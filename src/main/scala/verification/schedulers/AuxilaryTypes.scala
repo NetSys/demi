@@ -78,6 +78,19 @@ final case class Partition (a: String, b: String) extends
 final case class UnPartition (a: String, b: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 
+// Metadata events, not actually events.
+// MsgEvents appearing between `BeginUnignorableEvents' and `EndUnigorableEvents'
+// will never be skipped over during replay.
+final case object BeginUnignorableEvents extends Event
+final case object EndUnignorableEvents extends Event
+// An external thread has just started an `atomic block`, where it will now
+// send some number of messages. Upon replay, wait until the end of the
+// atomic block before deciding whether those messages are or are not going
+// to show up.
+final case class BeginExternalAtomicBlock(taskId: Long) extends Event
+final case class EndExternalAtomicBlock(taskId: Long) extends Event
+
+
 // Internal events in addition to those defined in ../AuxilaryTypes
 // MsgSend is the initial send, not the delivery
 // N.B., if an event trace was serialized, it's possible that msg is of type

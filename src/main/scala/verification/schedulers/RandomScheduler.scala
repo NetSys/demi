@@ -130,6 +130,38 @@ class RandomScheduler(max_executions: Int,
   event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
 
   /**
+   * Until endUnignorableEvents is invoked, mark all events that we record
+   * as "unignorable", i.e., during replay, don't ever skip over them.
+   */
+  def beginUnignorableEvents() {
+    event_orchestrator.events += BeginUnignorableEvents
+  }
+
+  /**
+   * Pre: beginUnignorableEvents was previously invoked.
+   */
+  def endUnignorableEvents() {
+    event_orchestrator.events += EndUnignorableEvents
+  }
+
+  /**
+   * An external thread has just started an `atomic block`, where it will now
+   * send some number of messages. Upon replay, wait until the end of the
+   * atomic block before deciding whether those messages are or are not going
+   * to show up.
+   */
+  def beginExternalAtomicBlock(taskId: Long) {
+    event_orchestrator.events += BeginExternalAtomicBlock(taskId)
+  }
+
+  /**
+   * Pre: beginExternalAtomicBlock was previously invoked.
+   */
+  def endExternalAtomicBlock(taskId: Long) {
+    event_orchestrator.events += EndExternalAtomicBlock(taskId)
+  }
+
+  /**
    * If we're looking for a specific violation, return None if the given
    * violation doesn't match, or Some(violation) if it does.
    *

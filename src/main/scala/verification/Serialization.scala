@@ -7,6 +7,7 @@ import akka.serialization._
 import scala.sys.process._
 import scala.sys.process.BasicIO
 import scala.collection.mutable.Queue
+import scala.collection.mutable.SynchronizedQueue
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
@@ -325,7 +326,9 @@ class ExperimentDeserializer(results_dir: String) {
     // `sbt run`, invoke `sbt assembly; java -cp /path/to/assembledjar Main`
     val originalExternals = JavaSerialization.deserialize[Seq[ExternalEvent]](originalExternalBuf)
 
-    return new EventTrace(new Queue[Event] ++ events, originalExternals)
+    val queue = new SynchronizedQueue[Event]
+    queue ++= events
+    return new EventTrace(queue, originalExternals)
   }
 }
 
