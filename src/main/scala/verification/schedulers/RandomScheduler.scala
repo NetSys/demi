@@ -130,38 +130,6 @@ class RandomScheduler(max_executions: Int,
   event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
 
   /**
-   * Until endUnignorableEvents is invoked, mark all events that we record
-   * as "unignorable", i.e., during replay, don't ever skip over them.
-   */
-  def beginUnignorableEvents() {
-    event_orchestrator.events += BeginUnignorableEvents
-  }
-
-  /**
-   * Pre: beginUnignorableEvents was previously invoked.
-   */
-  def endUnignorableEvents() {
-    event_orchestrator.events += EndUnignorableEvents
-  }
-
-  /**
-   * An external thread has just started an `atomic block`, where it will now
-   * send some number of messages. Upon replay, wait until the end of the
-   * atomic block before deciding whether those messages are or are not going
-   * to show up.
-   */
-  def beginExternalAtomicBlock(taskId: Long) {
-    event_orchestrator.events += BeginExternalAtomicBlock(taskId)
-  }
-
-  /**
-   * Pre: beginExternalAtomicBlock was previously invoked.
-   */
-  def endExternalAtomicBlock(taskId: Long) {
-    event_orchestrator.events += EndExternalAtomicBlock(taskId)
-  }
-
-  /**
    * If we're looking for a specific violation, return None if the given
    * violation doesn't match, or Some(violation) if it does.
    *
@@ -527,10 +495,11 @@ class RandomScheduler(max_executions: Int,
 
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
-    reset_state
+    reset_state(true)
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
+    justScheduledRepeatingTimer = None
     pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
     pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
     lookingFor = None
@@ -546,7 +515,8 @@ class RandomScheduler(max_executions: Int,
 
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
-           _stats: MinimizationStats) : Option[EventTrace] = {
+           _stats: MinimizationStats,
+           init:Option[()=>Any]=None) : Option[EventTrace] = {
     stats = _stats
     Instrumenter().scheduler = this
     val tuple_option = explore(events, Some(violation_fingerprint))

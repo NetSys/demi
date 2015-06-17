@@ -134,7 +134,7 @@ class Instrumenter {
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
-  private[this] var _actorSystem : ActorSystem = null
+  var _actorSystem : ActorSystem = null
   def actorSystem (config:Option[com.typesafe.config.Config]) : ActorSystem = {
     if (_actorSystem == null) {
       config match {
@@ -171,6 +171,10 @@ class Instrumenter {
 
   def executionStarted() {
     _executionStarted.set(true)
+  }
+
+  def executionEnded() {
+    _executionStarted.set(false)
   }
 
   /**
@@ -253,7 +257,25 @@ class Instrumenter {
     new_actor(system, props, actor.path.name, actor)
   }
   
+  def reset_cancellables() {
+    for (task <- registeredCancellableTasks.filterNot(c => c.isCancelled)) {
+      task.cancel()
+    }
+    registeredCancellableTasks.clear
+    ongoingCancellableTasks.clear
+    cancellableToTimer.clear
+    timerToCancellable.clear
+  }
   
+  def reset_per_system_state() {
+    actorMappings.clear()
+    seenActors.clear()
+    allowedEvents.clear()
+    dispatchers.clear()
+    Util.logger.reset()
+    _executionStarted.set(false)
+  }
+
   // Restart the system:
   //  - Create a new actor system
   //  - Inform the scheduler that things have been reset
@@ -269,11 +291,7 @@ class Instrumenter {
     _random = new Random(0)
     counter += 1
     
-    actorMappings.clear()
-    seenActors.clear()
-    allowedEvents.clear()
-    dispatchers.clear()
-    Util.logger.reset()
+    reset_per_system_state
     
     println("Started a new actor system.")
 
@@ -299,19 +317,12 @@ class Instrumenter {
       allSystems(system) = argQueue
     }
 
-    seenActors.clear()
+    reset_cancellables
     for ((system, argQueue) <- allSystems) {
       println("Shutting down the actor system. " + argQueue.size)
       if (alsoRestart) {
         system.registerOnTermination(reinitialize_system(system, argQueue))
       }
-      for (task <- registeredCancellableTasks.filterNot(c => c.isCancelled)) {
-        task.cancel()
-      }
-      registeredCancellableTasks.clear
-      ongoingCancellableTasks.clear
-      cancellableToTimer.clear
-      timerToCancellable.clear
       _executionStarted.set(false)
 
       system.shutdown()
@@ -405,6 +416,7 @@ class Instrumenter {
     inActor = false
     currentActor = ""
     scheduler.after_receive(cell) 
+
     
     scheduler.schedule_new_message(blockedActors) match {
       case Some((new_cell, envelope)) =>

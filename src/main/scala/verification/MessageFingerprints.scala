@@ -22,6 +22,11 @@ trait MessageFingerprinter {
     }
     return None
   }
+
+  // Some messages are known to only be sent by external threads. For those
+  // messages, parse them and return an id (a Long) for the external thread
+  // that sent the message. Otherwise return None.
+  def get_external_thread(msg: Any) : Option[Long] = None
 }
 
 // A simple fingerprint template for user-defined fingerprinters. Should
@@ -91,5 +96,16 @@ class FingerprintFactory {
       }
     }
     throw new IllegalStateException("Should have matched")
+  }
+
+  def get_external_thread(msg: Any) : Option[Long] = {
+    for (fingerprinter <- fingerprinters) {
+      val fingerprint = fingerprinter.get_external_thread(msg)
+      fingerprint match {
+        case None => None
+        case Some(id) => return Some(id)
+      }
+    }
+    return None
   }
 }

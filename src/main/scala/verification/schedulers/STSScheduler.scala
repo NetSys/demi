@@ -19,6 +19,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 // TODO(cs): STSSched ignores external WaitQuiescence events. That's a little
 // weird, since the minimization routines are feeding different combinations
 // of WaitQuiescence events as part of the external event subsequences, yet we
@@ -68,14 +72,20 @@ object STSScheduler {
 class STSScheduler(var original_trace: EventTrace,
                    allowPeek: Boolean,
                    messageFingerprinter: FingerprintFactory,
-                   enableFailureDetector:Boolean) extends AbstractScheduler
+                   enableFailureDetector:Boolean,
+                   disableCheckpointing:Boolean=false,
+                   shouldShutdownActorSystem:Boolean=true) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
   def this(original_trace: EventTrace) =
-      this(original_trace, false, new FingerprintFactory, true)
+      this(original_trace, false, new FingerprintFactory, true, false)
 
   def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 
-  enableCheckpointing()
+  val logger = LoggerFactory.getLogger("STSScheduler")
+
+  if (!disableCheckpointing) {
+    enableCheckpointing()
+  }
 
   if (!enableFailureDetector) {
     disableFailureDetector()
@@ -100,11 +110,23 @@ class STSScheduler(var original_trace: EventTrace,
   // Are we currently pausing the ActorSystem in order to invoke Peek()
   var pausing = new AtomicBoolean(false)
 
+  // Whether the recorded event trace indicates that we should (soon) be in a
+  // "UnignoreableEvents" block in the current execution, as indicated by the value
+  // of the ExternalEventInjector.unignorableEvents variable
+  var expectUnignorableEvents = false
+
+  // Whether the recorded event trace indicates that an external thread should be in a
+  // atomic block in the current execution, as indicated by the value
+  // of the ExternalEventInjector.externalAtomicBlocks variable.
+  // This is really just a sanity check.
+  var expectedExternalAtomicBlocks = new HashSet[Long]
+
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent],
             violationFingerprint: ViolationFingerprint,
-            stats: MinimizationStats) : Option[EventTrace] = {
+            stats: MinimizationStats,
+            initializationRoutine:Option[()=>Any]=None) : Option[EventTrace] = {
     assume(!original_trace.isEmpty)
     if (!(Instrumenter().scheduler eq this)) {
       throw new IllegalStateException("Instrumenter().scheduler not set!")
@@ -140,20 +162,32 @@ class STSScheduler(var original_trace: EventTrace,
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
                                   subsequenceIntersection(subseq)
-
     val updatedEvents = filtered.recomputeExternalMsgSends(subseq)
     event_orchestrator.set_trace(updatedEvents)
+
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
 
     currentlyInjecting.set(true)
+
+    // Kick off the system's initialization routine
+    initializationRoutine match {
+      case Some(f) =>
+        println("Running initializationRoutine...")
+        new Thread(
+          new Runnable { def run() = { f() } },
+          "initializationRoutine").start
+      case None =>
+    }
+
     // Start playing back trace
     advanceReplay()
     // Have this thread wait until the trace is down. This allows us to safely notify
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
-    val checkpoint = takeCheckpoint()
+    val checkpoint = if (_enableCheckpointing) takeCheckpoint() else
+                        new HashMap[String, Option[CheckpointReply]]
     val violation = test_invariant(subseq, checkpoint)
     var violationFound = false
     violation match {
@@ -241,9 +275,32 @@ class STSScheduler(var original_trace: EventTrace,
     var loop = true
     breakable {
       while (loop && !event_orchestrator.trace_finished) {
-        // println("Replaying " + event_orchestrator.traceIdx + "/" +
-        //   event_orchestrator.trace.length + " " + event_orchestrator.current_event)
+        logger.trace("Replaying " + event_orchestrator.traceIdx + "/" +
+          event_orchestrator.trace.length + " " + event_orchestrator.current_event)
         event_orchestrator.current_event match {
+          case BeginUnignorableEvents =>
+            assert(!expectUnignorableEvents)
+            expectUnignorableEvents = true
+          case EndUnignorableEvents =>
+            assert(expectUnignorableEvents)
+            expectUnignorableEvents = false
+          case BeginExternalAtomicBlock(id) =>
+            assert(!(expectedExternalAtomicBlocks contains id))
+            expectedExternalAtomicBlocks += id
+
+            // We block until the atomic block has finished
+            endedExternalAtomicBlocks.synchronized {
+              while (!(endedExternalAtomicBlocks contains id)) {
+                println("Blocking until endExternalAtomicBlock("+id+")")
+                // (Releases lock)
+                endedExternalAtomicBlocks.wait()
+                send_external_messages(false)
+              }
+              endedExternalAtomicBlocks -= id
+            }
+          case EndExternalAtomicBlock(id) =>
+            assert(expectedExternalAtomicBlocks contains id)
+            expectedExternalAtomicBlocks -= id
           case SpawnEvent (_, _, name, _) =>
             event_orchestrator.trigger_start(name)
           case KillEvent (name) =>
@@ -253,7 +310,7 @@ class STSScheduler(var original_trace: EventTrace,
           case UnPartitionEvent((a,b)) =>
             event_orchestrator.trigger_unpartition(a,b)
           // MsgSend is the initial send
-          case MsgSend (sender, receiver, message) =>
+          case m @ MsgSend (sender, receiver, message) =>
             // sender == "deadLetters" means the message is external.
             // N.B. we should have pruned all messages from the failure
             // detector -> actors from event_orchestrator.trace, to ensure
@@ -276,6 +333,7 @@ class STSScheduler(var original_trace: EventTrace,
               send_external_messages(false)
               val key = (m.sender, m.receiver,
                          messageFingerprinter.fingerprint(m.msg))
+
               return pendingEvents.get(key) match {
                 case Some(queue) =>
                   // The message is pending, but also double check that the
@@ -298,7 +356,26 @@ class STSScheduler(var original_trace: EventTrace,
               pausing.set(true)
               break
             }
-            // if (!allowPeek) we skip over this event
+
+            // OK, the message we expected is not here.
+            //
+            // Check if we should not ignore it because of an
+            // UnignorableEvents block
+            if (expectUnignorableEvents) {
+              // N.B. it should always be a dispatcher thread (or the main thread)
+              // that calls advanceReplay(), so we should be guarenteed that
+              // schedule_new_message will not be invoked while we are
+              // blocked here.
+              while (!messagePending(m)) {
+                println("Blocking until enqueue_message...")
+                messages_enqueued_but_not_sent.acquire()
+                messages_enqueued_but_not_sent.release()
+                // N.B. messagePending(m) invokes send_external_messages
+              }
+              // Yay, it became enabled.
+              break
+            }
+
             println("Ignoring message " + m)
           case Quiescence =>
             // This is just a nop. Do nothing
@@ -324,6 +401,10 @@ class STSScheduler(var original_trace: EventTrace,
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
+    if (logger.isTraceEnabled()) {
+      logger.trace("event_produced: " + snd + " -> " + rcv + " " + msg)
+    }
+
     val fingerprint = messageFingerprinter.fingerprint(msg)
     val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     var isTimer = false
@@ -467,6 +548,24 @@ class STSScheduler(var original_trace: EventTrace,
         // We have found the message we expect!
         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
         event_orchestrator.trace_advanced
+
+        if (logger.isTraceEnabled()) {
+          val cell = uniq.element._1
+          val envelope = uniq.element._2
+          val snd = envelope.sender.path.name
+          val rcv = cell.self.path.name
+          val msg = envelope.message
+          logger.trace("schedule_new_message(): " + snd + " -> " + rcv + " " + msg)
+        }
+
+        // If execution ended, don't schedule!
+        if (Instrumenter()._waitForExecutionStart.get && !Instrumenter()._executionStarted.get) {
+          println("Execution ended! Not proceeding with schedule_new_message")
+          schedSemaphore.release()
+          traceSem.release()
+          return None
+        }
+
         schedSemaphore.release
         return Some(uniq.element)
       case None =>
@@ -551,10 +650,12 @@ class STSScheduler(var original_trace: EventTrace,
 
   override def reset_all_state() {
     super.reset_all_state
-    reset_state
+    reset_state(shouldShutdownActorSystem)
     firstMessage = true
     pendingEvents.clear
     pendingSystemMessages.clear
+    expectUnignorableEvents = false
+    expectedExternalAtomicBlocks = new HashSet[Long]
     pausing = new AtomicBoolean(false)
   }
 }

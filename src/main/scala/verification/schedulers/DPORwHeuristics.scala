@@ -1434,7 +1434,8 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   // check out minimization/IncrementalDeltaDebugging.scala.
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
-           _stats: MinimizationStats) : Option[EventTrace] = {
+           _stats: MinimizationStats,
+           init:Option[()=>Any]=None) : Option[EventTrace] = {
     assert(_initialDegGraph != null)
     assert(_initialTrace != null)
     if (shortestTraceSoFar != null) {

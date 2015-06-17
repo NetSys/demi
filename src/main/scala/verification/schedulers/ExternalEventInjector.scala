@@ -10,6 +10,7 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.immutable.Set
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.SynchronizedSet
 import scala.collection.mutable.Iterable
 import scala.collection.generic.Clearable
 
@@ -24,9 +25,9 @@ final case object FailureDetectorQuery extends MessageType
 final case object CheckpointReplyMessage extends MessageType
 
 /**
- * A mix-in for schedulers that take external events as input, and generate
- * executions containing both external and internal events as output.
- */
+  * A mix-in for schedulers that take external events as input, and generate
+  * executions containing both external and internal events as output.
+  */
 trait ExternalEventInjector[E] {
 
   var event_orchestrator = new EventOrchestrator[E]()
@@ -97,8 +98,8 @@ trait ExternalEventInjector[E] {
   var enqueuedExternalMessages = new MultiSet[Any]
 
   // A set of external messages to send. Messages sent between actors are not
-  // queued here. Tuple is: (sender, receiver, msg)
-  var messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]()
+  // queued here. Tuple is: (sender, receiver, msg, isTimer)
+  var messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any, Boolean)]()
 
   // Whether populateActors has been invoked.
   var alreadyPopulated = false
@@ -117,6 +118,81 @@ trait ExternalEventInjector[E] {
   var quiescenceCallback : QuiescenceCallback = () => None
   def setQuiescenceCallback(c: QuiescenceCallback) { quiescenceCallback = c }
 
+  // When enqueue_message is invoked, release a ticket. When that message is
+  // sent (via send_external_messages), acquire a ticket.
+  //
+  // Note that in the steady state, this semaphore never blocks -- it is only
+  // when acquire() is called outside of enqueue_message that this semaphore
+  // blocks until a message has been enqueued but not yet sent. When calling
+  // send_external_messages after having blocked on acquire(), the caller must
+  // first release().
+  var messages_enqueued_but_not_sent = new Semaphore(0)
+
+  // Whether we are currently processing an "UnignorableEvents" block
+  var unignorableEvents = new AtomicBoolean(false)
+
+  // All external thread ids that are currently in a
+  // "AtomicBlock", i.e. a BeginAtomicBlock has occured but not yet an
+  // EndAtomicBlock.
+  var endedExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
+
+  /**
+   * Until endUnignorableEvents is invoked, mark all events that we record
+   * as "unignorable", i.e., during replay, don't ever skip over them.
+   *
+   * Called by external threads.
+   */
+  def beginUnignorableEvents() {
+    assert(!unignorableEvents.get())
+    unignorableEvents.set(true)
+    // TODO(cs): should these be placed into messagesToSend too?
+    event_orchestrator.events += BeginUnignorableEvents
+  }
+
+  /**
+   * Pre: beginUnignorableEvents was previously invoked.
+   *
+   * Called by external threads.
+   */
+  def endUnignorableEvents() {
+    assert(unignorableEvents.get())
+    println("endUnignorableEvents")
+    unignorableEvents.set(false)
+    // TODO(cs): should these be placed into messagesToSend too?
+    event_orchestrator.events += EndUnignorableEvents
+  }
+
+  /**
+   * Within receive(), an internal thread has just created an external thread.
+   * (before that external thread has necessarily been scheduled).
+   *
+   * This method indicates the start of the external thread's `atomic block`, where
+   * it will now send some number of messages. Upon replay, wait until the end of the
+   * atomic block before deciding whether those messages are or are not going
+   * to show up.
+   */
+  def beginExternalAtomicBlock(taskId: Long) {
+    // Place the marker into the current place in messagesToSend; any messages
+    // already enqueued before this are not part of the
+    // beginExternalAtomicBlock
+    messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId), false))
+  }
+
+  /**
+   * Pre: beginExternalAtomicBlock was previously invoked.
+   *
+   * Called by external threads.
+   */
+  def endExternalAtomicBlock(taskId: Long) {
+    // Place the marker into the current place in messagesToSend; any messages
+    // already enqueued before this are part of the atomic block.
+    messagesToSend += ((None, null, EndExternalAtomicBlock(taskId), false))
+    // Signal that the main thread should invoke send_external_messages
+    endedExternalAtomicBlocks.synchronized {
+      endedExternalAtomicBlocks.notifyAll()
+    }
+  }
+
   // Enqueue an external message for future delivery
   def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
@@ -128,7 +204,10 @@ trait ExternalEventInjector[E] {
 
   def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
     enqueuedExternalMessages += msg
-    messagesToSend += ((sender, actor, msg))
+    messagesToSend += ((sender, actor, msg, false))
+
+    // Give out a ticket
+    messages_enqueued_but_not_sent.release()
 
     if (dispatchAfterEnqueueMessage.get()) {
       dispatchAfterEnqueueMessage.set(false)
@@ -142,7 +221,7 @@ trait ExternalEventInjector[E] {
   // Enqueue a timer message for future delivery
   def handle_timer(receiver: String, msg: Any) {
     if (event_orchestrator.actorToActorRef contains receiver) {
-      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
+      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg, true))
     } else {
       println("WARNING! Unknown timer receiver " + receiver)
     }
@@ -155,6 +234,9 @@ trait ExternalEventInjector[E] {
   // Initiates message sends for all messages in messagesToSend. Note that
   // delivery does not occur immediately! These messages will subsequently show
   // up in event_produced as messages to be scheduled by schedule_new_message.
+  //
+  // When calling send_external_messages after having blocked on
+  // messages_enqueued_but_not_sent.acquire(), the caller should first release().
   def send_external_messages(acquireSemaphore: Boolean) {
     // Ensure that only one thread is accessing shared scheduler structures
     if (acquireSemaphore) {
@@ -166,12 +248,30 @@ trait ExternalEventInjector[E] {
     fd.send_all_pending_responses()
     // Drain message queue
     Instrumenter().sendKnownExternalMessages(() => {
-      for ((senderOpt, receiver, msg) <- messagesToSend) {
-        senderOpt match {
-          case Some(sendRef) =>
-            receiver.!(msg)(sendRef)
-          case None =>
-            receiver ! msg
+      for ((senderOpt, receiver, msg, isTimer) <- messagesToSend) {
+        // Check if the message is actually a special marker
+        msg match {
+          case BeginExternalAtomicBlock(taskId) =>
+            event_orchestrator.events += BeginExternalAtomicBlock(taskId)
+          case EndExternalAtomicBlock(taskId) =>
+            endedExternalAtomicBlocks += taskId
+            endedExternalAtomicBlocks.synchronized {
+              endedExternalAtomicBlocks.notifyAll()
+            }
+            event_orchestrator.events += EndExternalAtomicBlock(taskId)
+          case _ =>
+            // It's a normal message
+            senderOpt match {
+              case Some(sendRef) =>
+                receiver.!(msg)(sendRef)
+              case None =>
+                receiver ! msg
+            }
+            // Take back the ticket. There should always be one to take back, i.e.
+            // this call should never block
+            if (!isTimer) {
+              assert(messages_enqueued_but_not_sent.tryAcquire())
+            }
         }
       }
     })
@@ -202,7 +302,8 @@ trait ExternalEventInjector[E] {
   // Given an external event trace, see the events produced
   // if terminationCallback != None, don't block the main thread!
   def execute_trace (_trace: Seq[E with ExternalEvent],
-                     _terminationCallback: Option[(EventTrace) => Any]=None) : EventTrace = {
+                     _terminationCallback: Option[(EventTrace) => Any]=None)
+                   : EventTrace = {
     terminationCallback = _terminationCallback
     MessageTypes.sanityCheckTrace(_trace)
     event_orchestrator.set_trace(_trace)
@@ -280,14 +381,13 @@ trait ExternalEventInjector[E] {
   }
 
   def prepareCheckpoint() = {
-    val actorRefs = event_orchestrator.
-                       actorToActorRef.
-                       filterNot({case (k,v) => ActorTypes.systemActor(k)}).
-                       values.toSeq
+    val actorRefs = event_orchestrator.actorToActorRef.
+                      filterNot({case (k,v) => ActorTypes.systemActor(k)}).
+                      values.toSeq
     val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.
-    val existingExternals = new Queue[(Option[ActorRef], ActorRef, Any)] ++ messagesToSend
+    val existingExternals = new Queue[(Option[ActorRef], ActorRef, Any, Boolean)] ++ messagesToSend
     messagesToSend.clear
     for ((actor, request) <- checkpointRequests) {
       enqueue_message(None, actor, request)
@@ -414,9 +514,11 @@ trait ExternalEventInjector[E] {
   /**
    * Reset ourselves and the Instrumenter to a initial clean state.
    */
-  def reset_state () = {
+  def reset_state (shutdown: Boolean) = {
     println("resetting state...")
-    handle_shutdown()
+    if (shutdown) {
+      handle_shutdown()
+    }
     event_orchestrator = new EventOrchestrator[E]()
     fd = new FDMessageOrchestrator(enqueue_message)
     if (!_disableFailureDetector) {
@@ -433,7 +535,10 @@ trait ExternalEventInjector[E] {
     started.set(false)
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
-    messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]
+    messages_enqueued_but_not_sent = new Semaphore(0)
+    unignorableEvents = new AtomicBoolean(false)
+    endedExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
+    messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any, Boolean)]
     alreadyPopulated = false
     println("state reset.")
   }
