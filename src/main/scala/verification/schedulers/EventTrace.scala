@@ -236,7 +236,8 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
   // Filter all external events in original_trace that aren't in subseq.
   // As an optimization, also filter out some internal events that we know a priori
   // aren't going to occur in the subsequence execution.
-  def subsequenceIntersection(subseq: Seq[ExternalEvent]) : EventTrace = {
+  def subsequenceIntersection(subseq: Seq[ExternalEvent],
+                              filterKnownAbsents:Boolean=true) : EventTrace = {
     // Walk through all events in original_trace. As we walk through, check if
     // the current event corresponds to an external event at the head of subseq. If it does, we
     // include that in result, and pop off the head of subseq. Otherwise that external event has been
@@ -305,14 +306,15 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
       } // close else
     } // close for
 
-    val filtered = filterSends(result, subseq)
+    val filtered = filterSends(result, subseq, filterKnownAbsents=filterKnownAbsents)
     val filteredQueue = new SynchronizedQueue[Event]
     filteredQueue ++= filtered
     return new EventTrace(filteredQueue, original_externals)
   }
 
   private[this] def filterSends(events: Queue[Event],
-                                subseq: Seq[ExternalEvent]) : Queue[Event] = {
+                                subseq: Seq[ExternalEvent],
+                                filterKnownAbsents:Boolean=true) : Queue[Event] = {
     // We assume that Send messages are sent in FIFO order, i.e. so that the
     // the zero-th MsgSend event from deadLetters corresponds to the zero-th Send event.
 
@@ -350,8 +352,7 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     var msg_send_idx = -1
     val pruned_msg_ids = new HashSet[Int]
 
-    // N.B. it'd be nicer to use a filter() here, but it isn't guarenteed to
-    // iterate left to right according to the spec.
+    // N.B. it'd be nicer to use a filter() here
     var remaining = new Queue[Event]()
 
     for (e <- events) {
@@ -377,7 +378,10 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
       } // end match
     } // end for
 
-    return filterKnownAbsentInternals(remaining, subseq)
+    if (filterKnownAbsents) {
+      return filterKnownAbsentInternals(remaining, subseq)
+    }
+    return remaining
   }
 
   // Remove internal events that we know a priori aren't going to occur for

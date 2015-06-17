@@ -74,10 +74,11 @@ class STSScheduler(var original_trace: EventTrace,
                    messageFingerprinter: FingerprintFactory,
                    enableFailureDetector:Boolean,
                    disableCheckpointing:Boolean=false,
-                   shouldShutdownActorSystem:Boolean=true) extends AbstractScheduler
+                   shouldShutdownActorSystem:Boolean=true,
+                   filterKnownAbsents:Boolean=true) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
   def this(original_trace: EventTrace) =
-      this(original_trace, false, new FingerprintFactory, true, false)
+      this(original_trace, false, new FingerprintFactory, true, false, true)
 
   def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 
@@ -161,7 +162,7 @@ class STSScheduler(var original_trace: EventTrace,
     // We use the original trace as our reference point as we step through the
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
-                                  subsequenceIntersection(subseq)
+                                  subsequenceIntersection(subseq, filterKnownAbsents=filterKnownAbsents)
     val updatedEvents = filtered.recomputeExternalMsgSends(subseq)
     event_orchestrator.set_trace(updatedEvents)
 
@@ -311,7 +312,7 @@ class STSScheduler(var original_trace: EventTrace,
             event_orchestrator.trigger_unpartition(a,b)
           // MsgSend is the initial send
           case m @ MsgSend (sender, receiver, message) =>
-            // sender == "deadLetters" means the message is external.
+            // sender == "deadLetters" means the message is a Send event.
             // N.B. we should have pruned all messages from the failure
             // detector -> actors from event_orchestrator.trace, to ensure
             // that we don't send redundant messages.

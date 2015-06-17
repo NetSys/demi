@@ -8,7 +8,7 @@ import akka.actor.ActorPath
 import akka.pattern.PromiseActorRef
 import akka.actor.Actor
 import akka.actor.PoisonPill
-import akka.actor.Props;
+import akka.actor.Props
 import akka.actor.Cancellable
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
