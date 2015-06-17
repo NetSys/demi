@@ -44,7 +44,8 @@ trait TestOracle {
   // describe in the paper...
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
-           stats: MinimizationStats) : Option[EventTrace]
+           stats: MinimizationStats,
+           initializationRoutine:Option[()=>Any]=None) : Option[EventTrace]
 }
 
 object StatelessTestOracle {
@@ -70,7 +71,8 @@ class StatelessTestOracle(oracle_ctor: StatelessTestOracle.OracleConstructor) ex
 
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
-           stats: MinimizationStats) : Option[EventTrace] = {
+           stats: MinimizationStats,
+           init:Option[()=>Any]=None) : Option[EventTrace] = {
     val oracle = oracle_ctor()
     try {
       Instrumenter().scheduler = oracle.asInstanceOf[Scheduler]
@@ -78,7 +80,7 @@ class StatelessTestOracle(oracle_ctor: StatelessTestOracle.OracleConstructor) ex
       case e: Exception => println("oracle not a scheduler?")
     }
     oracle.setInvariant(invariant)
-    val result = oracle.test(events, violation_fingerprint, stats)
+    val result = oracle.test(events, violation_fingerprint, stats, init)
     Instrumenter().restart_system
     return result
   }

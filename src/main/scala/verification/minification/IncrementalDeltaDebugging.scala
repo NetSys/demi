@@ -94,13 +94,14 @@ class ResumableDPOR(ctor: ResumableDPOR.DPORConstructor) extends TestOracle {
 
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
-           stats: MinimizationStats) : Option[EventTrace] = {
+           stats: MinimizationStats,
+           init:Option[()=>Any]=None) : Option[EventTrace] = {
     if (!(subseqToDPOR contains events)) {
       subseqToDPOR(events) = ctor()
       subseqToDPOR(events).setInvariant(invariant)
     }
     val dpor = subseqToDPOR(events)
     dpor.setMaxDistance(currentMaxDistance)
-    return dpor.test(events, violation_fingerprint, stats)
+    return dpor.test(events, violation_fingerprint, stats, init)
   }
 }

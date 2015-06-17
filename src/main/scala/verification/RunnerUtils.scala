@@ -1,6 +1,7 @@
 package akka.dispatch.verification
 
 import scala.collection.mutable.Queue
+import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.HashSet
 
 import akka.actor.Props
@@ -471,7 +472,9 @@ object RunnerUtils {
           Some(e)
       }
       if (foundIgnoredEvent) {
-        return Some(new EventTrace(new Queue[Event] ++ modified,
+        val queue = new SynchronizedQueue[Event]
+        queue ++= modified
+        return Some(new EventTrace(queue,
                                    verified_mcs.original_externals))
       }
       // We didn't find anything else to ignore, so we're done

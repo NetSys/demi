@@ -171,7 +171,8 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
-           stats: MinimizationStats) : Option[EventTrace] = {
+           stats: MinimizationStats,
+           init:Option[()=>Any]=None) : Option[EventTrace] = {
     Instrumenter().scheduler = this
     peek(events)
     if (test_invariant == null) {
@@ -191,7 +192,7 @@ class PeekScheduler(enableFailureDetector: Boolean)
     }
 
     // reset ExternalEventInjector
-    reset_state
+    reset_state(true)
     // reset FairScheduler
     reset_all_state
 
