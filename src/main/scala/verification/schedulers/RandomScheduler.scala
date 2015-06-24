@@ -164,16 +164,16 @@ class RandomScheduler(max_executions: Int,
         return Some((event_trace, fingerprint))
       // Else, check the invariant condition one last time.
       case None =>
+        var checkpoint = new HashMap[String, Option[CheckpointReply]]
         if (!disableCheckpointing) {
-          var checkpoint : HashMap[String, Option[CheckpointReply]] = null
           checkpoint = takeCheckpoint()
-          val violation = test_invariant(trace, checkpoint)
-          violationFound = violationMatches(violation)
-          violationFound match {
-            case Some(fingerprint) =>
-              return Some((event_trace, fingerprint))
-            case None => None
-          }
+        }
+        val violation = test_invariant(trace, checkpoint)
+        violationFound = violationMatches(violation)
+        violationFound match {
+          case Some(fingerprint) =>
+            return Some((event_trace, fingerprint))
+          case None => None
         }
     }
     return None
@@ -273,7 +273,7 @@ class RandomScheduler(max_executions: Int,
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    assert(started.get(), "!started.get():" + snd + " -> " + rcv + " " + msg)
+    assert(started.get(), "!started.get(): " + snd + " -> " + rcv + " " + msg)
     if (logger.isTraceEnabled()) {
       logger.trace("event_produced: " + snd + " -> " + rcv + " " + msg)
     }
@@ -351,11 +351,26 @@ class RandomScheduler(max_executions: Int,
         (messagesScheduledSoFar % invariant_check_interval) == 0 &&
         !blockedOnCheckpoint.get() &&
         lastCheckpoint != messagesScheduledSoFar) {
-      // N.B. we check the invariant once we have received all
-      // CheckpointReplies.
       println("Checking invariant")
-      lastCheckpoint = messagesScheduledSoFar
-      prepareCheckpoint()
+
+      if (disableCheckpointing) {
+        // If no checkpointing, go ahead and check the invariant now
+        var checkpoint = new HashMap[String, Option[CheckpointReply]]
+        val violation = test_invariant(trace, checkpoint)
+        violationFound = violationMatches(violation)
+        // Return early if we found one.
+        violationFound match {
+          case Some(fingerprint) =>
+            return None
+          case None =>
+            None
+        }
+      } else {
+        // Otherwise we check the invariant once we have received all
+        // CheckpointReplies.
+        lastCheckpoint = messagesScheduledSoFar
+        prepareCheckpoint()
+      }
     }
 
     // Invoked when we're about to schedule a non-repeating timer.
