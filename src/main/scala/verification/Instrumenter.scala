@@ -707,9 +707,12 @@ object Instrumenter {
     obj
   }
 
-  // Hack: check if name matches `.*dispatcher.*`. Hope that external
+  // Hack: check if name matches `.*dispatcher.*`, and moreover that the
+  // dispatcher thread is not running asynchronously (out of our control) to
+  // invoke an actor's preStart method. Hope that external
   // thread names don't match this pattern!
   def threadNameIsAkkaInternal() : Boolean = {
-    return Thread.currentThread.getName().contains("dispatcher")
+    return Thread.currentThread.getName().contains("dispatcher") &&
+           !Thread.currentThread().getStackTrace().map(e => e.getMethodName).exists(e => e == "preStart")
   }
 }
