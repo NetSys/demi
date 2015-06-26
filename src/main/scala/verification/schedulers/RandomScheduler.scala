@@ -447,7 +447,10 @@ class RandomScheduler(max_executions: Int,
         // the trace.
         println("Violation found early. Halting")
         started.set(false)
-        traceSem.release()
+        terminationCallback match {
+          case None => traceSem.release
+          case Some(f) => f(event_orchestrator.events)
+        }
     }
   }
 
