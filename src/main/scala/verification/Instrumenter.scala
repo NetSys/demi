@@ -86,11 +86,8 @@ class Instrumenter {
   var counter = 0   
   // Whether we're currently dispatching.
   var started = new AtomicBoolean(false)
-  // Whether the scheduler has started actively controlling the execution.
-  var _executionStarted = new AtomicBoolean(false)
-  // Whether to ignore (pass-through) all events until executionStarted() has
-  // been invoked.
-  var _waitForExecutionStart = new AtomicBoolean(false)
+  // Whether to ignore (pass-through) all events
+  var _passThrough = new AtomicBoolean(false)
   // If an actor blocks while it is `receive`ing, we need to continue making
   // progress by finding a new message to schedule. While that actor is
   // blocked, we should not deliver any messages to it. This data structure
@@ -163,18 +160,13 @@ class Instrumenter {
     tellEnqueue.await()
   }
 
-  // Whether to ignore (pass-through) all events until executionStarted() has
-  // been invoked.
-  def waitForExecutionStart() {
-    _waitForExecutionStart.set(true)
+  // Whether to ignore (pass-through) all events
+  def setPassthrough() {
+    _passThrough.set(true)
   }
 
-  def executionStarted() {
-    _executionStarted.set(true)
-  }
-
-  def executionEnded() {
-    _executionStarted.set(false)
+  def unsetPassthrough() {
+    _passThrough.set(false)
   }
 
   /**
@@ -205,7 +197,7 @@ class Instrumenter {
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
     assert(receiver != null)
 
-    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
+    if (_passThrough.get()) {
       return true
     }
 
@@ -234,7 +226,7 @@ class Instrumenter {
   def new_actor(system: ActorSystem, 
       props: Props, name: String, actor: ActorRef) : Unit = {
 
-    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
+    if (_passThrough.get()) {
       return
     }
    
@@ -273,7 +265,6 @@ class Instrumenter {
     allowedEvents.clear()
     dispatchers.clear()
     Util.logger.reset()
-    _executionStarted.set(false)
   }
 
   // Restart the system:
@@ -323,7 +314,6 @@ class Instrumenter {
       if (alsoRestart) {
         system.registerOnTermination(reinitialize_system(system, argQueue))
       }
-      _executionStarted.set(false)
 
       system.shutdown()
 
@@ -351,6 +341,9 @@ class Instrumenter {
   
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell, msg: Any) {
+    if (_passThrough.get()) {
+      return
+    }
     if (scheduler.isSystemMessage(
         cell.sender.path.name, 
         cell.self.path.name,
@@ -368,6 +361,10 @@ class Instrumenter {
    * To make progress, dispatch a new message.
    */
   def actorBlocked() {
+    if (_passThrough.get()) {
+      return
+    }
+
     if (!Instrumenter.threadNameIsAkkaInternal) {
       // External thread, so we don't care if it blocks.
       return
@@ -394,14 +391,14 @@ class Instrumenter {
   
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell, msg: Any) {
+    if (_passThrough.get()) {
+      return
+    }
+
     if (scheduler.isSystemMessage(
         cell.sender.path.name,
         cell.self.path.name,
         msg)) return
-
-    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
-      return
-    }
 
     if (logger.isTraceEnabled()) {
       logger.trace("afterMessageReceive: just finished: " + cell.sender.path.name + " -> " +
@@ -435,6 +432,10 @@ class Instrumenter {
 
   // Return whether to allow the answer through or not
   def receiveAskAnswer(temp: PromiseActorRef, msg: Any, sender: ActorRef) : Boolean = {
+    if (_passThrough.get()) {
+      return true
+    }
+
     if (!(actorMappings contains sender.path.name)) {
       // System message
       return true
@@ -517,6 +518,10 @@ class Instrumenter {
   // Called when dispatch is called.
   def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
       envelope: Envelope): Boolean = {
+    if (_passThrough.get()) {
+      return true
+    }
+
     val value: (ActorCell, Envelope) = (cell, envelope)
     val receiver = cell.self
     val snd = envelope.sender.path.name
@@ -524,10 +529,6 @@ class Instrumenter {
 
     // If this is a system message just let it through.
     if (scheduler.isSystemMessage(snd, rcv, envelope.message)) {
-      return true
-    }
-
-    if (!_executionStarted.get() && _waitForExecutionStart.get()) {
       return true
     }
 

@@ -560,7 +560,7 @@ class STSScheduler(var original_trace: EventTrace,
         }
 
         // If execution ended, don't schedule!
-        if (Instrumenter()._waitForExecutionStart.get && !Instrumenter()._executionStarted.get) {
+        if (Instrumenter()._passThrough.get) {
           println("Execution ended! Not proceeding with schedule_new_message")
           schedSemaphore.release()
           traceSem.release()
