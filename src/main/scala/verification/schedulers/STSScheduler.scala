@@ -136,6 +136,7 @@ class STSScheduler(var original_trace: EventTrace,
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
+
     // We only ever replay once
     if (stats != null) {
       stats.increment_replays()

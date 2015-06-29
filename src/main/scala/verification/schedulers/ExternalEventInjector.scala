@@ -126,6 +126,9 @@ trait ExternalEventInjector[E] {
   // EndAtomicBlock.
   var endedExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
 
+  // how many external atomic blocks are currently running
+  var pendingExternalAtomicBlocks = new AtomicInteger(0)
+
   /**
    * Until endUnignorableEvents is invoked, mark all events that we record
    * as "unignorable", i.e., during replay, don't ever skip over them.
@@ -166,6 +169,9 @@ trait ExternalEventInjector[E] {
     // already enqueued before this are not part of the
     // beginExternalAtomicBlock
     messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
+    pendingExternalAtomicBlocks.incrementAndGet()
+    // We shouldn't be dispatching while the atomic block executes.
+    Instrumenter().stopDispatch.set(true)
   }
 
   /**
@@ -180,6 +186,15 @@ trait ExternalEventInjector[E] {
     // Signal that the main thread should invoke send_external_messages
     endedExternalAtomicBlocks.synchronized {
       endedExternalAtomicBlocks.notifyAll()
+    }
+    if (pendingExternalAtomicBlocks.decrementAndGet() == 0) {
+      if (Instrumenter().stopDispatch.get()) {
+        // Still haven't stopped dispatch, so don't restart
+        Instrumenter().stopDispatch.set(false)
+      } else {
+        println("Restarting dispatch!")
+        Instrumenter().start_dispatch
+      }
     }
   }
 
@@ -213,11 +228,12 @@ trait ExternalEventInjector[E] {
 
   // Enqueue a timer message for future delivery
   def handle_timer(receiver: String, msg: Any) {
-    if (event_orchestrator.actorToActorRef contains receiver) {
-      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg, true))
-    } else {
-      println("WARNING! Unknown timer receiver " + receiver)
-    }
+    // XXX
+    // if (event_orchestrator.actorToActorRef contains receiver) {
+    //   messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
+    // } else {
+    //   println("WARNING! Unknown timer receiver " + receiver)
+    // }
   }
 
   def send_external_messages() {

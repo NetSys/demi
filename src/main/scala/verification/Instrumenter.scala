@@ -88,6 +88,8 @@ class Instrumenter {
   var started = new AtomicBoolean(false)
   // Whether to ignore (pass-through) all events
   var _passThrough = new AtomicBoolean(false)
+  // Whether to stop dispatch at the next afterMessageReceive()
+  var stopDispatch = new AtomicBoolean(false)
   // If an actor blocks while it is `receive`ing, we need to continue making
   // progress by finding a new message to schedule. While that actor is
   // blocked, we should not deliver any messages to it. This data structure
@@ -412,8 +414,14 @@ class Instrumenter {
 
     inActor = false
     currentActor = ""
-    scheduler.after_receive(cell) 
 
+    if (stopDispatch.get()) {
+      println("Stopping dispatch..")
+      stopDispatch.set(false)
+      return
+    }
+
+    scheduler.after_receive(cell) 
     
     scheduler.schedule_new_message(blockedActors) match {
       case Some((new_cell, envelope)) =>
