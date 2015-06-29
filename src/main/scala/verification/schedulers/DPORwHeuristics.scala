@@ -179,8 +179,7 @@ class ArvindDistanceOrdering extends BacktrackOrdering {
  *   - depth_bound: determines the maximum depGraph path from the root to the messages
  *     played. Note that this differs from maxMessagesToSchedule.
  */
-class DPORwHeuristics(enableCheckpointing: Boolean,
-  messageFingerprinter: FingerprintFactory,
+class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   prioritizePendingUponDivergence:Boolean=false,
   backtrackHeuristic:BacktrackOrdering=new DefaultBacktrackOrdering,
   invariant_check_interval:Int=0,
@@ -188,8 +187,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
   val logger = LoggerFactory.getLogger("DPOR")
 
-  def this() = this(false, new FingerprintFactory, false,
-                    new DefaultBacktrackOrdering, 0, None)
+  val messageFingerprinter = schedulerConfig.messageFingerprinter
 
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
@@ -280,7 +278,11 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
   var nextQuiescentPeriod = 0
   var quiescentMarker:Unique = null
 
-  var test_invariant : Invariant = null
+  var test_invariant : Invariant = schedulerConfig.invariant_check match {
+    case Some(i) => i
+    case None => null
+  }
+
   // Whether we are currently awaiting checkpoint responses from actors.
   var blockedOnCheckpoint = new AtomicBoolean(false)
   var stats: MinimizationStats = null
@@ -297,7 +299,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     _initialDegGraph = g
   }
   var checkpointer : CheckpointCollector =
-    if (enableCheckpointing) new CheckpointCollector else null
+    if (schedulerConfig.enableCheckpointing) new CheckpointCollector else null
 
   def nullFunPost(trace: Trace) : Unit = {}
   def nullFunDone(graph: Graph[Unique, DiEdge]) : Unit = {}
@@ -634,7 +636,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
     // Now on to actually picking a message to schedule.
     // First check if it's time to check invariants.
-    if (enableCheckpointing &&
+    if (schedulerConfig.enableCheckpointing &&
         !blockedOnCheckpoint.get &&
         invariant_check_interval > 0 &&
         (messagesScheduledSoFar % invariant_check_interval) == 0 &&
@@ -829,7 +831,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
     isolatedActors ++= actorNames
 
-    if (enableCheckpointing) {
+    if (schedulerConfig.enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
   }
@@ -974,7 +976,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     if (rcv == CheckpointSink.name) {
-      assert(enableCheckpointing)
+      assert(schedulerConfig.enableCheckpointing)
       checkpointer.handleCheckpointResponse(envelope.message, snd)
       if (checkpointer.done && !blockedOnCheckpoint.get) {
         checkInvariant()
@@ -1059,7 +1061,7 @@ class DPORwHeuristics(enableCheckpointing: Boolean,
 
       runExternal()
     } else {
-      if (enableCheckpointing && test_invariant != null) {
+      if (schedulerConfig.enableCheckpointing && test_invariant != null) {
         if (blockedOnCheckpoint.get) {
           // We've finished our checkpoint. Check our invariant. If it fails,
           // stop exploring! Otherwise, continue exploring schedules.

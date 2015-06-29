@@ -74,19 +74,10 @@ object IntervalPeekScheduler {
  */
 // N.B. both expected and lookingFor should have their msg fields as a MessageFingerprint instead
 // of the raw message.
-class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
-                            max_peek_messages: Int,
-                            messageFingerprinter: FingerprintFactory,
-                            enableFailureDetector: Boolean) extends
-      ReplayScheduler(messageFingerprinter, enableFailureDetector, false) {
-
-  def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) =
-      this(expected, lookingFor, 10, new FingerprintFactory, true)
-
-  if (!enableFailureDetector) {
-    disableFailureDetector
-  }
-
+class IntervalPeekScheduler(schedulerConfig: SchedulerConfig,
+                            expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
+                            max_peek_messages:Int=10) extends
+      ReplayScheduler(schedulerConfig, false) {
   // Whether we are currently restoring the checkpoint (by replaying a prefix
   // of events), or have moved on to peeking.
   val doneReplayingPrefix = new AtomicBoolean(false)

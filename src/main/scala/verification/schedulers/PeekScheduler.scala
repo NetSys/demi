@@ -24,9 +24,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * PeekScheduler finally returns all events observed during the execution, including
  * external and internal events.
  */
-class PeekScheduler(enableFailureDetector: Boolean)
+class PeekScheduler(val schedulerConfig: SchedulerConfig)
     extends FairScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this() = this(true)
 
   def getName: String = "FairScheduler"
 
@@ -39,12 +38,9 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
   var messagesScheduledSoFar = 0
 
-  var test_invariant : Invariant = null
-
-  enableCheckpointing()
-
-  if (!enableFailureDetector) {
-    disableFailureDetector()
+  var test_invariant : Invariant = schedulerConfig.invariant_check match {
+    case Some(i) => i
+    case None => null
   }
 
   def peek (_trace: Seq[ExternalEvent]) : EventTrace = {

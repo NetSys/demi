@@ -36,17 +36,13 @@ import org.slf4j.LoggerFactory,
  * Additionally records internal and external events that occur during
  * executions that trigger violations.
  */
-class RandomScheduler(max_executions: Int,
-                      messageFingerprinter: FingerprintFactory,
-                      enableFailureDetector: Boolean,
-                      invariant_check_interval: Int,
-                      disableCheckpointing: Boolean)
+class RandomScheduler(val schedulerConfig: SchedulerConfig,
+                      max_executions:Int=1,
+                      invariant_check_interval:Int=0)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this(max_executions: Int) = this(max_executions, new FingerprintFactory, true, 0, false)
-  def this(max_executions: Int, enableFailureDetector: Boolean) =
-      this(max_executions, new FingerprintFactory, enableFailureDetector, 0, false)
-
   def getName: String = "RandomScheduler"
+
+  val messageFingerprinter = schedulerConfig.messageFingerprinter
 
   val logger = LoggerFactory.getLogger("RandomScheduler")
 
@@ -57,16 +53,9 @@ class RandomScheduler(max_executions: Int,
     maxMessages = _maxMessages
   }
 
-  var test_invariant : Invariant = null
-
-  // TODO(cs): separate enableFailureDetector and disableCheckpointing out
-  // into a config object, passed in to all schedulers..
-  if (!enableFailureDetector) {
-    disableFailureDetector()
-  }
-
-  if (!disableCheckpointing) {
-    enableCheckpointing()
+  var test_invariant : Invariant = schedulerConfig.invariant_check match {
+    case Some(i) => i
+    case None => null
   }
 
   // Current set of enabled events.
@@ -164,16 +153,16 @@ class RandomScheduler(max_executions: Int,
         return Some((event_trace, fingerprint))
       // Else, check the invariant condition one last time.
       case None =>
-        if (!disableCheckpointing) {
-          var checkpoint : HashMap[String, Option[CheckpointReply]] = null
+        var checkpoint = new HashMap[String, Option[CheckpointReply]]
+        if (schedulerConfig.enableCheckpointing) {
           checkpoint = takeCheckpoint()
-          val violation = test_invariant(trace, checkpoint)
-          violationFound = violationMatches(violation)
-          violationFound match {
-            case Some(fingerprint) =>
-              return Some((event_trace, fingerprint))
-            case None => None
-          }
+        }
+        val violation = test_invariant(trace, checkpoint)
+        violationFound = violationMatches(violation)
+        violationFound match {
+          case Some(fingerprint) =>
+            return Some((event_trace, fingerprint))
+          case None => None
         }
     }
     return None
@@ -273,7 +262,7 @@ class RandomScheduler(max_executions: Int,
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
-    assert(started.get(), "!started.get():" + snd + " -> " + rcv + " " + msg)
+    assert(started.get(), "!started.get(): " + snd + " -> " + rcv + " " + msg)
     if (logger.isTraceEnabled()) {
       logger.trace("event_produced: " + snd + " -> " + rcv + " " + msg)
     }
@@ -351,11 +340,26 @@ class RandomScheduler(max_executions: Int,
         (messagesScheduledSoFar % invariant_check_interval) == 0 &&
         !blockedOnCheckpoint.get() &&
         lastCheckpoint != messagesScheduledSoFar) {
-      // N.B. we check the invariant once we have received all
-      // CheckpointReplies.
       println("Checking invariant")
-      lastCheckpoint = messagesScheduledSoFar
-      prepareCheckpoint()
+
+      if (!schedulerConfig.enableCheckpointing) {
+        // If no checkpointing, go ahead and check the invariant now
+        var checkpoint = new HashMap[String, Option[CheckpointReply]]
+        val violation = test_invariant(trace, checkpoint)
+        violationFound = violationMatches(violation)
+        // Return early if we found one.
+        violationFound match {
+          case Some(fingerprint) =>
+            return None
+          case None =>
+            None
+        }
+      } else {
+        // Otherwise we check the invariant once we have received all
+        // CheckpointReplies.
+        lastCheckpoint = messagesScheduledSoFar
+        prepareCheckpoint()
+      }
     }
 
     // Invoked when we're about to schedule a non-repeating timer.
@@ -432,7 +436,10 @@ class RandomScheduler(max_executions: Int,
         // the trace.
         println("Violation found early. Halting")
         started.set(false)
-        traceSem.release()
+        terminationCallback match {
+          case None => traceSem.release
+          case Some(f) => f(event_orchestrator.events)
+        }
     }
   }
 

@@ -29,21 +29,11 @@ class ReplayException(message:String=null, cause:Throwable=null) extends
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler(messageFingerprinter: FingerprintFactory,
-                      enableFailureDetector:Boolean,
-                      strictChecking:Boolean,
-                      invariant_check:Option[TestOracle.Invariant]=None)
+class ReplayScheduler(val schedulerConfig: SchedulerConfig,
+                      strictChecking:Boolean=false)
     extends AbstractScheduler with ExternalEventInjector[Event] {
-  def this() = this(new FingerprintFactory, false, false)
 
-  if (!enableFailureDetector) {
-    disableFailureDetector()
-  }
-
-  invariant_check match {
-    case Some(c) => enableCheckpointing()
-    case None =>
-  }
+  val messageFingerprinter = schedulerConfig.messageFingerprinter
 
   // Have we started off the execution yet?
   private[this] var firstMessage = true
@@ -77,12 +67,12 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
     // We don't actually want to allow the failure detector to send messages,
     // since all the failure detector messages are recorded in _trace. So we
     // give it a no-op enqueue_message parameter.
-    if (enableFailureDetector) {
+    if (schedulerConfig.enableFailureDetector) {
       fd = new FDMessageOrchestrator((o: Option[ActorRef], s: String, m: Any) => Unit)
       event_orchestrator.set_failure_detector(fd)
       fd.startFD(instrumenter.actorSystem)
     }
-    if (_enableCheckpointing) {
+    if (schedulerConfig.enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
@@ -123,7 +113,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
     if (nonDeterministicErrorMsg != "") {
       throw new ReplayException(message=nonDeterministicErrorMsg)
     }
-    invariant_check match {
+    schedulerConfig.invariant_check match {
       case Some(check) =>
         val checkpoint = takeCheckpoint()
         val violation = check(List.empty, checkpoint)
@@ -195,7 +185,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
       return
     }
 
-    if (rcv == CheckpointSink.name && _enableCheckpointing) {
+    if (rcv == CheckpointSink.name && schedulerConfig.enableCheckpointing) {
       checkpointer.handleCheckpointResponse(envelope.message, snd)
       return
     }

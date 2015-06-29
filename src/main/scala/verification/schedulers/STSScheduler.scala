@@ -69,30 +69,23 @@ object STSScheduler {
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
-class STSScheduler(var original_trace: EventTrace,
-                   allowPeek: Boolean,
-                   messageFingerprinter: FingerprintFactory,
-                   enableFailureDetector:Boolean,
-                   disableCheckpointing:Boolean=false,
-                   shouldShutdownActorSystem:Boolean=true,
-                   filterKnownAbsents:Boolean=true) extends AbstractScheduler
+class STSScheduler(val schedulerConfig: SchedulerConfig,
+                   var original_trace: EventTrace,
+                   allowPeek:Boolean=false) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
-  def this(original_trace: EventTrace) =
-      this(original_trace, false, new FingerprintFactory, true, false, true)
 
   def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 
   val logger = LoggerFactory.getLogger("STSScheduler")
 
-  if (!disableCheckpointing) {
-    enableCheckpointing()
-  }
+  val messageFingerprinter = schedulerConfig.messageFingerprinter
+  val shouldShutdownActorSystem = schedulerConfig.shouldShutdownActorSystem
+  val filterKnownAbsents = schedulerConfig.filterKnownAbsents
 
-  if (!enableFailureDetector) {
-    disableFailureDetector()
+  var test_invariant : Invariant = schedulerConfig.invariant_check match {
+    case Some(i) => i
+    case None => null
   }
-
-  var test_invariant : Invariant = null
 
   // Have we not started off the execution yet?
   private[this] var firstMessage = true
@@ -136,15 +129,16 @@ class STSScheduler(var original_trace: EventTrace,
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
+
     // We only ever replay once
     if (stats != null) {
       stats.increment_replays()
     }
 
-    if (enableFailureDetector) {
+    if (schedulerConfig.enableFailureDetector) {
       fd.startFD(instrumenter.actorSystem)
     }
-    if (_enableCheckpointing) {
+    if (schedulerConfig.enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
@@ -187,7 +181,7 @@ class STSScheduler(var original_trace: EventTrace,
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
-    val checkpoint = if (_enableCheckpointing) takeCheckpoint() else
+    val checkpoint = if (schedulerConfig.enableCheckpointing) takeCheckpoint() else
                         new HashMap[String, Option[CheckpointReply]]
     val violation = test_invariant(subseq, checkpoint)
     var violationFound = false
@@ -233,8 +227,8 @@ class STSScheduler(var original_trace: EventTrace,
       return
     }
 
-    val peeker = new IntervalPeekScheduler(
-      expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
+    val peeker = new IntervalPeekScheduler(schedulerConfig,
+      expected, fingerprintedMsgEvent, 10)
 
     // N.B. "checkpoint" here means checkpoint of the network's state, as
     // opposed to a checkpoint of the applications state for checking
@@ -369,8 +363,9 @@ class STSScheduler(var original_trace: EventTrace,
               // blocked here.
               while (!messagePending(m)) {
                 println("Blocking until enqueue_message...")
-                messages_enqueued_but_not_sent.acquire()
-                messages_enqueued_but_not_sent.release()
+                messagesToSend.synchronized {
+                  messagesToSend.wait()
+                }
                 // N.B. messagePending(m) invokes send_external_messages
               }
               // Yay, it became enabled.
@@ -560,7 +555,7 @@ class STSScheduler(var original_trace: EventTrace,
         }
 
         // If execution ended, don't schedule!
-        if (Instrumenter()._waitForExecutionStart.get && !Instrumenter()._executionStarted.get) {
+        if (Instrumenter()._passThrough.get) {
           println("Execution ended! Not proceeding with schedule_new_message")
           schedSemaphore.release()
           traceSem.release()
