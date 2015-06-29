@@ -69,30 +69,23 @@ object STSScheduler {
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
-class STSScheduler(var original_trace: EventTrace,
-                   allowPeek: Boolean,
-                   messageFingerprinter: FingerprintFactory,
-                   enableFailureDetector:Boolean,
-                   disableCheckpointing:Boolean=false,
-                   shouldShutdownActorSystem:Boolean=true,
-                   filterKnownAbsents:Boolean=true) extends AbstractScheduler
+class STSScheduler(val schedulerConfig: SchedulerConfig,
+                   var original_trace: EventTrace,
+                   allowPeek:Boolean=false) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
-  def this(original_trace: EventTrace) =
-      this(original_trace, false, new FingerprintFactory, true, false, true)
 
   def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 
   val logger = LoggerFactory.getLogger("STSScheduler")
 
-  if (!disableCheckpointing) {
-    enableCheckpointing()
-  }
+  val messageFingerprinter = schedulerConfig.messageFingerprinter
+  val shouldShutdownActorSystem = schedulerConfig.shouldShutdownActorSystem
+  val filterKnownAbsents = schedulerConfig.filterKnownAbsents
 
-  if (!enableFailureDetector) {
-    disableFailureDetector()
+  var test_invariant : Invariant = schedulerConfig.invariant_check match {
+    case Some(i) => i
+    case None => null
   }
-
-  var test_invariant : Invariant = null
 
   // Have we not started off the execution yet?
   private[this] var firstMessage = true
@@ -142,10 +135,10 @@ class STSScheduler(var original_trace: EventTrace,
       stats.increment_replays()
     }
 
-    if (enableFailureDetector) {
+    if (schedulerConfig.enableFailureDetector) {
       fd.startFD(instrumenter.actorSystem)
     }
-    if (_enableCheckpointing) {
+    if (schedulerConfig.enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
@@ -188,7 +181,7 @@ class STSScheduler(var original_trace: EventTrace,
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
-    val checkpoint = if (_enableCheckpointing) takeCheckpoint() else
+    val checkpoint = if (schedulerConfig.enableCheckpointing) takeCheckpoint() else
                         new HashMap[String, Option[CheckpointReply]]
     val violation = test_invariant(subseq, checkpoint)
     var violationFound = false
@@ -234,8 +227,8 @@ class STSScheduler(var original_trace: EventTrace,
       return
     }
 
-    val peeker = new IntervalPeekScheduler(
-      expected, fingerprintedMsgEvent, 10, messageFingerprinter, enableFailureDetector)
+    val peeker = new IntervalPeekScheduler(schedulerConfig,
+      expected, fingerprintedMsgEvent, 10)
 
     // N.B. "checkpoint" here means checkpoint of the network's state, as
     // opposed to a checkpoint of the applications state for checking

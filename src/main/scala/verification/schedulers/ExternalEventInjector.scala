@@ -29,24 +29,23 @@ final case object CheckpointReplyMessage extends MessageType
   * executions containing both external and internal events as output.
   */
 trait ExternalEventInjector[E] {
+  // Must be defined in inheritors:
+  val schedulerConfig: SchedulerConfig
 
   var event_orchestrator = new EventOrchestrator[E]()
 
   // Handler for FailureDetector messages
-  var fd : FDMessageOrchestrator = new FDMessageOrchestrator(enqueue_message)
-  event_orchestrator.set_failure_detector(fd)
-  var _disableFailureDetector = false
-
-  def disableFailureDetector() {
-    _disableFailureDetector = true
+  var fd : FDMessageOrchestrator = null
+  if (schedulerConfig.enableFailureDetector) {
+    fd = new FDMessageOrchestrator(enqueue_message)
+    event_orchestrator.set_failure_detector(fd)
+  } else {
     event_orchestrator.set_failure_detector(null)
   }
 
   // Handler for Checkpoint responses
   var checkpointer : CheckpointCollector = null
-  var _enableCheckpointing = false
-  def enableCheckpointing() {
-    _enableCheckpointing = true
+  if (schedulerConfig.enableCheckpointing) {
     checkpointer = new CheckpointCollector
   }
 
@@ -227,13 +226,16 @@ trait ExternalEventInjector[E] {
   }
 
   // Enqueue a timer message for future delivery
-  def handle_timer(receiver: String, msg: Any) {
-    // XXX
-    // if (event_orchestrator.actorToActorRef contains receiver) {
-    //   messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
-    // } else {
-    //   println("WARNING! Unknown timer receiver " + receiver)
-    // }
+  def handle_timer(receiver: String, msg: Any): Unit = {
+    if (schedulerConfig.ignoreTimers) {
+      return
+    }
+
+    if (event_orchestrator.actorToActorRef contains receiver) {
+      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
+    } else {
+      println("WARNING! Unknown timer receiver " + receiver)
+    }
   }
 
   def send_external_messages() {
@@ -251,7 +253,9 @@ trait ExternalEventInjector[E] {
     assert(started.get)
 
     // Send all pending fd responses
-    fd.send_all_pending_responses()
+    if (fd != null) {
+      fd.send_all_pending_responses()
+    }
     // Drain message queue
     messagesToSend.synchronized {
       Instrumenter().sendKnownExternalMessages(() => {
@@ -312,10 +316,10 @@ trait ExternalEventInjector[E] {
     event_orchestrator.set_trace(_trace)
     event_orchestrator.reset_events
 
-    if (!_disableFailureDetector) {
+    if (schedulerConfig.enableFailureDetector) {
       fd.startFD(Instrumenter().actorSystem)
     }
-    if (_enableCheckpointing) {
+    if (schedulerConfig.enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
@@ -370,8 +374,8 @@ trait ExternalEventInjector[E] {
    */
   def takeCheckpoint() : HashMap[String, Option[CheckpointReply]] = {
     println("Initiating checkpoint")
-    if (!_enableCheckpointing) {
-      throw new IllegalStateException("Must invoke enableCheckpointing() first")
+    if (!schedulerConfig.enableCheckpointing) {
+      throw new IllegalStateException("Trying to take checkpoint, yet !schedulerConfig.enableCheckpointing")
     }
     blockedOnCheckpoint.set(true)
     prepareCheckpoint()
@@ -384,6 +388,9 @@ trait ExternalEventInjector[E] {
   }
 
   def prepareCheckpoint() = {
+    if (!schedulerConfig.enableCheckpointing) {
+      throw new IllegalStateException("Trying to take checkpoint, yet !schedulerConfig.enableCheckpointing")
+    }
     val actorRefs = event_orchestrator.actorToActorRef.
                       filterNot({case (k,v) => ActorTypes.systemActor(k)}).
                       values.toSeq
@@ -406,12 +413,12 @@ trait ExternalEventInjector[E] {
   def handle_event_produced(snd: String, rcv: String, envelope: Envelope) : MessageType = {
     // Intercept any messages sent towards the failure detector
     if (rcv == FailureDetector.fdName) {
-      if (!_disableFailureDetector) {
+      if (schedulerConfig.enableFailureDetector) {
         fd.handle_fd_message(envelope.message, snd)
       }
       return FailureDetectorQuery
     } else if (rcv == CheckpointSink.name) {
-      if (_enableCheckpointing) {
+      if (schedulerConfig.enableCheckpointing) {
         checkpointer.handleCheckpointResponse(envelope.message, snd)
       }
       return CheckpointReplyMessage
@@ -524,10 +531,10 @@ trait ExternalEventInjector[E] {
     }
     event_orchestrator = new EventOrchestrator[E]()
     fd = new FDMessageOrchestrator(enqueue_message)
-    if (!_disableFailureDetector) {
+    if (schedulerConfig.enableFailureDetector) {
       event_orchestrator.set_failure_detector(fd)
     }
-    if (_enableCheckpointing) {
+    if (schedulerConfig.enableCheckpointing) {
       checkpointer = new CheckpointCollector
     }
     blockedOnCheckpoint = new AtomicBoolean(false)

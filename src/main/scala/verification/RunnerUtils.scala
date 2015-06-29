@@ -29,7 +29,7 @@ object RunnerUtils {
   }
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
-           fingerprintFactory: FingerprintFactory,
+           schedulerConfig: SchedulerConfig,
            validate_replay:Option[() => ReplayScheduler]=None,
            invariant_check_interval:Int=30,
            maxMessages:Option[Int]=None) :
@@ -44,7 +44,7 @@ object RunnerUtils {
 
       // TODO(cs): it's possible for RandomScheduler to never terminate
       // (waiting for a WaitQuiescene)
-      val sched = new RandomScheduler(1, fingerprintFactory, false, invariant_check_interval, false)
+      val sched = new RandomScheduler(schedulerConfig, 1, invariant_check_interval)
       sched.setInvariant(invariant)
       maxMessages match {
         case Some(max) => sched.setMaxMessages(max)
@@ -133,11 +133,10 @@ object RunnerUtils {
   }
 
   def replayExperiment(experiment_dir: String,
-                       fingerprintFactory: FingerprintFactory,
+                       schedulerConfig: SchedulerConfig,
                        messageDeserializer: MessageDeserializer,
-                       invariant_check:Option[TestOracle.Invariant],
                        traceFile:String=ExperimentSerializer.event_trace): EventTrace = {
-    val replayer = new ReplayScheduler(fingerprintFactory, false, false, invariant_check)
+    val replayer = new ReplayScheduler(schedulerConfig, false)
     val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir,
                                         messageDeserializer, replayer,
                                         traceFile=traceFile)
@@ -149,11 +148,10 @@ object RunnerUtils {
     return events
   }
 
-  def replay(fingerprintFactory: FingerprintFactory,
+  def replay(schedulerConfig: SchedulerConfig,
              trace: EventTrace,
-             actorNameProps: Seq[Tuple2[Props, String]],
-             invariant: TestOracle.Invariant) {
-    val replayer = new ReplayScheduler(fingerprintFactory, false, false, Some(invariant))
+             actorNameProps: Seq[Tuple2[Props, String]]) {
+    val replayer = new ReplayScheduler(schedulerConfig, false)
     Instrumenter().scheduler = replayer
     replayer.setActorNamePropPairs(actorNameProps)
     println("Trying replay:")
@@ -174,12 +172,10 @@ object RunnerUtils {
   }
 
   def randomDDMin(experiment_dir: String,
-                  fingerprintFactory: FingerprintFactory,
-                  messageDeserializer: MessageDeserializer,
-                  invariant: TestOracle.Invariant) :
+                  schedulerConfig: SchedulerConfig,
+                  messageDeserializer: MessageDeserializer) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new RandomScheduler(1, fingerprintFactory, false, 0, false)
-    sched.setInvariant(invariant)
+    val sched = new RandomScheduler(schedulerConfig, 1, 0)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)
 
@@ -195,34 +191,30 @@ object RunnerUtils {
   }
 
   def stsSchedDDMin(experiment_dir: String,
-                    fingerprintFactory: FingerprintFactory,
+                    schedulerConfig: SchedulerConfig,
                     messageDeserializer: MessageDeserializer,
-                    allowPeek: Boolean,
-                    invariant: TestOracle.Invariant) :
+                    allowPeek: Boolean) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new STSScheduler(new EventTrace, allowPeek, fingerprintFactory, false)
-    sched.setInvariant(invariant)
+    val sched = new STSScheduler(schedulerConfig, new EventTrace, allowPeek)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
-    stsSchedDDMin(allowPeek, fingerprintFactory, trace, invariant, violation,
-                  _sched=Some(sched))
+    stsSchedDDMin(allowPeek, schedulerConfig, trace,
+                  violation, _sched=Some(sched))
   }
 
   def stsSchedDDMin(allowPeek: Boolean,
-                    fingerprintFactory: FingerprintFactory,
+                    schedulerConfig: SchedulerConfig,
                     trace: EventTrace,
-                    invariant: TestOracle.Invariant,
                     violation: ViolationFingerprint,
                     actorNameProps: Option[Seq[Tuple2[Props, String]]]=None,
                     _sched:Option[STSScheduler]=None) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = if (_sched != None) _sched.get else
-                new STSScheduler(trace, allowPeek, fingerprintFactory, false)
+                new STSScheduler(schedulerConfig, trace, allowPeek)
     Instrumenter().scheduler = sched
     if (actorNameProps != None) {
       sched.setActorNamePropPairs(actorNameProps.get)
     }
-    sched.setInvariant(invariant)
 
     val ddmin = new DDMin(sched)
     // STSSched doesn't actually pay any attention to WaitQuiescence, so just
@@ -246,12 +238,10 @@ object RunnerUtils {
   }
 
   def roundRobinDDMin(experiment_dir: String,
-                      fingerprintFactory: FingerprintFactory,
-                      messageDeserializer: MessageDeserializer,
-                      invariant: TestOracle.Invariant) :
+                      schedulerConfig: SchedulerConfig,
+                      messageDeserializer: MessageDeserializer) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new PeekScheduler(false)
-    sched.setInvariant(invariant)
+    val sched = new PeekScheduler(schedulerConfig)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.setMaxMessages(trace.size)
 
@@ -269,9 +259,8 @@ object RunnerUtils {
   }
 
   def editDistanceDporDDMin(experiment_dir: String,
-                            fingerprintFactory: FingerprintFactory,
+                            schedulerConfig: SchedulerConfig,
                             messageDeserializer: MessageDeserializer,
-                            invariant: TestOracle.Invariant,
                             ignoreQuiescence:Boolean=true) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
 
@@ -295,11 +284,10 @@ object RunnerUtils {
 
     def dporConstructor(): DPORwHeuristics = {
       val heuristic = new ArvindDistanceOrdering
-      val dpor = new DPORwHeuristics(true, fingerprintFactory,
+      val dpor = new DPORwHeuristics(schedulerConfig,
                           prioritizePendingUponDivergence=true,
                           invariant_check_interval=5,
                           backtrackHeuristic=heuristic)
-      dpor.setActorNameProps(actorsNameProps)
       dpor.setInitialDepGraph(depGraph)
       dpor.setMaxMessagesToSchedule(initialTrace.size)
       dpor.setInitialTrace(new Queue[Unique] ++ initialTrace)
@@ -347,7 +335,6 @@ object RunnerUtils {
     }
 
     val resumableDPOR = new ResumableDPOR(dporConstructor)
-    resumableDPOR.setInvariant(invariant)
     val ddmin = new IncrementalDDMin(resumableDPOR,
                                      checkUnmodifed=true,
                                      stopAtSize=6, maxMaxDistance=8)
@@ -363,7 +350,7 @@ object RunnerUtils {
       case Some(toReplay) =>
         // Now verify that ReplayScheduler can reproduce it.
         println("DPOR reproduced successfully. Now trying ReplayScheduler")
-        val replayer = new ReplayScheduler(fingerprintFactory, false, false)
+        val replayer = new ReplayScheduler(schedulerConfig, false)
         Instrumenter().scheduler = replayer
         // Clean up after DPOR. Counterintuitively, use Replayer to do this, since
         // DPORwHeuristics doesn't have shutdownSemaphore.
@@ -384,28 +371,24 @@ object RunnerUtils {
     return (mcs, ddmin.stats, verified_mcs, violation)
   }
 
-  def testWithStsSched(fingerprintFactory: FingerprintFactory,
+  def testWithStsSched(schedulerConfig: SchedulerConfig,
                        mcs: Seq[ExternalEvent],
                        trace: EventTrace,
                        actorNameProps: Seq[Tuple2[Props, String]],
-                       invariant: TestOracle.Invariant,
                        violation: ViolationFingerprint,
                        stats: MinimizationStats)
                      : Option[EventTrace] = {
-    val sched = new STSScheduler(trace, false,
-        fingerprintFactory, false)
-    sched.setInvariant(invariant)
+    val sched = new STSScheduler(schedulerConfig, trace, false)
     Instrumenter().scheduler = sched
     sched.setActorNamePropPairs(actorNameProps)
     return sched.test(mcs, violation, stats)
   }
 
   // pre: replay(verified_mcs) reproduces the violation.
-  def minimizeInternals(fingerprintFactory: FingerprintFactory,
+  def minimizeInternals(schedulerConfig: SchedulerConfig,
                         mcs: Seq[ExternalEvent],
                         verified_mcs: EventTrace,
                         actorNameProps: Seq[Tuple2[Props, String]],
-                        invariant: TestOracle.Invariant,
                         violation: ViolationFingerprint) :
       Tuple2[MinimizationStats, EventTrace] = {
 
@@ -431,7 +414,7 @@ object RunnerUtils {
 
       // Return whether we should keep this event
       def checkDelivery(snd: String, rcv: String, msg: Any): Boolean = {
-        val key = (snd, rcv, fingerprintFactory.fingerprint(msg))
+        val key = (snd, rcv, schedulerConfig.messageFingerprinter.fingerprint(msg))
         keysThisIteration += key
         if (foundIgnoredEvent) {
           // We already chose our event to ignore. Keep all other events.
@@ -487,8 +470,8 @@ object RunnerUtils {
     var nextTrace = getNextTrace(lastFailingTrace)
 
     while (!nextTrace.isEmpty) {
-      testWithStsSched(fingerprintFactory, mcs, nextTrace.get, actorNameProps,
-                       invariant, violation, stats) match {
+      testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
+                       violation, stats) match {
         case Some(trace) =>
           // Some other events may have been pruned by virtue of being absent. So
           // we reassign lastFailingTrace, then pick then next trace based on
@@ -517,11 +500,10 @@ object RunnerUtils {
 
   // Returns a new MCS, with Send contents shrinked as much as possible.
   // Pre: all Send() events have the same message contents.
-  def shrinkSendContents(fingerprintFactory: FingerprintFactory,
+  def shrinkSendContents(schedulerConfig: SchedulerConfig,
                          mcs: Seq[ExternalEvent],
                          verified_mcs: EventTrace,
                          actorNameProps: Seq[Tuple2[Props, String]],
-                         invariant: TestOracle.Invariant,
                          violation: ViolationFingerprint) : Seq[ExternalEvent] = {
     // Invariants (TODO(cs): specific to akka-raft?):
     //   - Require that all Send() events have the same message contents
@@ -586,8 +568,8 @@ object RunnerUtils {
     for (i <- 0 until components.size) {
       println("Trying to remove component " + i + ":" + components(i))
       val modifiedMCS = modifyMCS(mcs, maskedIndices + i)
-      testWithStsSched(fingerprintFactory, modifiedMCS,
-                       verified_mcs, actorNameProps, invariant, violation, stats) match {
+      testWithStsSched(schedulerConfig, modifiedMCS,
+                       verified_mcs, actorNameProps, violation, stats) match {
         case Some(trace) =>
           println("Violation reproducable after removing component " + i)
           maskedIndices = maskedIndices + i
@@ -603,7 +585,7 @@ object RunnerUtils {
   def printMinimizationStats(original_experiment_dir: String,
                              mcs_dir: String,
                              messageDeserializer: MessageDeserializer,
-                             fingerprintFactory: FingerprintFactory) {
+                             schedulerConfig: SchedulerConfig) {
     // Print:
     //  - number of original message deliveries
     //  - deliveries removed by provenance
@@ -614,7 +596,7 @@ object RunnerUtils {
     // TODO(cs): print how many replays went into each of these steps
     // TODO(cs): number of non-delivery external events that were pruned by minimizing?
     var deserializer = new ExperimentDeserializer(original_experiment_dir)
-    val dummy_sched = new ReplayScheduler
+    val dummy_sched = new ReplayScheduler(schedulerConfig)
     Instrumenter().scheduler = dummy_sched
     dummy_sched.populateActorSystem(deserializer.get_actors)
 
@@ -625,7 +607,7 @@ object RunnerUtils {
       trace.filterFailureDetectorMessages.
             filterCheckpointMessages.flatMap {
         case m @ MsgEvent(s, r, msg) =>
-          val fingerprint = fingerprintFactory.fingerprint(msg)
+          val fingerprint = schedulerConfig.messageFingerprinter.fingerprint(msg)
           if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
             Some(MsgEvent("Timer", r, fingerprint))
           } else {
@@ -662,7 +644,7 @@ object RunnerUtils {
           // Filter out root event
           None
         } else {
-          val fingerprint = fingerprintFactory.fingerprint(msg)
+          val fingerprint = schedulerConfig.messageFingerprinter.fingerprint(msg)
           if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
             Some(MsgEvent("Timer", r, fingerprint))
           } else {
