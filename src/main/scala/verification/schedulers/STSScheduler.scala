@@ -369,8 +369,9 @@ class STSScheduler(var original_trace: EventTrace,
               // blocked here.
               while (!messagePending(m)) {
                 println("Blocking until enqueue_message...")
-                messages_enqueued_but_not_sent.acquire()
-                messages_enqueued_but_not_sent.release()
+                messagesToSend.synchronized {
+                  messagesToSend.wait()
+                }
                 // N.B. messagePending(m) invokes send_external_messages
               }
               // Yay, it became enabled.
