@@ -120,9 +120,10 @@ trait ExternalEventInjector[E] {
   // Whether we are currently processing an "UnignorableEvents" block
   var unignorableEvents = new AtomicBoolean(false)
 
-  // All external thread ids that are currently in a
-  // "AtomicBlock", i.e. a BeginAtomicBlock has occured but not yet an
-  // EndAtomicBlock.
+  // All external thread ids that recently began an "AtomicBlock"
+  var beganExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
+
+  // All external thread ids that recently ended an "AtomicBlock"
   var endedExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
 
   // how many external atomic blocks are currently running
@@ -168,6 +169,7 @@ trait ExternalEventInjector[E] {
     // already enqueued before this are not part of the
     // beginExternalAtomicBlock
     messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
+    beganExternalAtomicBlocks += taskId
     pendingExternalAtomicBlocks.incrementAndGet()
     // We shouldn't be dispatching while the atomic block executes.
     Instrumenter().stopDispatch.set(true)
