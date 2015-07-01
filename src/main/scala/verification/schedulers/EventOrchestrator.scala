@@ -141,6 +141,10 @@ class EventOrchestrator[E] {
            // Don't let trace advance here. Only let it advance when we have
            // reached quiescence and the condition holds.
           return
+        case CodeBlock(block) =>
+          events += CodeBlock(block)
+          // This better terminate!
+          block()
         case WaitQuiescence() =>
           events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence

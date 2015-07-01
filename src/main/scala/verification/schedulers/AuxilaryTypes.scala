@@ -77,6 +77,10 @@ final case class Partition (a: String, b: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class UnPartition (a: String, b: String) extends
     ExternalEvent with Event with UniqueExternalEvent
+// Executed synchronously, i.e. by the scheduler itself. The code block must
+// terminate (quickly)!
+final case class CodeBlock (block: () => Any) extends
+    ExternalEvent with Event with UniqueExternalEvent
 
 // Metadata events, not actually events.
 // MsgEvents appearing between `BeginUnignorableEvents' and `EndUnigorableEvents'

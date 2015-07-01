@@ -380,6 +380,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.events += BeginWaitQuiescence
             event_orchestrator.trace_advanced
             break
+          case CodeBlock(block) =>
+            block()
           case ChangeContext(_) => () // Check what is going on
         }
         event_orchestrator.trace_advanced
