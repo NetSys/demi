@@ -94,20 +94,20 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   // the DepGraph (used by DPOR).
   var depTracker = new DepTracker(messageFingerprinter)
 
-  // Avoid infinite loops with repeating timers: if we just scheduled one,
+  // Avoid infinite loops with timers: if we just scheduled one,
   // don't schedule the exact same one immediately again until we've scheduled
   // some other message first.
   //
   // Tuple is : (receiver, timer object)
   //
-  // Implementation note: if we're about to schedule a non-repeating message,
-  // that means we should resend any repeating timers in
-  // justScheduledRepeatingTimers to ensure that they are indeed "repeating".
-  //
-  // Invariant: if a pending repeating timer is contained in this HashSet, it should
-  // never also be contained in pendingEvents. i.e., placing a repeating timer
-  // in justScheduledRepeatingTimers should effectively `decommision` it.
-  var justScheduledRepeatingTimers = new HashSet[(String, Any)]
+  // Invariant: if a pending timer is contained in this HashSet, it should
+  // never also be contained in pendingEvents. i.e., placing a timer
+  // in justScheduledTimers should effectively `decommision` it.
+  val justScheduledTimers = new HashSet[(String, Any)]
+
+  // if a timer was retriggered while it was also contained in
+  // justScheduledTimers, put it here rather than pendingEvents.
+  val timersToResend = new SynchronizedQueue[(String, Any)]
 
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
@@ -367,16 +367,17 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     // Invoked when we're about to schedule a new message (either a repeating
     // timer or a normal message)
     def updateRepeatingTimer(aboutToDeliver: (Cell, Envelope)) {
-      if (Instrumenter().isRepeatingTimer(
+      if (Instrumenter().isTimer(
             aboutToDeliver._1.self.path.name, aboutToDeliver._2.message)) {
-        justScheduledRepeatingTimers += ((aboutToDeliver._1.self.path.name,
-                                         aboutToDeliver._2.message))
+        justScheduledTimers += ((aboutToDeliver._1.self.path.name,
+                                 aboutToDeliver._2.message))
       } else {
-        // We're about to deliver a non-repeating timer! Resend all of
-        // repeating timers.
+        // We're about to deliver a non-timer! Resend all of
+        // the repeating timers.
         // TODO(cs): I don't know if this screws up depGraph...
-        justScheduledRepeatingTimers foreach { case (rcv, timer) => handle_timer(rcv, timer) }
-        justScheduledRepeatingTimers.clear
+        timersToResend foreach { case (rcv, timer) => handle_timer(rcv, timer) }
+        timersToResend.clear
+        justScheduledTimers.clear
       }
     }
 
@@ -490,11 +491,11 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   }
 
   override def enqueue_timer(receiver: String, msg: Any) {
-    if (justScheduledRepeatingTimers contains ((receiver, msg))) {
-      // We just scheduled this repeating timer, don't yet put it in
+    if (justScheduledTimers contains ((receiver, msg))) {
+      // We just scheduled this timer, don't yet put it in
       // pendingEvents! This is to avoid an infinite loop of scheduling
-      // repeating timers. For now, just keep it justScheduledRepeatingTimer,
-      // until we schedule a non-repeating timer.
+      // timers.
+      timersToResend += ((receiver, msg))
       return
     }
 
@@ -507,7 +508,8 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
-    justScheduledRepeatingTimers.clear()
+    justScheduledTimers.clear()
+    timersToResend.clear()
     pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
     pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
     lookingFor = None
