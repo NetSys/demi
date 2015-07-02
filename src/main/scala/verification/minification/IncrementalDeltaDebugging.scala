@@ -30,7 +30,9 @@ class IncrementalDDMin (oracle: ResumableDPOR, maxMaxDistance:Int=256,
     // Ignore otherStats.stats
   }
 
-  def minimize(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
+  def minimize(events: Seq[ExternalEvent],
+               violation_fingerprint: ViolationFingerprint,
+               initializationRoutine: Option[()=>Any]=None) : Seq[ExternalEvent] = {
     var currentDistance = 0
     oracle.setMaxDistance(currentDistance)
 
@@ -63,7 +65,9 @@ class IncrementalDDMin (oracle: ResumableDPOR, maxMaxDistance:Int=256,
     return currentMCS
   }
 
-  def verify_mcs(mcs: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint): Option[EventTrace] = {
+  def verify_mcs(mcs: Seq[ExternalEvent],
+                 _violation_fingerprint: ViolationFingerprint,
+                 initializationRoutine: Option[()=>Any]=None): Option[EventTrace] = {
     return oracle.test(mcs, _violation_fingerprint, new MinimizationStats("NOP", "NOP"))
   }
 }
