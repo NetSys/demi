@@ -467,8 +467,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
   // Record a mapping from actor names to actor refs
   override def event_produced(event: Event) = {
-    super.event_produced(event)
     handle_spawn_produced(event)
+    super.event_produced(event)
   }
 
   // Record that an event was consumed
