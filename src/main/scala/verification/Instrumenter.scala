@@ -514,14 +514,9 @@ class Instrumenter {
     }
   }
 
-  def isRepeatingTimer(rcv: String, msg: Any) : Boolean = {
-    if (timerToCancellable contains (rcv, msg)) {
-      val cancellable = timerToCancellable((rcv, msg))
-      return ongoingCancellableTasks contains cancellable
-    }
-    return false
+  def isTimer(rcv: String, msg: Any) : Boolean = {
+    return timerToCancellable contains (rcv, msg)
   }
-  
   
   // Called when dispatch is called.
   def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
