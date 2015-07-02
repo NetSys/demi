@@ -70,7 +70,7 @@ object STSScheduler {
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
  */
 class STSScheduler(val schedulerConfig: SchedulerConfig,
-                   val original_trace: EventTrace,
+                   var original_trace: EventTrace,
                    allowPeek:Boolean=false) extends AbstractScheduler
     with ExternalEventInjector[Event] with TestOracle {
 
