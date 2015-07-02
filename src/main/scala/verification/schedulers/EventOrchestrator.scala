@@ -142,7 +142,7 @@ class EventOrchestrator[E] {
            // reached quiescence and the condition holds.
           return
         case CodeBlock(block) =>
-          events += CodeBlock(block)
+          events += current_event.asInstanceOf[Event] // keep the id the same
           // This better terminate!
           block()
         case WaitQuiescence() =>

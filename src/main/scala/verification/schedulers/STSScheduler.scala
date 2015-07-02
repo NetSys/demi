@@ -115,6 +115,16 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // This is really just a sanity check.
   var expectedExternalAtomicBlocks = new HashSet[Long]
 
+  // An optional callback that will be before we execute the trace.
+  type PreTestCallback = () => Unit
+  var preTestCallback : PreTestCallback = () => None
+  def setPreTestCallback(c: PreTestCallback) { preTestCallback = c }
+
+  // An optional callback that will be invoked after we execute the trace.
+  type PostTestCallback = () => Unit
+  var postTestCallback : PostTestCallback = () => None
+  def setPostTestCallback(c: PostTestCallback) { postTestCallback = c }
+
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent],
@@ -129,6 +139,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
+
+    preTestCallback()
 
     // We only ever replay once
     if (stats != null) {
@@ -166,12 +178,14 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     currentlyInjecting.set(true)
 
     // Kick off the system's initialization routine
+    var initThread : Thread = null
     initializationRoutine match {
       case Some(f) =>
         println("Running initializationRoutine...")
-        new Thread(
+        initThread = new Thread(
           new Runnable { def run() = { f() } },
-          "initializationRoutine").start
+          "initializationRoutine")
+        initThread.start
       case None =>
     }
 
@@ -193,6 +207,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     val ret = violationFound match {
       case true => Some(event_orchestrator.events)
       case false => None
+    }
+    postTestCallback()
+    // Wait until the initialization thread is done. Assumes that it
+    // terminates!
+    if (initThread != null) {
+      initThread.join
     }
     reset_all_state
     return ret
@@ -286,6 +306,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             // We block until the atomic block has finished
             if (beganExternalAtomicBlocks contains id) {
               endedExternalAtomicBlocks.synchronized {
+                send_external_messages(false)
                 while (!(endedExternalAtomicBlocks contains id)) {
                   println("Blocking until endExternalAtomicBlock("+id+")")
                   // (Releases lock)

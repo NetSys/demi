@@ -267,8 +267,8 @@ trait ExternalEventInjector[E] {
             case BeginExternalAtomicBlock(taskId) =>
               event_orchestrator.events += BeginExternalAtomicBlock(taskId)
             case EndExternalAtomicBlock(taskId) =>
-              endedExternalAtomicBlocks += taskId
               endedExternalAtomicBlocks.synchronized {
+                endedExternalAtomicBlocks += taskId
                 endedExternalAtomicBlocks.notifyAll()
               }
               event_orchestrator.events += EndExternalAtomicBlock(taskId)
@@ -548,7 +548,10 @@ trait ExternalEventInjector[E] {
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
     unignorableEvents = new AtomicBoolean(false)
+    beganExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
     endedExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
+    pendingExternalAtomicBlocks = new AtomicInteger(0)
+    dispatchAfterEnqueueMessage = new AtomicBoolean(false)
     messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]
     alreadyPopulated = false
     println("state reset.")

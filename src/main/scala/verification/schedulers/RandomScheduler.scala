@@ -112,8 +112,9 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
   setQuiescenceCallback(() => {
-    assert(event_orchestrator.previous_event.getClass == classOf[WaitQuiescence])
-    depTracker.reportQuiescence(event_orchestrator.previous_event.asInstanceOf[WaitQuiescence])
+    if (event_orchestrator.previous_event.getClass == classOf[WaitQuiescence]) {
+      depTracker.reportQuiescence(event_orchestrator.previous_event.asInstanceOf[WaitQuiescence])
+    }
   })
   // Tell EventOrchestrator to tell us about Kills, Parititions, UnPartitions
   event_orchestrator.setKillCallback(depTracker.reportKill)
