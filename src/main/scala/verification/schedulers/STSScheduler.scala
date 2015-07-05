@@ -406,8 +406,15 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.events += BeginWaitQuiescence
             event_orchestrator.trace_advanced
             break
-          case CodeBlock(block) =>
+          case c @ CodeBlock(block) =>
+            event_orchestrator.events += c // keep the id the same
+            // Since the block might send messages, make sure that we treat the
+            // message sends as if they are being triggered by an external
+            // thread, i.e. we enqueue them rather than letting them be sent
+            // immediately.
+            Instrumenter.overrideInternalThreadRule
             block()
+            Instrumenter.unsetInternalThreadRuleOverride
           case ChangeContext(_) => () // Check what is going on
         }
         event_orchestrator.trace_advanced

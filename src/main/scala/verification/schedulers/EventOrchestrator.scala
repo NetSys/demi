@@ -143,8 +143,14 @@ class EventOrchestrator[E] {
           return
         case CodeBlock(block) =>
           events += current_event.asInstanceOf[Event] // keep the id the same
+          // Since the block might send messages, make sure that we treat the
+          // message sends as if they are being triggered by an external
+          // thread, i.e. we enqueue them rather than letting them be sent
+          // immediately.
+          Instrumenter.overrideInternalThreadRule
           // This better terminate!
           block()
+          Instrumenter.unsetInternalThreadRuleOverride
         case WaitQuiescence() =>
           events += BeginWaitQuiescence
           loop = false // Start waiting for quiescence

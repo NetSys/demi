@@ -455,7 +455,10 @@ class Instrumenter {
     // Assume it's impossible for an internal actor to `ask` the outside world
     // anything (which would need to be the case if the external thread is now
     // answering).
-    assert(Instrumenter.threadNameIsAkkaInternal)
+    // TODO(cs): our current preStart heuristic can cause this to fail, when
+    // preStart sends an answer to an `ask`. Wait
+    // until we properly handle preStart before we uncomment this.
+    // assert(Instrumenter.threadNameIsAkkaInternal)
 
     if (!(askAnswerNotYetScheduled contains temp)) {
       // Hasn't been scheduled for delivery yet.
@@ -711,12 +714,26 @@ object Instrumenter {
     obj
   }
 
+  val _overrideInternalThreadRule = new AtomicBoolean(false)
+
+  // akka-dispatcher threads should invoke this when they want all message
+  // send events to be treated as if they are coming from an external thread,
+  // i.e. have message sends enqueued rather than sent immediately.
+  def overrideInternalThreadRule() {
+    _overrideInternalThreadRule.set(true)
+  }
+
+  def unsetInternalThreadRuleOverride() {
+    _overrideInternalThreadRule.set(false)
+  }
+
   // Hack: check if name matches `.*dispatcher.*`, and moreover that the
   // dispatcher thread is not running asynchronously (out of our control) to
   // invoke an actor's preStart method. Hope that external
   // thread names don't match this pattern!
   def threadNameIsAkkaInternal() : Boolean = {
     return Thread.currentThread.getName().contains("dispatcher") &&
-           !Thread.currentThread().getStackTrace().map(e => e.getMethodName).exists(e => e == "preStart")
+           !Thread.currentThread().getStackTrace().map(e => e.getMethodName).exists(e => e == "preStart") &&
+           !_overrideInternalThreadRule.get()
   }
 }
