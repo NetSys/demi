@@ -287,6 +287,11 @@ class Instrumenter {
     allowedEvents.clear()
     dispatchers.clear()
     Util.logger.reset()
+    blockedActors = Set[String]()
+    tempToParent = new HashMap[ActorPath, String]
+    askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
+    sendingKnownExternalMessages = new AtomicBoolean(false)
+    stopDispatch = new AtomicBoolean(false)
   }
 
   // Restart the system:
