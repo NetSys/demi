@@ -7,6 +7,7 @@ import akka.dispatch.verification.WrappedCancellable;
 
 import akka.actor.ActorRef;
 import akka.actor.ScalaActorRef;
+import akka.actor.InternalActorRef;
 import akka.actor.Actor;
 import akka.actor.Props;
 import akka.actor.ActorCell;
@@ -15,6 +16,8 @@ import akka.actor.ActorContext;
 import akka.actor.Scheduler;
 import akka.actor.Cancellable;
 import akka.actor.LightArrayRevolverScheduler;
+import akka.actor.LocalActorRefProvider;
+import akka.actor.ActorPath;
 
 import akka.pattern.AskSupport;
 import akka.pattern.PromiseActorRef;
@@ -84,6 +87,15 @@ privileged public aspect WeaveActor {
     return null;
   }
 
+  // Interposition on the code that assigns IDs to temporary actors. See this
+  // doc for more details:
+  // https://docs.google.com/document/d/1rAM8EEy3WnLRhhPROvHmBhAREv0rmihz0Gw0GgF1xC4/edit#
+  pointcut tempPath(LocalActorRefProvider me):
+  execution(public ActorPath LocalActorRefProvider.tempPath()) && this(me);
+
+  Object around(LocalActorRefProvider me): tempPath(me) {
+    return inst.assignTempPath(me.tempNode);
+  }
   
   after(ActorSystem me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props)) &&

@@ -10,6 +10,8 @@ import akka.actor.Actor
 import akka.actor.PoisonPill
 import akka.actor.Props
 import akka.actor.Cancellable
+import akka.actor.RootActorPath
+import akka.actor.Address
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -30,6 +32,8 @@ import scala.collection.mutable.HashSet
 
 import scala.util.Random
 import scala.util.control.Breaks
+
+import java.nio.charset.StandardCharsets
 
 import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
@@ -183,6 +187,22 @@ class Instrumenter {
     sendingKnownExternalMessages.set(true)
     sendBlock()
     sendingKnownExternalMessages.set(false)
+  }
+
+  /**
+   * Rather than having akka assign labels $a, $b, $c, etc to temp actors,
+   * assign our own that will be more resilient to divergence in the execution
+   * as we replay. See this design doc for more details:
+   *   https://docs.google.com/document/d/1rAM8EEy3WnLRhhPROvHmBhAREv0rmihz0Gw0GgF1xC4
+   */
+  def assignTempPath(tempPath: ActorPath): ActorPath = {
+    val callStack = Thread.currentThread().getStackTrace().drop(14) // drop off common prefix
+    val min3 = math.min(3, callStack.length)
+    val truncated = callStack.take(min3)
+    val bytes = truncated.mkString("-").getBytes(StandardCharsets.UTF_8)
+    val b64 = java.util.Base64.getEncoder.encodeToString(bytes)
+    val path = tempPath / b64
+    return path
   }
 
   /**
