@@ -189,10 +189,16 @@ trait ExternalEventInjector[E] {
       endedExternalAtomicBlocks.notifyAll()
     }
     if (pendingExternalAtomicBlocks.decrementAndGet() == 0) {
-      if (Instrumenter().stopDispatch.get()) {
-        // Still haven't stopped dispatch, so don't restart
-        Instrumenter().stopDispatch.set(false)
-      } else {
+      var restartDispatch = false
+      Instrumenter().stopDispatch.synchronized {
+        if (Instrumenter().stopDispatch.get()) {
+          // Still haven't stopped dispatch, so don't restart
+          Instrumenter().stopDispatch.set(false)
+        } else {
+          restartDispatch = true
+        }
+      }
+      if (restartDispatch) {
         println("Restarting dispatch!")
         Instrumenter().start_dispatch
       }

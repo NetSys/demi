@@ -440,10 +440,12 @@ class Instrumenter {
     inActor = false
     currentActor = ""
 
-    if (stopDispatch.get()) {
-      println("Stopping dispatch..")
-      stopDispatch.set(false)
-      return
+    stopDispatch.synchronized {
+      if (stopDispatch.get()) {
+        println("Stopping dispatch..")
+        stopDispatch.set(false)
+        return
+      }
     }
 
     scheduler.after_receive(cell) 
