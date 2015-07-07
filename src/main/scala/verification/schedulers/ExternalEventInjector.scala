@@ -168,8 +168,8 @@ trait ExternalEventInjector[E] {
     // Place the marker into the current place in messagesToSend; any messages
     // already enqueued before this are not part of the
     // beginExternalAtomicBlock
-    messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
     beganExternalAtomicBlocks += taskId
+    messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
     pendingExternalAtomicBlocks.incrementAndGet()
     // We shouldn't be dispatching while the atomic block executes.
     Instrumenter().stopDispatch.set(true)
