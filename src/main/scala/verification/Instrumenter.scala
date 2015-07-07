@@ -30,6 +30,8 @@ import scala.collection.mutable.Stack
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
+import scala.concurrent.Future
+
 import scala.util.Random
 import scala.util.control.Breaks
 
@@ -195,14 +197,29 @@ class Instrumenter {
    * as we replay. See this design doc for more details:
    *   https://docs.google.com/document/d/1rAM8EEy3WnLRhhPROvHmBhAREv0rmihz0Gw0GgF1xC4
    */
-  def assignTempPath(tempPath: ActorPath): ActorPath = {
-    val callStack = Thread.currentThread().getStackTrace().drop(14) // drop off common prefix
+  def assignTempPath(tempPath: ActorPath): ActorPath = synchronized {
+    val callStack = Thread.currentThread().getStackTrace().map(e => e.getMethodName).drop(14) // drop off common prefix
     val min3 = math.min(3, callStack.length)
-    val truncated = callStack.take(min3)
+    var truncated = callStack.take(min3).toList
+    if (idToPrependToCallStack != "") {
+      truncated = idToPrependToCallStack :: truncated
+      idToPrependToCallStack = ""
+    }
     val bytes = truncated.mkString("-").getBytes(StandardCharsets.UTF_8)
     val b64 = java.util.Base64.getEncoder.encodeToString(bytes)
     val path = tempPath / b64
     return path
+  }
+
+  // In cases where there might be multiple threads with the same callstack
+  // invoking `ask`, have them call this with an ID to avoid ambiguity in temp
+  // actor names. Serialized with a lock on the Instrumenter object.
+  var idToPrependToCallStack = ""
+
+  def serializeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
+    assert(idToPrependToCallStack == "")
+    idToPrependToCallStack = id
+    return ask()
   }
 
   /**
