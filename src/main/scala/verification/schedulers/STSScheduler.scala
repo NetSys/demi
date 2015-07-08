@@ -387,12 +387,13 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
               // that calls advanceReplay(), so we should be guarenteed that
               // schedule_new_message will not be invoked while we are
               // blocked here.
-              while (!messagePending(m)) {
-                println("Blocking until enqueue_message...")
-                messagesToSend.synchronized {
+              messagesToSend.synchronized {
+                while (!messagePending(m)) {
+                  println("Blocking until enqueue_message...")
                   messagesToSend.wait()
+                  println("Checking messagePending..")
+                  // N.B. messagePending(m) invokes send_external_messages
                 }
-                // N.B. messagePending(m) invokes send_external_messages
               }
               // Yay, it became enabled.
               break

@@ -216,11 +216,11 @@ trait ExternalEventInjector[E] {
 
   def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
     enqueuedExternalMessages += msg
-    messagesToSend += ((sender, actor, msg))
 
     // signal to the main thread that it should wake up if it's blocked on
     // external messages
     messagesToSend.synchronized {
+      messagesToSend += ((sender, actor, msg))
       messagesToSend.notifyAll()
     }
 
@@ -240,7 +240,13 @@ trait ExternalEventInjector[E] {
     }
 
     if (event_orchestrator.actorToActorRef contains receiver) {
-      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
+      // signal to the main thread that it should wake up if it's blocked on
+      // external messages
+      messagesToSend.synchronized {
+        messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
+        messagesToSend.notifyAll()
+      }
+
     } else {
       println("WARNING! Unknown timer receiver " + receiver)
     }
