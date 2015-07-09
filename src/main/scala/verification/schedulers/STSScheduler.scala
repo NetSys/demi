@@ -304,20 +304,22 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             expectedExternalAtomicBlocks += id
 
             // We block until the atomic block has finished
-            if (beganExternalAtomicBlocks contains id) {
-              endedExternalAtomicBlocks.synchronized {
-                send_external_messages(false)
-                while (!(endedExternalAtomicBlocks contains id)) {
-                  println("Blocking until endExternalAtomicBlock("+id+")")
-                  // (Releases lock)
-                  endedExternalAtomicBlocks.wait()
+            beganExternalAtomicBlocks.synchronized {
+              if (beganExternalAtomicBlocks contains id) {
+                endedExternalAtomicBlocks.synchronized {
                   send_external_messages(false)
+                  while (!(endedExternalAtomicBlocks contains id)) {
+                    println("Blocking until endExternalAtomicBlock("+id+")")
+                    // (Releases lock)
+                    endedExternalAtomicBlocks.wait()
+                    send_external_messages(false)
+                  }
+                  endedExternalAtomicBlocks -= id
+                  beganExternalAtomicBlocks -= id
                 }
-                endedExternalAtomicBlocks -= id
-                beganExternalAtomicBlocks -= id
+              } else {
+                println("Ignoring externalAtomicBlock("+id+")")
               }
-            } else {
-              println("Ignoring externalAtomicBlock("+id+")")
             }
           case EndExternalAtomicBlock(id) =>
             assert(expectedExternalAtomicBlocks contains id)

@@ -168,7 +168,9 @@ trait ExternalEventInjector[E] {
     // Place the marker into the current place in messagesToSend; any messages
     // already enqueued before this are not part of the
     // beginExternalAtomicBlock
-    beganExternalAtomicBlocks += taskId
+    beganExternalAtomicBlocks.synchronized {
+      beganExternalAtomicBlocks += taskId
+    }
     messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
     pendingExternalAtomicBlocks.incrementAndGet()
     // We shouldn't be dispatching while the atomic block executes.
@@ -224,12 +226,14 @@ trait ExternalEventInjector[E] {
       messagesToSend.notifyAll()
     }
 
-    if (dispatchAfterEnqueueMessage.get()) {
-      dispatchAfterEnqueueMessage.set(false)
-      println("dispatching after enqueue_message")
-      started.set(true)
-      send_external_messages()
-      Instrumenter().start_dispatch()
+    dispatchAfterEnqueueMessage.synchronized {
+      if (dispatchAfterEnqueueMessage.get()) {
+        dispatchAfterEnqueueMessage.set(false)
+        println("dispatching after enqueue_message")
+        started.set(true)
+        send_external_messages()
+        Instrumenter().start_dispatch()
+      }
     }
   }
 
@@ -488,7 +492,9 @@ trait ExternalEventInjector[E] {
           } else {
             // wait for enqueue_message to be invoked.
             println("waiting for enqueue_message...")
-            dispatchAfterEnqueueMessage.set(true)
+            dispatchAfterEnqueueMessage.synchronized {
+              dispatchAfterEnqueueMessage.set(true)
+            }
           }
         case _ =>
           quiescenceCallback()

@@ -186,9 +186,11 @@ class Instrumenter {
    * scheduler.enqueue_message() to be sent later at known point.
    */
   def sendKnownExternalMessages(sendBlock: () => Any) {
-    sendingKnownExternalMessages.set(true)
-    sendBlock()
-    sendingKnownExternalMessages.set(false)
+    sendingKnownExternalMessages.synchronized {
+      sendingKnownExternalMessages.set(true)
+      sendBlock()
+      sendingKnownExternalMessages.set(false)
+    }
   }
 
   /**
@@ -234,11 +236,12 @@ class Instrumenter {
    *    scheduler.enqueue_message.
    */
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
-    assert(receiver != null)
+    sendingKnownExternalMessages.synchronized {
+      assert(receiver != null)
 
-    if (_passThrough.get()) {
-      return true
-    }
+      if (_passThrough.get()) {
+        return true
+      }
 
     // First check if it's an external thread sending outside of
     // sendKnownExternalMessages.
