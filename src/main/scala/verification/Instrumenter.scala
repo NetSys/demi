@@ -184,6 +184,8 @@ class Instrumenter {
    * If an external thread sends messages outside of this interface, its
    * messages will not be sent right away; instead they will be passed to
    * scheduler.enqueue_message() to be sent later at known point.
+   *
+   * N.B. send != deliver
    */
   def sendKnownExternalMessages(sendBlock: () => Any) {
     sendingKnownExternalMessages.synchronized {
@@ -236,33 +238,37 @@ class Instrumenter {
    *    scheduler.enqueue_message.
    */
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
-    sendingKnownExternalMessages.synchronized {
-      assert(receiver != null)
+    // Crucial property: if this is an external thread and STS2 is currently
+    // sendingKnownExternalMessages, block here until STS2 is done!
+    val sendingKnown = sendingKnownExternalMessages.synchronized {
+      sendingKnownExternalMessages.get()
+    }
 
-      if (_passThrough.get()) {
-        return true
-      }
+    assert(receiver != null)
 
-      // First check if it's an external thread sending outside of
-      // sendKnownExternalMessages.
-      if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
-          !Instrumenter.threadNameIsAkkaInternal() &&
-          !sendingKnownExternalMessages.get() &&
-          receiver.path.parent.name != "temp") {
-        scheduler.enqueue_message(Some(sender), receiver.path.name, msg)
-        return false
-      }
-
-      // Now deal with normal messages.
-      if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
-          receiver.path.parent.name != "temp") {
-        if (logger.isTraceEnabled()) {
-          logger.trace("tellEnqueue.tell(): " + sender + " -> " + receiver + " " + msg)
-        }
-        tellEnqueue.tell()
-      }
+    if (_passThrough.get()) {
       return true
     }
+
+    // First check if it's an external thread sending outside of
+    // sendKnownExternalMessages.
+    if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
+        !Instrumenter.threadNameIsAkkaInternal() &&
+        !sendingKnown &&
+        receiver.path.parent.name != "temp") {
+      scheduler.enqueue_message(Some(sender), receiver.path.name, msg)
+      return false
+    }
+
+    // Now deal with normal messages.
+    if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
+        receiver.path.parent.name != "temp") {
+      if (logger.isTraceEnabled()) {
+        logger.trace("tellEnqueue.tell(): " + sender + " -> " + receiver + " " + msg)
+      }
+      tellEnqueue.tell()
+    }
+    return true
   }
   
   def blockUntilActorCreated(ref: ActorRef) {

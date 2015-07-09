@@ -275,8 +275,8 @@ trait ExternalEventInjector[E] {
       fd.send_all_pending_responses()
     }
     // Drain message queue
-    messagesToSend.synchronized {
-      Instrumenter().sendKnownExternalMessages(() => {
+    Instrumenter().sendKnownExternalMessages(() => {
+      messagesToSend.synchronized {
         for ((senderOpt, receiver, msg) <- messagesToSend) {
           // Check if the message is actually a special marker
           msg match {
@@ -298,9 +298,9 @@ trait ExternalEventInjector[E] {
               }
           }
         }
-      })
-      messagesToSend.clear()
-    }
+        messagesToSend.clear()
+      }
+    })
 
     // Wait to make sure all messages are enqueued
     Instrumenter().await_enqueue()
