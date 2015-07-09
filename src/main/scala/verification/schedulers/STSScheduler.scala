@@ -115,6 +115,16 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // This is really just a sanity check.
   var expectedExternalAtomicBlocks = new HashSet[Long]
 
+  // An optional callback that will be before we execute the trace.
+  type PreTestCallback = () => Unit
+  var preTestCallback : PreTestCallback = () => None
+  def setPreTestCallback(c: PreTestCallback) { preTestCallback = c }
+
+  // An optional callback that will be invoked after we execute the trace.
+  type PostTestCallback = () => Unit
+  var postTestCallback : PostTestCallback = () => None
+  def setPostTestCallback(c: PostTestCallback) { postTestCallback = c }
+
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent],
@@ -129,6 +139,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
+
+    preTestCallback()
 
     // We only ever replay once
     if (stats != null) {
@@ -166,12 +178,14 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     currentlyInjecting.set(true)
 
     // Kick off the system's initialization routine
+    var initThread : Thread = null
     initializationRoutine match {
       case Some(f) =>
         println("Running initializationRoutine...")
-        new Thread(
+        initThread = new Thread(
           new Runnable { def run() = { f() } },
-          "initializationRoutine").start
+          "initializationRoutine")
+        initThread.start
       case None =>
     }
 
@@ -193,6 +207,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     val ret = violationFound match {
       case true => Some(event_orchestrator.events)
       case false => None
+    }
+    postTestCallback()
+    // Wait until the initialization thread is done. Assumes that it
+    // terminates!
+    if (initThread != null) {
+      initThread.join
     }
     reset_all_state
     return ret
@@ -284,14 +304,22 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             expectedExternalAtomicBlocks += id
 
             // We block until the atomic block has finished
-            endedExternalAtomicBlocks.synchronized {
-              while (!(endedExternalAtomicBlocks contains id)) {
-                println("Blocking until endExternalAtomicBlock("+id+")")
-                // (Releases lock)
-                endedExternalAtomicBlocks.wait()
-                send_external_messages(false)
+            beganExternalAtomicBlocks.synchronized {
+              if (beganExternalAtomicBlocks contains id) {
+                endedExternalAtomicBlocks.synchronized {
+                  send_external_messages(false)
+                  while (!(endedExternalAtomicBlocks contains id)) {
+                    println("Blocking until endExternalAtomicBlock("+id+")")
+                    // (Releases lock)
+                    endedExternalAtomicBlocks.wait()
+                    send_external_messages(false)
+                  }
+                  endedExternalAtomicBlocks -= id
+                  beganExternalAtomicBlocks -= id
+                }
+              } else {
+                println("Ignoring externalAtomicBlock("+id+")")
               }
-              endedExternalAtomicBlocks -= id
             }
           case EndExternalAtomicBlock(id) =>
             assert(expectedExternalAtomicBlocks contains id)
@@ -361,12 +389,13 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
               // that calls advanceReplay(), so we should be guarenteed that
               // schedule_new_message will not be invoked while we are
               // blocked here.
-              while (!messagePending(m)) {
-                println("Blocking until enqueue_message...")
-                messagesToSend.synchronized {
+              messagesToSend.synchronized {
+                while (!messagePending(m)) {
+                  println("Blocking until enqueue_message...")
                   messagesToSend.wait()
+                  println("Checking messagePending..")
+                  // N.B. messagePending(m) invokes send_external_messages
                 }
-                // N.B. messagePending(m) invokes send_external_messages
               }
               // Yay, it became enabled.
               break
@@ -380,6 +409,15 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.events += BeginWaitQuiescence
             event_orchestrator.trace_advanced
             break
+          case c @ CodeBlock(block) =>
+            event_orchestrator.events += c // keep the id the same
+            // Since the block might send messages, make sure that we treat the
+            // message sends as if they are being triggered by an external
+            // thread, i.e. we enqueue them rather than letting them be sent
+            // immediately.
+            Instrumenter.overrideInternalThreadRule
+            block()
+            Instrumenter.unsetInternalThreadRuleOverride
           case ChangeContext(_) => () // Check what is going on
         }
         event_orchestrator.trace_advanced
@@ -439,8 +477,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
   // Record a mapping from actor names to actor refs
   override def event_produced(event: Event) = {
-    super.event_produced(event)
     handle_spawn_produced(event)
+    super.event_produced(event)
   }
 
   // Record that an event was consumed

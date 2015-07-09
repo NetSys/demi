@@ -1,10 +1,17 @@
 package akka.dispatch.verification
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
   def this(oracle: TestOracle) = this(oracle, true)
 
+  val logger = LoggerFactory.getLogger("DDMin")
+
   var violation_fingerprint : ViolationFingerprint = null
   val stats = new MinimizationStats("DDMin", oracle.getName)
+  var initializationRoutine : Option[() => Any] = None
   var original_num_events = 0
   var total_inputs_pruned = 0
 
@@ -14,14 +21,24 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
   //
   // Note that this differs from the 2001 version:
   //   https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf
-  def minimize(events: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent] = {
+  def minimize(events: Seq[ExternalEvent],
+               _violation_fingerprint: ViolationFingerprint,
+               _initializationRoutine: Option[() => Any]=None) : Seq[ExternalEvent] = {
     MessageTypes.sanityCheckTrace(events)
     violation_fingerprint = _violation_fingerprint
+    initializationRoutine = _initializationRoutine
+
+    if (logger.isTraceEnabled()) {
+      logger.trace("Minimizing:---")
+      events foreach { case e => logger.trace(e.asInstanceOf[UniqueExternalEvent].toStringWithId) }
+      logger.trace("---")
+    }
 
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
       println("Checking if unmodified trace triggers violation...")
-      if (oracle.test(events, violation_fingerprint, stats) == None) {
+      if (oracle.test(events, violation_fingerprint, stats,
+                      initializationRoutine=initializationRoutine) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
       }
     }
@@ -42,8 +59,11 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
     return mcs
   }
 
-  def verify_mcs(mcs: Seq[ExternalEvent], _violation_fingerprint: ViolationFingerprint): Option[EventTrace] = {
-    return oracle.test(mcs, _violation_fingerprint, new MinimizationStats("NOP", "NOP"))
+  def verify_mcs(mcs: Seq[ExternalEvent],
+      _violation_fingerprint: ViolationFingerprint,
+      initializationRoutine: Option[() => Any]=None): Option[EventTrace] = {
+    return oracle.test(mcs, _violation_fingerprint,
+      new MinimizationStats("NOP", "NOP"), initializationRoutine=initializationRoutine)
   }
 
   def ddmin2(dag: EventDag, remainder: EventDag): EventDag = {
@@ -64,7 +84,8 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
     for ((split, i) <- splits.zipWithIndex) {
       val union = split.union(remainder)
       println("Checking split " + union.get_all_events.map(e => e.label).mkString(","))
-      val passes = oracle.test(union.get_all_events, violation_fingerprint, stats) == None
+      val passes = oracle.test(union.get_all_events, violation_fingerprint,
+        stats, initializationRoutine=initializationRoutine) == None
       // There may have been many replays since the last time we recorded
       // iteration size; record each one's iteration size from before we invoked test()
       for (i <- (stats.iteration until stats.total_replays)) {

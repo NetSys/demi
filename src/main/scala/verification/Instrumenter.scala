@@ -10,6 +10,8 @@ import akka.actor.Actor
 import akka.actor.PoisonPill
 import akka.actor.Props
 import akka.actor.Cancellable
+import akka.actor.RootActorPath
+import akka.actor.Address
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -28,8 +30,12 @@ import scala.collection.mutable.Stack
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
+import scala.concurrent.Future
+
 import scala.util.Random
 import scala.util.control.Breaks
+
+import java.nio.charset.StandardCharsets
 
 import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
@@ -178,11 +184,46 @@ class Instrumenter {
    * If an external thread sends messages outside of this interface, its
    * messages will not be sent right away; instead they will be passed to
    * scheduler.enqueue_message() to be sent later at known point.
+   *
+   * N.B. send != deliver
    */
   def sendKnownExternalMessages(sendBlock: () => Any) {
-    sendingKnownExternalMessages.set(true)
-    sendBlock()
-    sendingKnownExternalMessages.set(false)
+    sendingKnownExternalMessages.synchronized {
+      sendingKnownExternalMessages.set(true)
+      sendBlock()
+      sendingKnownExternalMessages.set(false)
+    }
+  }
+
+  /**
+   * Rather than having akka assign labels $a, $b, $c, etc to temp actors,
+   * assign our own that will be more resilient to divergence in the execution
+   * as we replay. See this design doc for more details:
+   *   https://docs.google.com/document/d/1rAM8EEy3WnLRhhPROvHmBhAREv0rmihz0Gw0GgF1xC4
+   */
+  def assignTempPath(tempPath: ActorPath): ActorPath = synchronized {
+    val callStack = Thread.currentThread().getStackTrace().map(e => e.getMethodName).drop(14) // drop off common prefix
+    val min3 = math.min(3, callStack.length)
+    var truncated = callStack.take(min3).toList
+    if (idToPrependToCallStack != "") {
+      truncated = idToPrependToCallStack :: truncated
+      idToPrependToCallStack = ""
+    }
+    val bytes = truncated.mkString("-").getBytes(StandardCharsets.UTF_8)
+    val b64 = java.util.Base64.getEncoder.encodeToString(bytes)
+    val path = tempPath / b64
+    return path
+  }
+
+  // In cases where there might be multiple threads with the same callstack
+  // invoking `ask`, have them call this with an ID to avoid ambiguity in temp
+  // actor names. Serialized with a lock on the Instrumenter object.
+  var idToPrependToCallStack = ""
+
+  def serializeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
+    assert(idToPrependToCallStack == "")
+    idToPrependToCallStack = id
+    return ask()
   }
 
   /**
@@ -197,6 +238,12 @@ class Instrumenter {
    *    scheduler.enqueue_message.
    */
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
+    // Crucial property: if this is an external thread and STS2 is currently
+    // sendingKnownExternalMessages, block here until STS2 is done!
+    val sendingKnown = sendingKnownExternalMessages.synchronized {
+      sendingKnownExternalMessages.get()
+    }
+
     assert(receiver != null)
 
     if (_passThrough.get()) {
@@ -207,7 +254,8 @@ class Instrumenter {
     // sendKnownExternalMessages.
     if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
         !Instrumenter.threadNameIsAkkaInternal() &&
-        !sendingKnownExternalMessages.get()) {
+        !sendingKnown &&
+        receiver.path.parent.name != "temp") {
       scheduler.enqueue_message(Some(sender), receiver.path.name, msg)
       return false
     }
@@ -223,6 +271,13 @@ class Instrumenter {
     return true
   }
   
+  def blockUntilActorCreated(ref: ActorRef) {
+    actorMappings.synchronized {
+      while (!(actorMappings contains ref.path.name)) {
+         actorMappings.wait
+      }
+    }
+  }
   
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
@@ -240,7 +295,10 @@ class Instrumenter {
       seenActors += ((system, (actor, props, name)))
     }
     
-    actorMappings(name) = actor
+    actorMappings.synchronized {
+      actorMappings(name) = actor
+      actorMappings.notifyAll
+    }
       
     println("System has created a new actor: " + actor.path.name)
   }
@@ -267,6 +325,11 @@ class Instrumenter {
     allowedEvents.clear()
     dispatchers.clear()
     Util.logger.reset()
+    blockedActors = Set[String]()
+    tempToParent = new HashMap[ActorPath, String]
+    askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
+    sendingKnownExternalMessages = new AtomicBoolean(false)
+    stopDispatch = new AtomicBoolean(false)
   }
 
   // Restart the system:
@@ -386,8 +449,8 @@ class Instrumenter {
         }
         dispatch_new_message(new_cell, envelope)
       case None =>
-        throw new IllegalStateException("Actor is blocked, yet there are no "+
-                                        "messages to schedule")
+        logger.warn("Actor is blocked, yet there are no messages to schedule")
+        scheduler.notify_quiescence()
     }
   }
   
@@ -415,10 +478,12 @@ class Instrumenter {
     inActor = false
     currentActor = ""
 
-    if (stopDispatch.get()) {
-      println("Stopping dispatch..")
-      stopDispatch.set(false)
-      return
+    stopDispatch.synchronized {
+      if (stopDispatch.get()) {
+        println("Stopping dispatch..")
+        stopDispatch.set(false)
+        return
+      }
     }
 
     scheduler.after_receive(cell) 
@@ -444,10 +509,6 @@ class Instrumenter {
       return true
     }
 
-    if (!(actorMappings contains sender.path.name)) {
-      // System message
-      return true
-    }
     if (!(tempToParent contains temp.path)) {
       // temp actor was spawned by an external thread
       return true
@@ -455,7 +516,10 @@ class Instrumenter {
     // Assume it's impossible for an internal actor to `ask` the outside world
     // anything (which would need to be the case if the external thread is now
     // answering).
-    assert(Instrumenter.threadNameIsAkkaInternal)
+    // TODO(cs): our current preStart heuristic can cause this to fail, when
+    // preStart sends an answer to an `ask`. Wait
+    // until we properly handle preStart before we uncomment this.
+    // assert(Instrumenter.threadNameIsAkkaInternal)
 
     if (!(askAnswerNotYetScheduled contains temp)) {
       // Hasn't been scheduled for delivery yet.
@@ -514,14 +578,9 @@ class Instrumenter {
     }
   }
 
-  def isRepeatingTimer(rcv: String, msg: Any) : Boolean = {
-    if (timerToCancellable contains (rcv, msg)) {
-      val cancellable = timerToCancellable((rcv, msg))
-      return ongoingCancellableTasks contains cancellable
-    }
-    return false
+  def isTimer(rcv: String, msg: Any) : Boolean = {
+    return timerToCancellable contains (rcv, msg)
   }
-  
   
   // Called when dispatch is called.
   def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
@@ -716,12 +775,26 @@ object Instrumenter {
     obj
   }
 
+  val _overrideInternalThreadRule = new AtomicBoolean(false)
+
+  // akka-dispatcher threads should invoke this when they want all message
+  // send events to be treated as if they are coming from an external thread,
+  // i.e. have message sends enqueued rather than sent immediately.
+  def overrideInternalThreadRule() {
+    _overrideInternalThreadRule.set(true)
+  }
+
+  def unsetInternalThreadRuleOverride() {
+    _overrideInternalThreadRule.set(false)
+  }
+
   // Hack: check if name matches `.*dispatcher.*`, and moreover that the
   // dispatcher thread is not running asynchronously (out of our control) to
   // invoke an actor's preStart method. Hope that external
   // thread names don't match this pattern!
   def threadNameIsAkkaInternal() : Boolean = {
     return Thread.currentThread.getName().contains("dispatcher") &&
-           !Thread.currentThread().getStackTrace().map(e => e.getMethodName).exists(e => e == "preStart")
+           !Thread.currentThread().getStackTrace().map(e => e.getMethodName).exists(e => e == "preStart") &&
+           !_overrideInternalThreadRule.get()
   }
 }

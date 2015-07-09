@@ -5,10 +5,14 @@ import scala.util.parsing.json.JSONObject
 
 trait Minimizer {
   // Returns the MCS.
-  def minimize(events: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Seq[ExternalEvent]
+  def minimize(events: Seq[ExternalEvent],
+               violation_fingerprint: ViolationFingerprint,
+               initializationRoutine: Option[()=>Any]=None) : Seq[ExternalEvent]
   // Returns Some(execution) if the final MCS was able to be reproduced,
   // otherwise returns None.
-  def verify_mcs(mcs: Seq[ExternalEvent], violation_fingerprint: ViolationFingerprint) : Option[EventTrace]
+  def verify_mcs(mcs: Seq[ExternalEvent],
+                 violation_fingerprint: ViolationFingerprint,
+                 initializationRoutine: Option[()=>Any]=None) : Option[EventTrace]
 }
 
 // Statistics about how the minimization process worked.

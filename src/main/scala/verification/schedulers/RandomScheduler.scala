@@ -12,6 +12,7 @@ import scala.collection.mutable.Set
 import scala.collection.mutable.HashSet
 import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
+import scala.collection.generic.Growable
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -38,7 +39,8 @@ import org.slf4j.LoggerFactory,
  */
 class RandomScheduler(val schedulerConfig: SchedulerConfig,
                       max_executions:Int=1,
-                      invariant_check_interval:Int=0)
+                      invariant_check_interval:Int=0,
+                      randomizationStrategy:RandomizationStrategy=new FullyRandom)
     extends AbstractScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
   def getName: String = "RandomScheduler"
 
@@ -62,7 +64,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   // Our use of Uniq and Unique is somewhat confusing. Uniq is used to
   // associate MsgSends with their subsequent MsgEvents.
   // Unique is used by DepTracker.
-  var pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
+  val pendingEvents : RandomizationStrategy = randomizationStrategy
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
@@ -94,24 +96,27 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   // the DepGraph (used by DPOR).
   var depTracker = new DepTracker(messageFingerprinter)
 
-  // Avoid infinite loops with repeating timers: if we just scheduled one,
+  // Avoid infinite loops with timers: if we just scheduled one,
   // don't schedule the exact same one immediately again until we've scheduled
   // some other message first.
+  //
   // Tuple is : (receiver, timer object)
-  // TODO(cs): could still have *cycles* of repeating timer deliveries... Deal with that
-  // if it comes up.
-  // Implementation note: if justScheduledRepeatingTimer == Some, that implies
-  // that we just blocked the second repeat timer from being sent. (since repeat
-  // timers are normally sent immediately after they are delivered). To make
-  // sure that the repeat timer is correctly repeated, resend it as soon as we
-  // deliver a non-repeat timer.
-  var justScheduledRepeatingTimer : Option[(String, Any)] = None
+  //
+  // Invariant: if a pending timer is contained in this HashSet, it should
+  // never also be contained in pendingEvents. i.e., placing a timer
+  // in justScheduledTimers should effectively `decommision` it.
+  val justScheduledTimers = new HashSet[(String, Any)]
+
+  // if a timer was retriggered while it was also contained in
+  // justScheduledTimers, put it here rather than pendingEvents.
+  val timersToResend = new SynchronizedQueue[(String, Any)]
 
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
   setQuiescenceCallback(() => {
-    assert(event_orchestrator.previous_event.getClass == classOf[WaitQuiescence])
-    depTracker.reportQuiescence(event_orchestrator.previous_event.asInstanceOf[WaitQuiescence])
+    if (event_orchestrator.previous_event.getClass == classOf[WaitQuiescence]) {
+      depTracker.reportQuiescence(event_orchestrator.previous_event.asInstanceOf[WaitQuiescence])
+    }
   })
   // Tell EventOrchestrator to tell us about Kills, Parititions, UnPartitions
   event_orchestrator.setKillCallback(depTracker.reportKill)
@@ -277,7 +282,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         }
         val unique = depTracker.reportNewlyEnabled(snd, rcv, msg)
         if (!crosses_partition(snd, rcv)) {
-          pendingEvents.insert((uniq, unique))
+          pendingEvents += ((uniq, unique))
         }
       }
       case ExternalMessage => {
@@ -286,7 +291,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
           pendingSystemMessages += uniq
         } else {
           val unique = depTracker.reportNewlyEnabledExternal(snd, rcv, msg)
-          pendingEvents.insert(uniq, unique)
+          pendingEvents += ((uniq, unique))
         }
       }
       case FailureDetectorQuery => None
@@ -362,20 +367,20 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
       }
     }
 
-    // Invoked when we're about to schedule a non-repeating timer.
+    // Invoked when we're about to schedule a new message (either a repeating
+    // timer or a normal message)
     def updateRepeatingTimer(aboutToDeliver: (Cell, Envelope)) {
-      justScheduledRepeatingTimer match {
-        case None =>
-        case Some((rcv, timer)) =>
-          // Send (but don't yet schedule) it, and reset.
-          justScheduledRepeatingTimer = None
-          handle_timer(rcv, timer)
-      }
-
-      if (Instrumenter().isRepeatingTimer(
+      if (Instrumenter().isTimer(
             aboutToDeliver._1.self.path.name, aboutToDeliver._2.message)) {
-        justScheduledRepeatingTimer = Some(
-          (aboutToDeliver._1.self.path.name, aboutToDeliver._2.message))
+        justScheduledTimers += ((aboutToDeliver._1.self.path.name,
+                                 aboutToDeliver._2.message))
+      } else {
+        // We're about to deliver a non-timer! Resend all of
+        // the repeating timers.
+        // TODO(cs): I don't know if this screws up depGraph...
+        timersToResend foreach { case (rcv, timer) => handle_timer(rcv, timer) }
+        timersToResend.clear
+        justScheduledTimers.clear
       }
     }
 
@@ -401,7 +406,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
       blockedActors,
       pendingEvents,
-      () => pendingEvents.removeRandomElement(),
+      () => pendingEvents.removeRandomElement,
       (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name) match {
       case Some((uniq,  unique)) =>
         messagesScheduledSoFar += 1
@@ -472,29 +477,16 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     }
     // Awkward, we need to walk through the entire hashset to find what we're
     // looking for.
-    val toRemove = pendingEvents.arr.find((element) => {
-      val otherRcv = element._1._1.element._1.self.path.name
-      val otherMsg = element._1._1.element._2.message
-      rcv.path.name == otherRcv && msg == otherMsg
-    })
-    toRemove match {
-      case Some(e) =>
-        pendingEvents.remove(e)
-      case None =>
-        // It was already delivered. This is weird that the application is
-        // still trying to cancel it, but I don't think it's a violation of
-        // soundness on our part.
-        None
-    }
+    pendingEvents.remove("deadLetters",rcv.path.name, msg)
   }
 
   override def enqueue_timer(receiver: String, msg: Any) {
-    justScheduledRepeatingTimer match {
-      case Some((rcv, timer)) =>
-        // avoid infinite loop; don't enqueue it, just keep it stored in
-        // justScheduledRepeatingTimer.
-        if (receiver == rcv && timer == msg) return
-      case None =>
+    if (justScheduledTimers contains ((receiver, msg))) {
+      // We just scheduled this timer, don't yet put it in
+      // pendingEvents! This is to avoid an infinite loop of scheduling
+      // timers.
+      timersToResend += ((receiver, msg))
+      return
     }
 
     handle_timer(receiver, msg)
@@ -506,8 +498,9 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     // N.B. important to clear our state after we invoke reset_state, since
     // it's possible that enqueue_message may be called during shutdown.
     super.reset_all_state
-    justScheduledRepeatingTimer = None
-    pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
+    justScheduledTimers.clear()
+    timersToResend.clear()
+    pendingEvents.clear()
     pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
     lookingFor = None
     violationFound = None
@@ -534,6 +527,130 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         return Some(trace)
       case None =>
         return None
+    }
+  }
+}
+
+// Our use of Uniq and Unique is somewhat confusing. Uniq is used to
+// associate MsgSends with their subsequent MsgEvents.
+// Unique is used by DepTracker.
+//
+// Inheritors must implement:
+//   def iterator: Iterator[(Uniq[(Cell,Envelope)],Unique)]
+//   def +=(elem: A): Growable.this.type
+//   def clear(): Unit
+// Plus these:
+trait RandomizationStrategy extends
+    Iterable[(Uniq[(Cell,Envelope)],Unique)] with
+    Growable[(Uniq[(Cell,Envelope)],Unique)] {
+  def removeRandomElement: (Uniq[(Cell,Envelope)],Unique)
+  // Remove the first matching element
+  def remove(snd: String, rcv: String, msg: Any)
+}
+
+class FullyRandom extends RandomizationStrategy {
+  val pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
+
+  def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] =
+    pendingEvents.iterator
+
+  def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = {
+    pendingEvents += tuple
+    return this
+  }
+
+  def clear(): Unit = {
+    pendingEvents.clear
+  }
+
+  def remove(snd: String, rcv: String, msg: Any): Unit = {
+    for (e <- pendingEvents.arr) {
+      val otherSnd  = e._1._1.element._2.sender.path.name
+      val otherRcv = e._1._1.element._1.self.path.name
+      val otherMsg = e._1._1.element._2.message
+      if (snd == otherSnd && rcv == otherRcv && msg == otherMsg) {
+        pendingEvents.remove(e)
+        return
+      }
+    }
+  }
+
+  def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = {
+    return pendingEvents.removeRandomElement
+  }
+}
+
+// For each <src, dst> pair, maintain FIFO order. Other than that, fully
+// random.
+class SrcDstFIFO extends RandomizationStrategy {
+  val srcDsts = new ArrayBuffer[(String, String)]
+  val rand = new Random(System.currentTimeMillis())
+  val srcDstToMessages = new HashMap[(String, String),
+                                     Queue[(Uniq[(Cell,Envelope)],Unique)]]
+  val allMessages = new MultiSet[(Uniq[(Cell,Envelope)],Unique)]
+
+  def getRandomSrcDst(): ((String, String), Int) = {
+    val idx = rand.nextInt(srcDsts.length)
+    return (srcDsts(idx), idx)
+  }
+
+  def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] =
+    // Hm, currently the only use of .iterator is .isEmpty. So it doesn't
+    // really matter what order we give.
+    allMessages.iterator
+
+  def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = {
+    val src = tuple._1.element._2.sender.path.name
+    val dst = tuple._1.element._1.self.path.name
+    if (!(srcDstToMessages contains ((src, dst)))) {
+      // If there is no queue, create one
+      srcDsts += ((src, dst))
+      srcDstToMessages((src, dst)) = new Queue[(Uniq[(Cell,Envelope)],Unique)]
+    }
+
+    // append to the queue
+    srcDstToMessages((src, dst)) += tuple
+    allMessages += tuple
+    return this
+  }
+
+  def clear(): Unit = {
+    srcDsts.clear()
+    srcDstToMessages.clear()
+    allMessages.clear()
+  }
+
+  def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = {
+    // First find a random queue. Then dequeue from the queue.
+    val (srcDst, idx) = getRandomSrcDst
+    val queue = srcDstToMessages(srcDst)
+    val ret = queue.dequeue
+    if (queue.isEmpty) {
+      srcDstToMessages -= srcDst
+      srcDsts.remove(idx)
+    }
+    allMessages -= ret
+    return ret
+  }
+
+  def remove(src: String, dst: String, msg: Any): Unit = {
+    if (!(srcDstToMessages contains ((src,dst)))) {
+      return
+    }
+    val queue = srcDstToMessages((src,dst))
+    queue.dequeueFirst(t => {
+      val s = t._1.element._2.sender.path.name
+      val d = t._1.element._1.self.path.name
+      val m = t._1.element._2.message
+      (s == src && d == dst && msg == m)
+    }) match {
+      case Some(t) =>
+        allMessages -= t
+        if (queue.isEmpty) {
+          srcDstToMessages -= ((src,dst))
+          srcDsts.remove(srcDsts.indexOf(((src,dst))))
+        }
+      case _ =>
     }
   }
 }

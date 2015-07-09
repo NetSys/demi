@@ -120,9 +120,10 @@ trait ExternalEventInjector[E] {
   // Whether we are currently processing an "UnignorableEvents" block
   var unignorableEvents = new AtomicBoolean(false)
 
-  // All external thread ids that are currently in a
-  // "AtomicBlock", i.e. a BeginAtomicBlock has occured but not yet an
-  // EndAtomicBlock.
+  // All external thread ids that recently began an "AtomicBlock"
+  var beganExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
+
+  // All external thread ids that recently ended an "AtomicBlock"
   var endedExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
 
   // how many external atomic blocks are currently running
@@ -167,6 +168,9 @@ trait ExternalEventInjector[E] {
     // Place the marker into the current place in messagesToSend; any messages
     // already enqueued before this are not part of the
     // beginExternalAtomicBlock
+    beganExternalAtomicBlocks.synchronized {
+      beganExternalAtomicBlocks += taskId
+    }
     messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
     pendingExternalAtomicBlocks.incrementAndGet()
     // We shouldn't be dispatching while the atomic block executes.
@@ -187,10 +191,16 @@ trait ExternalEventInjector[E] {
       endedExternalAtomicBlocks.notifyAll()
     }
     if (pendingExternalAtomicBlocks.decrementAndGet() == 0) {
-      if (Instrumenter().stopDispatch.get()) {
-        // Still haven't stopped dispatch, so don't restart
-        Instrumenter().stopDispatch.set(false)
-      } else {
+      var restartDispatch = false
+      Instrumenter().stopDispatch.synchronized {
+        if (Instrumenter().stopDispatch.get()) {
+          // Still haven't stopped dispatch, so don't restart
+          Instrumenter().stopDispatch.set(false)
+        } else {
+          restartDispatch = true
+        }
+      }
+      if (restartDispatch) {
         println("Restarting dispatch!")
         Instrumenter().start_dispatch
       }
@@ -208,20 +218,22 @@ trait ExternalEventInjector[E] {
 
   def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
     enqueuedExternalMessages += msg
-    messagesToSend += ((sender, actor, msg))
 
     // signal to the main thread that it should wake up if it's blocked on
     // external messages
     messagesToSend.synchronized {
+      messagesToSend += ((sender, actor, msg))
       messagesToSend.notifyAll()
     }
 
-    if (dispatchAfterEnqueueMessage.get()) {
-      dispatchAfterEnqueueMessage.set(false)
-      println("dispatching after enqueue_message")
-      started.set(true)
-      send_external_messages()
-      Instrumenter().start_dispatch()
+    dispatchAfterEnqueueMessage.synchronized {
+      if (dispatchAfterEnqueueMessage.get()) {
+        dispatchAfterEnqueueMessage.set(false)
+        println("dispatching after enqueue_message")
+        started.set(true)
+        send_external_messages()
+        Instrumenter().start_dispatch()
+      }
     }
   }
 
@@ -232,7 +244,13 @@ trait ExternalEventInjector[E] {
     }
 
     if (event_orchestrator.actorToActorRef contains receiver) {
-      messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
+      // signal to the main thread that it should wake up if it's blocked on
+      // external messages
+      messagesToSend.synchronized {
+        messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
+        messagesToSend.notifyAll()
+      }
+
     } else {
       println("WARNING! Unknown timer receiver " + receiver)
     }
@@ -257,16 +275,16 @@ trait ExternalEventInjector[E] {
       fd.send_all_pending_responses()
     }
     // Drain message queue
-    messagesToSend.synchronized {
-      Instrumenter().sendKnownExternalMessages(() => {
+    Instrumenter().sendKnownExternalMessages(() => {
+      messagesToSend.synchronized {
         for ((senderOpt, receiver, msg) <- messagesToSend) {
           // Check if the message is actually a special marker
           msg match {
             case BeginExternalAtomicBlock(taskId) =>
               event_orchestrator.events += BeginExternalAtomicBlock(taskId)
             case EndExternalAtomicBlock(taskId) =>
-              endedExternalAtomicBlocks += taskId
               endedExternalAtomicBlocks.synchronized {
+                endedExternalAtomicBlocks += taskId
                 endedExternalAtomicBlocks.notifyAll()
               }
               event_orchestrator.events += EndExternalAtomicBlock(taskId)
@@ -280,9 +298,9 @@ trait ExternalEventInjector[E] {
               }
           }
         }
-      })
-      messagesToSend.clear()
-    }
+        messagesToSend.clear()
+      }
+    })
 
     // Wait to make sure all messages are enqueued
     Instrumenter().await_enqueue()
@@ -474,7 +492,9 @@ trait ExternalEventInjector[E] {
           } else {
             // wait for enqueue_message to be invoked.
             println("waiting for enqueue_message...")
-            dispatchAfterEnqueueMessage.set(true)
+            dispatchAfterEnqueueMessage.synchronized {
+              dispatchAfterEnqueueMessage.set(true)
+            }
           }
         case _ =>
           quiescenceCallback()
@@ -546,7 +566,10 @@ trait ExternalEventInjector[E] {
     schedSemaphore = new Semaphore(1)
     enqueuedExternalMessages = new MultiSet[Any]
     unignorableEvents = new AtomicBoolean(false)
+    beganExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
     endedExternalAtomicBlocks = new MultiSet[Long] with SynchronizedSet[Long]
+    pendingExternalAtomicBlocks = new AtomicInteger(0)
+    dispatchAfterEnqueueMessage = new AtomicBoolean(false)
     messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]
     alreadyPopulated = false
     println("state reset.")

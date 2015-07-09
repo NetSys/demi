@@ -206,6 +206,7 @@ object RunnerUtils {
                     schedulerConfig: SchedulerConfig,
                     trace: EventTrace,
                     violation: ViolationFingerprint,
+                    initializationRoutine: Option[() => Any]=None,
                     actorNameProps: Option[Seq[Tuple2[Props, String]]]=None,
                     _sched:Option[STSScheduler]=None) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
@@ -217,16 +218,19 @@ object RunnerUtils {
     }
 
     val ddmin = new DDMin(sched)
-    // STSSched doesn't actually pay any attention to WaitQuiescence, so just
-    // get rid of them.
+    // STSSched doesn't actually pay any attention to WaitQuiescence or
+    // WaitCondition, so just get rid of them.
     val filteredQuiescence = trace.original_externals flatMap {
       case WaitQuiescence() => None
+      case WaitCondition(_) => None
       case e => Some(e)
     }
-    val mcs = ddmin.minimize(filteredQuiescence, violation)
+    val mcs = ddmin.minimize(filteredQuiescence, violation,
+      _initializationRoutine=initializationRoutine)
     printMCS(mcs)
     println("Validating MCS...")
-    var validated_mcs = ddmin.verify_mcs(mcs, violation)
+    var validated_mcs = ddmin.verify_mcs(mcs, violation,
+      initializationRoutine=initializationRoutine)
     validated_mcs match {
       case Some(trace) =>
         println("MCS Validated!")

@@ -297,6 +297,11 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
               }
               case _ => None
             }
+          case c @ CodeBlock(_) =>
+            if (remaining(0) == c) {
+              result += event
+              remaining = remaining.tail
+            }
           // We don't currently use ContextSwitches, so prune them to remove
           // clutter.
           case ChangeContext(_) => None
