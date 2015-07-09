@@ -431,8 +431,8 @@ class Instrumenter {
         }
         dispatch_new_message(new_cell, envelope)
       case None =>
-        throw new IllegalStateException("Actor is blocked, yet there are no "+
-                                        "messages to schedule")
+        logger.warn("Actor is blocked, yet there are no messages to schedule")
+        scheduler.notify_quiescence()
     }
   }
   
