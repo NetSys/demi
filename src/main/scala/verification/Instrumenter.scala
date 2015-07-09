@@ -243,26 +243,35 @@ class Instrumenter {
         return true
       }
 
-    // First check if it's an external thread sending outside of
-    // sendKnownExternalMessages.
-    if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
-        !Instrumenter.threadNameIsAkkaInternal() &&
-        !sendingKnownExternalMessages.get()) {
-      scheduler.enqueue_message(Some(sender), receiver.path.name, msg)
-      return false
-    }
-
-    // Now deal with normal messages.
-    if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
-        receiver.path.parent.name != "temp") {
-      if (logger.isTraceEnabled()) {
-        logger.trace("tellEnqueue.tell(): " + sender + " -> " + receiver + " " + msg)
+      // First check if it's an external thread sending outside of
+      // sendKnownExternalMessages.
+      if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
+          !Instrumenter.threadNameIsAkkaInternal() &&
+          !sendingKnownExternalMessages.get() &&
+          receiver.path.parent.name != "temp") {
+        scheduler.enqueue_message(Some(sender), receiver.path.name, msg)
+        return false
       }
-      tellEnqueue.tell()
+
+      // Now deal with normal messages.
+      if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
+          receiver.path.parent.name != "temp") {
+        if (logger.isTraceEnabled()) {
+          logger.trace("tellEnqueue.tell(): " + sender + " -> " + receiver + " " + msg)
+        }
+        tellEnqueue.tell()
+      }
+      return true
     }
-    return true
   }
   
+  def blockUntilActorCreated(ref: ActorRef) {
+    actorMappings.synchronized {
+      while (!(actorMappings contains ref.path.name)) {
+         actorMappings.wait
+      }
+    }
+  }
   
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
@@ -280,7 +289,10 @@ class Instrumenter {
       seenActors += ((system, (actor, props, name)))
     }
     
-    actorMappings(name) = actor
+    actorMappings.synchronized {
+      actorMappings(name) = actor
+      actorMappings.notifyAll
+    }
       
     println("System has created a new actor: " + actor.path.name)
   }
@@ -491,10 +503,6 @@ class Instrumenter {
       return true
     }
 
-    if (!(actorMappings contains sender.path.name)) {
-      // System message
-      return true
-    }
     if (!(tempToParent contains temp.path)) {
       // temp actor was spawned by an external thread
       return true

@@ -12,6 +12,7 @@ import akka.actor.Actor;
 import akka.actor.Props;
 import akka.actor.ActorCell;
 import akka.actor.ActorSystem;
+import akka.actor.ActorSystemImpl;
 import akka.actor.ActorContext;
 import akka.actor.Scheduler;
 import akka.actor.Cancellable;
@@ -33,33 +34,18 @@ import java.lang.Runnable;
 
 privileged public aspect WeaveActor {
   Instrumenter inst = Instrumenter.apply();
-    
-  /*
-  pointcut enqueueOperation(MessageQueue me, ActorRef receiver, Envelope handle): 
-  execution(public * akka.dispatch.MessageQueue.enqueue(ActorRef, Envelope)) &&
-  args(receiver, handle) && this(me);
-  
-  Object around(MessageQueue me, ActorRef receiver, Envelope handle):
-  enqueueOperation(me, receiver, handle) {
-	return proceed(me, receiver, handle);
-  }
-  */
-  
-  
   
   before(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
-	inst.beforeMessageReceive(me, msg);
+    inst.beforeMessageReceive(me, msg);
   }
   
   after(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
-	inst.afterMessageReceive(me, msg);
+    inst.afterMessageReceive(me, msg);
   }
-
-
 
   pointcut dispatchOperation(MessageDispatcher me, ActorCell receiver, Envelope handle): 
   execution(* akka.dispatch.MessageDispatcher.dispatch(..)) &&
@@ -67,10 +53,10 @@ privileged public aspect WeaveActor {
 
   Object around(MessageDispatcher me, ActorCell receiver, Envelope handle):
   dispatchOperation(me, receiver, handle) {
-  	if (inst.aroundDispatch(me, receiver, handle))
-   		return proceed(me, receiver, handle);
-   	else
-   		return null;
+    if (inst.aroundDispatch(me, receiver, handle))
+      return proceed(me, receiver, handle);
+    else
+      return null;
   }
 
   // Interposition on `ask`. See this doc for more details:
@@ -96,31 +82,44 @@ privileged public aspect WeaveActor {
   Object around(LocalActorRefProvider me): tempPath(me) {
     return inst.assignTempPath(me.tempNode);
   }
-  
+
+  // newActor is invoked before preStart is called!
+  after(ActorCell me):
+  execution(* akka.actor.ActorCell.newActor()) &&
+  this(me) {
+    inst.new_actor(me.system(), me.props, me.self);
+  }
+
+  // Block until the actor has actually been created and preStart has been invoked!
+  // (which is done asynchronously)
   after(ActorSystem me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props)) &&
   args(props) && this(me) {
-  	inst.new_actor(me, props, actor);
+    inst.blockUntilActorCreated(actor);
   }
-  
+
+  // Block until the actor has actually been created and preStart has been invoked!
+  // (which is done asynchronously)
   after(ActorSystem me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props, String)) &&
   args(props, name) && this(me) {
-  	inst.new_actor(me, props, name, actor);
+    inst.blockUntilActorCreated(actor);
   }
 
-
-  
+  // Block until the actor has actually been created and preStart has been invoked!
+  // (which is done asynchronously)
   after(ActorContext me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props)) &&
   args(props) && this(me) {
-  	inst.new_actor(me.system(), props, actor);
+    inst.blockUntilActorCreated(actor);
   }
-  
+
+  // Block until the actor has actually been created and preStart has been invoked!
+  // (which is done asynchronously)
   after(ActorContext me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props, String)) &&
   args(props, name) && this(me) {
-  	inst.new_actor(me.system(), props, name, actor);
+    inst.blockUntilActorCreated(actor);
   }
 
   Object around(ActorRef me, Object msg, ActorRef sender):
@@ -130,11 +129,6 @@ privileged public aspect WeaveActor {
       return proceed(me, msg, sender);
     }
     return null;
-  }
-  
-  before(ActorRef me, Object msg, ActorRef sender):
-  execution(* akka.actor.ActorRef.tell(Object, ActorRef)) &&
-  args(msg, sender, ..) && this(me) {
   }
 
   // Override akka.actor.Scheduler.schedulerOnce
