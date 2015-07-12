@@ -147,6 +147,9 @@ privileged public aspect WeaveActor {
   // ! directly, but instead calls enqueue_message..
   Object around(LightArrayRevolverScheduler me, FiniteDuration delay, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
   scheduleOnce(me, delay, receiver, msg, exc, sender) {
+    if (!inst.actorKnown(receiver)) {
+      return proceed(me,delay,receiver,msg,exc,sender);
+    }
     class MyRunnable implements java.lang.Runnable {
       // Make it a no-op!
       public void run() {
@@ -167,6 +170,9 @@ privileged public aspect WeaveActor {
   // ! directly, but instead calls enqueue_message..
   Object around(LightArrayRevolverScheduler me, FiniteDuration delay, FiniteDuration interval, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
   schedule(me, delay, interval, receiver, msg, exc, sender) {
+    if (!inst.actorKnown(receiver)) {
+      return proceed(me,delay,interval,receiver,msg,exc,sender);
+    }
     class MyRunnable implements java.lang.Runnable {
       // Make it a no-op!
       public void run() {

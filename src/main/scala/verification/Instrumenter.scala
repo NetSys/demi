@@ -707,6 +707,10 @@ class Instrumenter {
     }
   }
 
+  def actorKnown(ref: ActorRef) : Boolean = {
+    return actorMappings contains ref.path.name
+  }
+
   def registerShutdownCallback(callback: ShutdownCallback) {
     shutdownCallback = callback
   }
