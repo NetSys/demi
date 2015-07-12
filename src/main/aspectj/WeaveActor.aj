@@ -90,12 +90,19 @@ privileged public aspect WeaveActor {
     inst.new_actor(me.system(), me.props, me.self);
   }
 
+  // after preStart has been called, i.e. actor is ready to receive messages.
+  after(ActorCell me):
+  execution(* akka.actor.ActorCell.create(..)) &&
+  this(me) {
+    inst.preStartCalled(me.self);
+  }
+
   // Block until the actor has actually been created and preStart has been invoked!
   // (which is done asynchronously)
   after(ActorSystem me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props)) &&
   args(props) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   // Block until the actor has actually been created and preStart has been invoked!
@@ -103,7 +110,7 @@ privileged public aspect WeaveActor {
   after(ActorSystem me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props, String)) &&
   args(props, name) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   // Block until the actor has actually been created and preStart has been invoked!
@@ -111,7 +118,7 @@ privileged public aspect WeaveActor {
   after(ActorContext me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props)) &&
   args(props) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   // Block until the actor has actually been created and preStart has been invoked!
@@ -119,7 +126,7 @@ privileged public aspect WeaveActor {
   after(ActorContext me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props, String)) &&
   args(props, name) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   Object around(ActorRef me, Object msg, ActorRef sender):

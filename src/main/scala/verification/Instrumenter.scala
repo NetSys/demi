@@ -84,7 +84,10 @@ class Instrumenter {
   val allowedEvents = new HashSet[(ActorCell, Envelope)]  
   
   val seenActors = new HashSet[(ActorSystem, Any)]
+  // Populated before preStart has been called
   val actorMappings = new HashMap[String, ActorRef]
+  // Populated after preStart has been called
+  val preStartCalled = new HashSet[ActorRef]
   
   // Track the executing context (i.e., source of events)
   var currentActor = ""
@@ -271,11 +274,19 @@ class Instrumenter {
     return true
   }
   
-  def blockUntilActorCreated(ref: ActorRef) {
-    actorMappings.synchronized {
-      while (!(actorMappings contains ref.path.name)) {
-         actorMappings.wait
+  def blockUntilPreStartCalled(ref: ActorRef) {
+    preStartCalled.synchronized {
+      while (!(preStartCalled contains ref)) {
+        preStartCalled.wait
       }
+      preStartCalled -= ref
+    }
+  }
+
+  def preStartCalled(ref: ActorRef) {
+    preStartCalled.synchronized {
+      preStartCalled += ref
+      preStartCalled.notifyAll
     }
   }
   
@@ -321,6 +332,7 @@ class Instrumenter {
   
   def reset_per_system_state() {
     actorMappings.clear()
+    preStartCalled.clear()
     seenActors.clear()
     allowedEvents.clear()
     dispatchers.clear()
