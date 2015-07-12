@@ -9,6 +9,7 @@ import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Set
+import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.HashSet
 import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
@@ -480,6 +481,17 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     pendingEvents.remove("deadLetters",rcv.path.name, msg)
   }
 
+  override def actorTerminated(name: String): Seq[(String, Any)] = {
+    // TODO(cs): also deal with pendingSystemMessages
+    return randomizationStrategy.removeAll(name).map {
+      case (uniq, unique) =>
+        val envelope = uniq.element._2
+        val snd = envelope.sender.path.name
+        val msg = envelope.message
+        (snd, msg)
+    }
+  }
+
   override def enqueue_timer(receiver: String, msg: Any) {
     if (justScheduledTimers contains ((receiver, msg))) {
       // We just scheduled this timer, don't yet put it in
@@ -546,6 +558,7 @@ trait RandomizationStrategy extends
   def removeRandomElement: (Uniq[(Cell,Envelope)],Unique)
   // Remove the first matching element
   def remove(snd: String, rcv: String, msg: Any)
+  def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)]
 }
 
 class FullyRandom extends RandomizationStrategy {
@@ -577,6 +590,18 @@ class FullyRandom extends RandomizationStrategy {
 
   def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = {
     return pendingEvents.removeRandomElement
+  }
+
+  def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = {
+    val result = new ListBuffer[(Uniq[(Cell,Envelope)],Unique)]
+    for (e <- pendingEvents.arr) {
+      val otherRcv = e._1._1.element._1.self.path.name
+      if (rcv == otherRcv) {
+        result += e._1
+        pendingEvents.remove(e)
+      }
+    }
+    return result
   }
 }
 
@@ -652,5 +677,23 @@ class SrcDstFIFO extends RandomizationStrategy {
         }
       case _ =>
     }
+  }
+
+  def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = {
+    val result = new ListBuffer[(Uniq[(Cell,Envelope)],Unique)]
+    for (srcDst <- srcDsts) {
+      val src = srcDst._1
+      val dst = srcDst._2
+      if (dst == rcv) {
+        val queue = srcDstToMessages((src, dst))
+        for (e <- queue) {
+          allMessages -= e
+          result += e
+        }
+        srcDstToMessages -= ((src,rcv))
+        srcDsts.remove(srcDsts.indexOf(((src,rcv))))
+      }
+    }
+    return result
   }
 }

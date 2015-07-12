@@ -97,7 +97,7 @@ trait ExternalEventInjector[E] {
   var enqueuedExternalMessages = new MultiSet[Any]
 
   // A set of external messages to send. Messages sent between actors are not
-  // queued here. Tuple is: (sender, receiver, msg, isTimer)
+  // queued here. Tuple is: (sender, receiver, msg)
   var messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]()
 
   // Whether populateActors has been invoked.

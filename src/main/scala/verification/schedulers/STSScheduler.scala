@@ -172,6 +172,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     val updatedEvents = filtered.recomputeExternalMsgSends(subseq)
     event_orchestrator.set_trace(updatedEvents)
 
+    if (logger.isTraceEnabled()) {
+      println("events:----")
+      updatedEvents.zipWithIndex.foreach { case (e,i) => println(i + " " + e) }
+      println("----")
+    }
+
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
 
@@ -328,6 +334,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_start(name)
           case KillEvent (name) =>
             event_orchestrator.trigger_kill(name)
+          case HardKill (name) =>
+            event_orchestrator.trigger_hard_kill(name)
           case PartitionEvent((a,b)) =>
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
@@ -681,6 +689,21 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   }
 
   override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
+
+  override def actorTerminated(name: String): Seq[(String, Any)] = {
+    val result = new Queue[(String, Any)]
+    // TODO(cs): also deal with pendingSystemMessages
+    for ((snd,rcv,fingerprint) <- pendingEvents.keys) {
+      if (rcv == name) {
+        val queue = pendingEvents((snd,rcv,fingerprint))
+        for (e <- queue) {
+          result += ((snd, e.element._2.message))
+        }
+        pendingEvents -= ((snd,rcv,fingerprint))
+      }
+    }
+    return result
+  }
 
   override def reset_all_state() {
     super.reset_all_state

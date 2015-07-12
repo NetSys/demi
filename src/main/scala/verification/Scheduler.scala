@@ -76,4 +76,11 @@ trait Scheduler {
   // Shut down the actor system.
   def shutdown()
 
+  // When an actor has been terminated, the ActorCell references associated
+  // with it are no longer valid. Remove all of them, and return all
+  // (sender, message) pairs that used to be pending for this actor. These
+  // may later be resent by Instrumenter.
+  def actorTerminated(actor: String): Seq[(String, Any)] = {
+    throw new RuntimeException("NYI")
+  }
 }

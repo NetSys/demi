@@ -1,7 +1,8 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props, Terminated, ActorRefWithCell}
+import akka.actor.ActorDSL._
 
 import akka.dispatch.Envelope
 
@@ -129,6 +130,9 @@ class EventOrchestrator[E] {
         case k @ Kill (name) =>
           killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_kill(name)
+        case k @ HardKill (name) =>
+          killCallback(name, actorToActorRef.keys.toSet, k._id)
+          trigger_hard_kill(name)
         case Send (name, messageCtor) =>
           enqueue_message(None, name, messageCtor())
         case p @ Partition (a, b) =>
@@ -181,6 +185,7 @@ class EventOrchestrator[E] {
   // Mark a node as reachable, also used to start a node
   def unisolate_node (actor: String) {
     inaccessible -= actor
+    killed -= actor
     if (fd != null) {
       fd.unisolate_node(actor)
     }
@@ -190,6 +195,11 @@ class EventOrchestrator[E] {
     events += actorToSpawnEvent(name)
     Util.logger.log(name, "God spawned me")
     unisolate_node(name)
+    // If actor was previously killed, allow scheduler to send messages to it
+    // again.
+    if (Instrumenter().blockedActors contains name) {
+      Instrumenter().blockedActors = Instrumenter().blockedActors - name
+    }
     if (fd != null) {
       fd.handle_start_event(name)
     }
@@ -200,6 +210,75 @@ class EventOrchestrator[E] {
     Util.logger.log(name, "God killed me")
     killed += name
     isolate_node(name)
+    if (fd != null) {
+      fd.handle_kill_event(name)
+    }
+  }
+
+  def trigger_hard_kill (name: String) = {
+    events += HardKill(name)
+    Util.logger.log(name, "God is about to hard kill me")
+    Instrumenter().preStartCalled.synchronized {
+      // Actor should already have been fully initialized
+      // TODO(cs): should probably synchronize over this whole method..
+      assert(Instrumenter().actorMappings contains name)
+      val ref = Instrumenter().actorMappings(name)
+      assert(!(Instrumenter().preStartCalled contains ref))
+    }
+
+    // Get all the information we need before killing
+    // TODO(cs): this may need to be recursive.
+    val children = actorToActorRef(name).asInstanceOf[ActorRefWithCell].underlying.
+      childrenRefs.children.map(ref => ref.path.name).toSeq
+    val ref = actorToActorRef(name)
+
+    // Clean up our data before killing
+    for (name <- Seq(name) ++ children) {
+      actorToActorRef -= name
+      actorToSpawnEvent -= name
+      // TODO(cs): move this into Instrumenter
+      Instrumenter().actorMappings.synchronized {
+        Instrumenter().dispatchers -= Instrumenter().actorMappings(name)
+        Instrumenter().actorMappings -= name
+      }
+      // Unfortunately, all of the scheduler's pointers to this ActorCell may now become invalid,
+      // i.e. the ActorCell's fields may now change dynamically and point to
+      // another actor or be nulled out. See:
+      // https://github.com/akka/akka/blob/release-2.2/akka-actor/src/main/scala/akka/actor/ActorCell.scala#L613
+      // So we have scheduler remove all references to the actor cells.
+      // TODO(cs): resend the pending messages for this actor, i.e. simulate a situation where
+      // packets in the network destined for the old actor arrive at the newly
+      // restarted actor. Tricky to deal with depGraph..
+      val sndMsgPairs = Instrumenter().scheduler.actorTerminated(name)
+      sndMsgPairs foreach { case e => println(e) }
+      Instrumenter().blockedActors = Instrumenter().blockedActors - name
+      Instrumenter().timerToCancellable.keys.foreach {
+        case (rcv,msg) =>
+          if (rcv == name) {
+            val cancellable = Instrumenter().timerToCancellable((rcv,msg))
+            Instrumenter().removeCancellable(cancellable)
+          }
+      }
+    }
+
+    // stop()'ing is asynchronous. So, block until it completes.
+    implicit val system = Instrumenter()._actorSystem
+    val i = inbox()
+    i watch ref
+    // Kill it
+    Instrumenter()._actorSystem.stop(ref)
+    // Now block
+    def isTerminated(msg: Any) : Boolean = {
+      msg match {
+        case Terminated(_) => true
+        case _ => false
+      }
+    }
+    var msg = i.receive()
+    while (!isTerminated(msg)) {
+      msg = i.receive()
+    }
+
     if (fd != null) {
       fd.handle_kill_event(name)
     }

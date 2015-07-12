@@ -59,7 +59,12 @@ case class BasicMessageConstructor(msg: Any) extends ExternalMessageConstructor 
 
 final case class Start (propCtor: () => Props, name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
+// Really: isolate the actor.
 final case class Kill (name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Actually kill the actor rather than just isolating it.
+// TODO(cs): support killing of actors that aren't direct children of /user/
+final case class HardKill (name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class Send (name: String, messageCtor: ExternalMessageConstructor) extends
     ExternalEvent with Event with UniqueExternalEvent
