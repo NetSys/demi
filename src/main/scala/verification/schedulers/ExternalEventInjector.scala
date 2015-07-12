@@ -290,11 +290,16 @@ trait ExternalEventInjector[E] {
               event_orchestrator.events += EndExternalAtomicBlock(taskId)
             case _ =>
               // It's a normal message
-              senderOpt match {
-                case Some(sendRef) =>
-                  receiver.!(msg)(sendRef)
-                case None =>
-                  receiver ! msg
+              if (!Instrumenter().receiverIsAlive(receiver)) {
+                println("Dropping message to non-existent receiver: " +
+                        receiver + " " + msg)
+              } else {
+                senderOpt match {
+                  case Some(sendRef) =>
+                    receiver.!(msg)(sendRef)
+                  case None =>
+                    receiver ! msg
+                }
               }
           }
         }
@@ -535,6 +540,7 @@ trait ExternalEventInjector[E] {
   // Return true if we found the timer in our messagesToSend
   def handle_timer_cancel(rcv: ActorRef, msg: Any): Boolean = {
     messagesToSend.dequeueFirst(tuple =>
+      tuple._2 != null &&
       tuple._2.path.name == rcv.path.name && tuple._3 == msg) match {
       case Some(_) => return true
       case None => return false

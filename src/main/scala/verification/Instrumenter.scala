@@ -3,6 +3,7 @@ package akka.dispatch.verification
 import akka.actor.ActorCell
 import akka.actor.Cell
 import akka.actor.ActorSystem
+import akka.actor.ActorSystemImpl
 import akka.actor.ActorRef
 import akka.actor.ActorPath
 import akka.pattern.PromiseActorRef
@@ -12,6 +13,7 @@ import akka.actor.Props
 import akka.actor.Cancellable
 import akka.actor.RootActorPath
 import akka.actor.Address
+import akka.actor.Nobody
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -223,10 +225,26 @@ class Instrumenter {
   // actor names. Serialized with a lock on the Instrumenter object.
   var idToPrependToCallStack = ""
 
-  def serializeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
+  // linearize == if there are concurrent asks, make sure only one happens at
+  // a time.
+  def linearizeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
     assert(idToPrependToCallStack == "")
     idToPrependToCallStack = id
     return ask()
+  }
+
+  def receiverIsAlive(receiver: ActorRef): Boolean = {
+    // Drop any messages destined for actors that don't currently exist.
+    // This is to prevent (tellEnqueue) deadlock within Instrumenter.
+    def pathWithUid(): Iterator[String] = {
+      // Lop off /user/ and the name
+      val prefix = receiver.path.elements.drop(1).dropRight(1)
+      val name = receiver.path.name + "#" + receiver.path.uid
+      return (prefix.toVector :+ name).iterator
+    }
+    val isDead = (receiver.toString.contains("/user/") && _actorSystem != null &&
+                  _actorSystem.asInstanceOf[ActorSystemImpl].guardian.getChild(pathWithUid) == Nobody)
+    return !isDead
   }
 
   /**
@@ -248,6 +266,12 @@ class Instrumenter {
     }
 
     assert(receiver != null)
+
+    if (!receiverIsAlive(receiver)) {
+      logger.warn("Dropping message to non-existent receiver: " + sender +
+        " -> " + receiver + " " + msg)
+      return false
+    }
 
     if (_passThrough.get()) {
       return true
@@ -295,6 +319,10 @@ class Instrumenter {
       props: Props, name: String, actor: ActorRef) : Unit = {
 
     if (_passThrough.get()) {
+      return
+    }
+
+    if (actor.toString.contains("/system/")) {
       return
     }
    
@@ -594,7 +622,12 @@ class Instrumenter {
     return timerToCancellable contains (rcv, msg)
   }
   
-  // Called when dispatch is called.
+  // Called when dispatch is called. One of two cases:
+  //  - right after the message has first been `tell`ed but before the message
+  //    is delivered. In this case we notify the scheduler that the message is
+  //    pending, but don't allow the message to actually be delivered.
+  //  - right after the scheduler has decided to deliver the message. In this
+  //    case we let the message through.
   def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
       envelope: Envelope): Boolean = {
     if (_passThrough.get()) {
@@ -637,7 +670,7 @@ class Instrumenter {
         case false => throw new Exception("internal error")
       }
     }
-    
+
     // Record the dispatcher for the current receiver.
     dispatchers(receiver) = dispatcher
 
