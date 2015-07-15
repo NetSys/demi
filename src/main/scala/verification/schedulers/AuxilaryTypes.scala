@@ -70,7 +70,8 @@ final case class Send (name: String, messageCtor: ExternalMessageConstructor) ex
     ExternalEvent with Event with UniqueExternalEvent
 final case class WaitQuiescence() extends
     ExternalEvent with Event with UniqueExternalEvent
-// Stronger than WaitQuiescence: if quiescence has been reached but cond does
+// Stronger than WaitQuiescence: schedule indefinitely until cond returns true.
+// if quiescence has been reached but cond does
 // not return true, wait indefinitely until scheduler.enqueue_message is
 // invoked, schedule it, and again wait for quiescence. Repeat until cond
 // returns true. (Useful for systems that use external threads to send

@@ -325,6 +325,19 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     handle_event_consumed(cell, envelope)
   }
 
+  // Return true if the current event is a wait condition and the condition
+  // yields true.
+  def checkWaitCondition(): Boolean = {
+    if (event_orchestrator.trace_finished) {
+      return false
+    }
+    event_orchestrator.current_event match {
+      case WaitCondition(cond) =>
+        return cond()
+      case _ => return false
+    }
+  }
+
   def schedule_new_message(blockedActors: scala.collection.immutable.Set[String]) : Option[(Cell, Envelope)] = {
     // First, check if we've found the violation. If so, stop.
     violationFound match {
@@ -332,6 +345,11 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         return None
       case None =>
         None
+    }
+
+    // Also check if the WaitCondition is true. If so, quiesce.
+    if (checkWaitCondition) {
+      return None
     }
 
     // Also check if we've exceeded our message limit
