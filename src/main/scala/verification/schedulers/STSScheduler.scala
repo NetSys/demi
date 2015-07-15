@@ -128,10 +128,6 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   var postTestCallback : PostTestCallback = () => None
   def setPostTestCallback(c: PostTestCallback) { postTestCallback = c }
 
-  // Did we just tell Instrumenter to dispatch after the current mailbox is
-  // set to "Idle" state?
-  var dispatchedAfterMailboxIdle = false
-
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent],
@@ -342,20 +338,18 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
           case KillEvent (name) =>
             event_orchestrator.trigger_kill(name)
           case HardKill (name) =>
-            // The current thread is still in the process of
-            // handling the Mailbox for the actor we're about to kill (if we
-            // just delivered a message to that actor). In that
+            // If we just delivered a message to the actor we're about to kill,
+            // the current thread is still in the process of
+            // handling the Mailbox for that actor. In that
             // case we need to wait for the Mailbox to be set to "Idle" before
             // we can kill the actor, since otherwise the Mailbox will not be
             // able to process the akka-internal "Terminated" messages, i.e.
-            // killing it will result in a deadlock.
-            if (!dispatchedAfterMailboxIdle) {
-              Instrumenter().dispatchAfterMailboxIdle()
-              dispatchedAfterMailboxIdle = true
+            // killing it now will result in a deadlock.
+            if (Instrumenter().previousActor == name) {
+              Instrumenter().dispatchAfterMailboxIdle(name)
               stopDispatch.set(true)
               break
             }
-            dispatchedAfterMailboxIdle = false
             event_orchestrator.trigger_hard_kill(name)
           case PartitionEvent((a,b)) =>
             event_orchestrator.trigger_partition(a,b)
@@ -745,7 +739,6 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     expectUnignorableEvents = false
     expectedExternalAtomicBlocks = new HashSet[Long]
     pausing = new AtomicBoolean(false)
-    dispatchedAfterMailboxIdle = false
     stopDispatch.set(false)
   }
 }

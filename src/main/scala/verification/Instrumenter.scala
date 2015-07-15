@@ -94,6 +94,7 @@ class Instrumenter {
   
   // Track the executing context (i.e., source of events)
   var currentActor = ""
+  var previousActor = ""
   var inActor = false
   var counter = 0   
   // Whether we're currently dispatching.
@@ -248,24 +249,27 @@ class Instrumenter {
     return !isDead
   }
 
-  val _dispatchAfterMailboxIdle = new AtomicBoolean(false)
+  var _dispatchAfterMailboxIdle = ""
+  val _dispatchAfterMailboxIdleLock = new Object
 
-  def dispatchAfterMailboxIdle() {
-    assert(!_dispatchAfterMailboxIdle.get())
-    _dispatchAfterMailboxIdle.set(true)
+  def dispatchAfterMailboxIdle(actorName: String) {
+    _dispatchAfterMailboxIdleLock.synchronized {
+      assert(_dispatchAfterMailboxIdle == "")
+      _dispatchAfterMailboxIdle = actorName
+    }
   }
 
   def mailboxIdle(mbox: Mailbox) = {
     var shouldDispatch = false
-    this.synchronized {
-      if (_dispatchAfterMailboxIdle.get()) {
-        // TODO(cs): how do we know this is the right Mailbox? For now just
-        // print it out...
-        println("mailboxIdle!: " + mbox.actor)
-        if (mbox.actor != null) println(mbox.actor.self)
-        _dispatchAfterMailboxIdle.set(false)
-        start_dispatch
+    _dispatchAfterMailboxIdleLock.synchronized {
+      if (_dispatchAfterMailboxIdle != "" && mbox.actor != null && mbox.actor.self.path.name == _dispatchAfterMailboxIdle) {
+        println("mailboxIdle!: " + mbox.actor.self)
+        _dispatchAfterMailboxIdle = ""
+        shouldDispatch = true
       }
+    }
+    if (shouldDispatch) {
+      start_dispatch
     }
   }
 
@@ -538,6 +542,7 @@ class Instrumenter {
     logger.trace("done tellEnqueue.await()")
 
     inActor = false
+    previousActor = currentActor
     currentActor = ""
 
     stopDispatch.synchronized {
@@ -548,8 +553,8 @@ class Instrumenter {
       }
     }
 
-    scheduler.after_receive(cell) 
-    
+    scheduler.after_receive(cell)
+
     scheduler.schedule_new_message(blockedActors) match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name

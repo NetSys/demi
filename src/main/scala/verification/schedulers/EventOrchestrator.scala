@@ -63,10 +63,6 @@ class EventOrchestrator[E] {
 
   var fd : FDMessageOrchestrator = null
 
-  // Did we just tell Instrumenter to dispatch after the current mailbox was
-  // set to "Idle" state?
-  var dispatchedAfterMailboxIdle = false
-
   def set_trace(_trace: Seq[E]) {
     trace = new ArrayBuffer() ++ _trace
     traceIdx = 0
@@ -137,19 +133,17 @@ class EventOrchestrator[E] {
           killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_kill(name)
         case k @ HardKill (name) =>
-          // The current thread is still in the process of
-          // handling the Mailbox for the actor we're about to kill (if we
-          // just delivered a message to that actor). In that
+          // If we just delivered a message to the actor we're about to kill,
+          // the current thread is still in the process of
+          // handling the Mailbox for that actor. In that
           // case we need to wait for the Mailbox to be set to "Idle" before
           // we can kill the actor, since otherwise the Mailbox will not be
           // able to process the akka-internal "Terminated" messages, i.e.
-          // killing it will result in a deadlock.
-          if (!dispatchedAfterMailboxIdle) {
-            Instrumenter().dispatchAfterMailboxIdle()
-            dispatchedAfterMailboxIdle = true
+          // killing it now will result in a deadlock.
+          if (Instrumenter().previousActor == name) {
+            Instrumenter().dispatchAfterMailboxIdle(name)
             return false
           }
-          dispatchedAfterMailboxIdle = false
           killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_hard_kill(name)
         case Send (name, messageCtor) =>
