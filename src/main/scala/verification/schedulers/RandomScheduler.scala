@@ -625,28 +625,34 @@ class FullyRandom extends RandomizationStrategy {
 
 // For each <src, dst> pair, maintain FIFO order. Other than that, fully
 // random.
+// TODO(cs): very strange behavior sometimes: NullPointerExceptions in
+// removeAll, becuase srcDsts apparently contains null tuples. I am baffled as
+// to why it happens, not even synchronized methods everywhere helps it. For
+// now, keep the synchronized methods in...
 class SrcDstFIFO extends RandomizationStrategy {
-  val srcDsts = new ArrayBuffer[(String, String)]
-  val rand = new Random(System.currentTimeMillis())
-  val srcDstToMessages = new HashMap[(String, String),
-                                     Queue[(Uniq[(Cell,Envelope)],Unique)]]
-  val allMessages = new MultiSet[(Uniq[(Cell,Envelope)],Unique)]
+  private var srcDsts = new ArrayBuffer[(String, String)]
+  private val rand = new Random(System.currentTimeMillis())
+  private val srcDstToMessages = new HashMap[(String, String),
+                                             Queue[(Uniq[(Cell,Envelope)],Unique)]]
+  private val allMessages = new MultiSet[(Uniq[(Cell,Envelope)],Unique)]
 
-  def getRandomSrcDst(): ((String, String), Int) = {
+  def getRandomSrcDst(): ((String, String), Int) = synchronized {
     val idx = rand.nextInt(srcDsts.length)
     return (srcDsts(idx), idx)
   }
 
-  def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] =
+  def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] = synchronized {
     // Hm, currently the only use of .iterator is .isEmpty. So it doesn't
     // really matter what order we give.
     allMessages.iterator
+  }
 
-  def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = {
+  def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = synchronized {
     val src = tuple._1.element._2.sender.path.name
     val dst = tuple._1.element._1.self.path.name
     if (!(srcDstToMessages contains ((src, dst)))) {
       // If there is no queue, create one
+      assert(((src, dst)) != null)
       srcDsts += ((src, dst))
       srcDstToMessages((src, dst)) = new Queue[(Uniq[(Cell,Envelope)],Unique)]
     }
@@ -657,13 +663,13 @@ class SrcDstFIFO extends RandomizationStrategy {
     return this
   }
 
-  def clear(): Unit = {
+  def clear(): Unit = synchronized {
     srcDsts.clear()
     srcDstToMessages.clear()
     allMessages.clear()
   }
 
-  def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = {
+  def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = synchronized {
     // First find a random queue. Then dequeue from the queue.
     val (srcDst, idx) = getRandomSrcDst
     val queue = srcDstToMessages(srcDst)
@@ -676,7 +682,7 @@ class SrcDstFIFO extends RandomizationStrategy {
     return ret
   }
 
-  def remove(src: String, dst: String, msg: Any): Unit = {
+  def remove(src: String, dst: String, msg: Any): Unit = synchronized {
     if (!(srcDstToMessages contains ((src,dst)))) {
       return
     }
@@ -697,9 +703,9 @@ class SrcDstFIFO extends RandomizationStrategy {
     }
   }
 
-  def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = {
+  def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = synchronized {
     val result = new ListBuffer[(Uniq[(Cell,Envelope)],Unique)]
-    for (srcDst <- srcDsts) {
+    for (srcDst <- srcDsts.toSeq) {
       val src = srcDst._1
       val dst = srcDst._2
       if (dst == rcv) {
