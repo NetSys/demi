@@ -26,6 +26,7 @@ import akka.pattern.PromiseActorRef;
 import akka.dispatch.Envelope;
 import akka.dispatch.MessageQueue;
 import akka.dispatch.MessageDispatcher;
+import akka.dispatch.Mailbox;
 
 import scala.concurrent.impl.CallbackRunnable;
 import scala.concurrent.duration.FiniteDuration;
@@ -45,6 +46,11 @@ privileged public aspect WeaveActor {
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
     inst.afterMessageReceive(me, msg);
+  }
+
+  after(Mailbox me):
+  execution(* akka.dispatch.Mailbox.run()) && this(me) {
+    inst.mailboxIdle(me);
   }
 
   pointcut dispatchOperation(MessageDispatcher me, ActorCell receiver, Envelope handle): 

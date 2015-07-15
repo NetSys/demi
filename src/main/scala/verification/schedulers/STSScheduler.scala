@@ -104,6 +104,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // Are we currently pausing the ActorSystem in order to invoke Peek()
   var pausing = new AtomicBoolean(false)
 
+  // Are we currently pausing the ActorSystem in order to hard kill an actor?
+  var stopDispatch = new AtomicBoolean(false)
+
   // Whether the recorded event trace indicates that we should (soon) be in a
   // "UnignoreableEvents" block in the current execution, as indicated by the value
   // of the ExternalEventInjector.unignorableEvents variable
@@ -124,6 +127,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   type PostTestCallback = () => Unit
   var postTestCallback : PostTestCallback = () => None
   def setPostTestCallback(c: PostTestCallback) { postTestCallback = c }
+
+  // Did we just tell Instrumenter to dispatch after the current mailbox is
+  // set to "Idle" state?
+  var dispatchedAfterMailboxIdle = false
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
@@ -335,6 +342,20 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
           case KillEvent (name) =>
             event_orchestrator.trigger_kill(name)
           case HardKill (name) =>
+            // The current thread is still in the process of
+            // handling the Mailbox for the actor we're about to kill (if we
+            // just delivered a message to that actor). In that
+            // case we need to wait for the Mailbox to be set to "Idle" before
+            // we can kill the actor, since otherwise the Mailbox will not be
+            // able to process the akka-internal "Terminated" messages, i.e.
+            // killing it will result in a deadlock.
+            if (!dispatchedAfterMailboxIdle) {
+              Instrumenter().dispatchAfterMailboxIdle()
+              dispatchedAfterMailboxIdle = true
+              stopDispatch.set(true)
+              break
+            }
+            dispatchedAfterMailboxIdle = false
             event_orchestrator.trigger_hard_kill(name)
           case PartitionEvent((a,b)) =>
             event_orchestrator.trigger_partition(a,b)
@@ -502,6 +523,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
+    if (stopDispatch.get()) {
+      // Return None to stop dispatching.
+      return None
+    }
+
     if (pausing.get) {
       // Return None to stop dispatching.
       return None
@@ -616,6 +642,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   }
 
   override def notify_quiescence () {
+    if (stopDispatch.get()) {
+      stopDispatch.set(false)
+      return
+    }
+
     if (pausing.get) {
       // We've now paused the ActorSystem. Go ahead with peek()
       peek()
@@ -714,5 +745,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     expectUnignorableEvents = false
     expectedExternalAtomicBlocks = new HashSet[Long]
     pausing = new AtomicBoolean(false)
+    dispatchedAfterMailboxIdle = false
+    stopDispatch.set(false)
   }
 }

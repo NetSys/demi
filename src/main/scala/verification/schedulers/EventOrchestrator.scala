@@ -63,6 +63,10 @@ class EventOrchestrator[E] {
 
   var fd : FDMessageOrchestrator = null
 
+  // Did we just tell Instrumenter to dispatch after the current mailbox was
+  // set to "Idle" state?
+  var dispatchedAfterMailboxIdle = false
+
   def set_trace(_trace: Seq[E]) {
     trace = new ArrayBuffer() ++ _trace
     traceIdx = 0
@@ -119,8 +123,10 @@ class EventOrchestrator[E] {
    * scheduler to wait for quiescence.
    *
    * Should not be invoked if E != ExternalEvent.
+   *
+   * Return whether start_dispatch should be invoked after returning.
    */
-  def inject_until_quiescence(enqueue_message: EnqueueMessage): Unit = {
+  def inject_until_quiescence(enqueue_message: EnqueueMessage): Boolean = {
     var loop = true
     while (loop && !trace_finished) {
       println("Injecting " + traceIdx + "/" + trace.length + " " + current_event)
@@ -131,6 +137,19 @@ class EventOrchestrator[E] {
           killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_kill(name)
         case k @ HardKill (name) =>
+          // The current thread is still in the process of
+          // handling the Mailbox for the actor we're about to kill (if we
+          // just delivered a message to that actor). In that
+          // case we need to wait for the Mailbox to be set to "Idle" before
+          // we can kill the actor, since otherwise the Mailbox will not be
+          // able to process the akka-internal "Terminated" messages, i.e.
+          // killing it will result in a deadlock.
+          if (!dispatchedAfterMailboxIdle) {
+            Instrumenter().dispatchAfterMailboxIdle()
+            dispatchedAfterMailboxIdle = true
+            return false
+          }
+          dispatchedAfterMailboxIdle = false
           killCallback(name, actorToActorRef.keys.toSet, k._id)
           trigger_hard_kill(name)
         case Send (name, messageCtor) =>
@@ -142,9 +161,9 @@ class EventOrchestrator[E] {
           unPartitionCallback(a,b,u._id)
           trigger_unpartition(a,b)
         case WaitCondition(cond) =>
-           // Don't let trace advance here. Only let it advance when we have
-           // reached quiescence and the condition holds.
-          return
+           // Don't let trace advance here. Only let it advance when the
+           // condition holds.
+          return true
         case CodeBlock(block) =>
           events += current_event.asInstanceOf[Event] // keep the id the same
           // Since the block might send messages, make sure that we treat the
@@ -161,6 +180,7 @@ class EventOrchestrator[E] {
       }
       trace_advanced()
     }
+    return true
   }
 
   // Mark a couple of nodes as partitioned (so they cannot communicate)
@@ -233,6 +253,7 @@ class EventOrchestrator[E] {
     val ref = actorToActorRef(name)
 
     // Clean up our data before killing
+    println("Cleaning up before hard kill...")
     for (name <- Seq(name) ++ children) {
       actorToActorRef -= name
       actorToSpawnEvent -= name
@@ -250,7 +271,6 @@ class EventOrchestrator[E] {
       // packets in the network destined for the old actor arrive at the newly
       // restarted actor. Tricky to deal with depGraph..
       val sndMsgPairs = Instrumenter().scheduler.actorTerminated(name)
-      sndMsgPairs foreach { case e => println(e) }
       Instrumenter().blockedActors = Instrumenter().blockedActors - name
       Instrumenter().timerToCancellable.keys.foreach {
         case (rcv,msg) =>
@@ -266,6 +286,7 @@ class EventOrchestrator[E] {
     val i = inbox()
     i watch ref
     // Kill it
+    println("Calling stop() and blocking... " + ref)
     Instrumenter()._actorSystem.stop(ref)
     // Now block
     def isTerminated(msg: Any) : Boolean = {

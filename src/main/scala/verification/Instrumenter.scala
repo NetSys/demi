@@ -14,6 +14,7 @@ import akka.actor.Cancellable
 import akka.actor.RootActorPath
 import akka.actor.Address
 import akka.actor.Nobody
+import akka.dispatch.Mailbox
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -245,6 +246,27 @@ class Instrumenter {
     val isDead = (receiver.toString.contains("/user/") && _actorSystem != null &&
                   _actorSystem.asInstanceOf[ActorSystemImpl].guardian.getChild(pathWithUid) == Nobody)
     return !isDead
+  }
+
+  val _dispatchAfterMailboxIdle = new AtomicBoolean(false)
+
+  def dispatchAfterMailboxIdle() {
+    assert(!_dispatchAfterMailboxIdle.get())
+    _dispatchAfterMailboxIdle.set(true)
+  }
+
+  def mailboxIdle(mbox: Mailbox) = {
+    var shouldDispatch = false
+    this.synchronized {
+      if (_dispatchAfterMailboxIdle.get()) {
+        // TODO(cs): how do we know this is the right Mailbox? For now just
+        // print it out...
+        println("mailboxIdle!: " + mbox.actor)
+        if (mbox.actor != null) println(mbox.actor.self)
+        _dispatchAfterMailboxIdle.set(false)
+        start_dispatch
+      }
+    }
   }
 
   /**

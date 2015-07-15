@@ -379,11 +379,13 @@ trait ExternalEventInjector[E] {
     // events.
     schedSemaphore.acquire
     started.set(true)
-    event_orchestrator.inject_until_quiescence(enqueue_message)
+    val should_dispatch = event_orchestrator.inject_until_quiescence(enqueue_message)
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
-    Instrumenter().start_dispatch()
+    if (should_dispatch) {
+      Instrumenter().start_dispatch()
+    }
   }
 
   /**
