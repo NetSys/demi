@@ -266,6 +266,7 @@ class Instrumenter {
         println("mailboxIdle!: " + mbox.actor.self)
         _dispatchAfterMailboxIdle = ""
         shouldDispatch = true
+        previousActor = ""
       }
     }
     if (shouldDispatch) {
@@ -515,7 +516,11 @@ class Instrumenter {
         }
         dispatch_new_message(new_cell, envelope)
       case None =>
-        logger.warn("Actor is blocked, yet there are no messages to schedule")
+        // Hopefully because the scheduler wanted to quiesce early!
+        logger.warn("Actor " + currentActor +
+                    " is blocked, yet there are no messages to schedule. " +
+                    Thread.currentThread.getName)
+        started.set(false)
         scheduler.notify_quiescence()
     }
   }
@@ -549,6 +554,7 @@ class Instrumenter {
       if (stopDispatch.get()) {
         println("Stopping dispatch..")
         stopDispatch.set(false)
+        started.set(false)
         return
       }
     }
@@ -711,6 +717,7 @@ class Instrumenter {
   // Start scheduling and dispatching messages. This makes the scheduler responsible for
   // actually kickstarting things. 
   def start_dispatch() {
+    assert(!started.get)
     started.set(true)
     scheduler.schedule_new_message(blockedActors) match {
       case Some((new_cell, envelope)) =>
