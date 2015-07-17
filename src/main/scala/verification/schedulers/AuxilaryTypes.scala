@@ -59,13 +59,19 @@ case class BasicMessageConstructor(msg: Any) extends ExternalMessageConstructor 
 
 final case class Start (propCtor: () => Props, name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
+// Really: isolate the actor.
 final case class Kill (name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Actually kill the actor rather than just isolating it.
+// TODO(cs): support killing of actors that aren't direct children of /user/
+final case class HardKill (name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class Send (name: String, messageCtor: ExternalMessageConstructor) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class WaitQuiescence() extends
     ExternalEvent with Event with UniqueExternalEvent
-// Stronger than WaitQuiescence: if quiescence has been reached but cond does
+// Stronger than WaitQuiescence: schedule indefinitely until cond returns true.
+// if quiescence has been reached but cond does
 // not return true, wait indefinitely until scheduler.enqueue_message is
 // invoked, schedule it, and again wait for quiescence. Repeat until cond
 // returns true. (Useful for systems that use external threads to send

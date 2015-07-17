@@ -3,6 +3,7 @@ package akka.dispatch.verification
 import akka.actor.ActorCell
 import akka.actor.Cell
 import akka.actor.ActorSystem
+import akka.actor.ActorSystemImpl
 import akka.actor.ActorRef
 import akka.actor.ActorPath
 import akka.pattern.PromiseActorRef
@@ -12,6 +13,8 @@ import akka.actor.Props
 import akka.actor.Cancellable
 import akka.actor.RootActorPath
 import akka.actor.Address
+import akka.actor.Nobody
+import akka.dispatch.Mailbox
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -84,10 +87,14 @@ class Instrumenter {
   val allowedEvents = new HashSet[(ActorCell, Envelope)]  
   
   val seenActors = new HashSet[(ActorSystem, Any)]
+  // Populated before preStart has been called
   val actorMappings = new HashMap[String, ActorRef]
+  // Populated after preStart has been called
+  val preStartCalled = new HashSet[ActorRef]
   
   // Track the executing context (i.e., source of events)
   var currentActor = ""
+  var previousActor = ""
   var inActor = false
   var counter = 0   
   // Whether we're currently dispatching.
@@ -220,10 +227,52 @@ class Instrumenter {
   // actor names. Serialized with a lock on the Instrumenter object.
   var idToPrependToCallStack = ""
 
-  def serializeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
+  // linearize == if there are concurrent asks, make sure only one happens at
+  // a time.
+  def linearizeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
     assert(idToPrependToCallStack == "")
     idToPrependToCallStack = id
     return ask()
+  }
+
+  def receiverIsAlive(receiver: ActorRef): Boolean = {
+    // Drop any messages destined for actors that don't currently exist.
+    // This is to prevent (tellEnqueue) deadlock within Instrumenter.
+    def pathWithUid(): Iterator[String] = {
+      // Lop off /user/ and the name
+      val prefix = receiver.path.elements.drop(1).dropRight(1)
+      val name = receiver.path.name + "#" + receiver.path.uid
+      return (prefix.toVector :+ name).iterator
+    }
+    val isDead = (receiver.toString.contains("/user/") && _actorSystem != null &&
+                  _actorSystem.asInstanceOf[ActorSystemImpl].guardian.getChild(pathWithUid) == Nobody)
+    return !isDead
+  }
+
+  var _dispatchAfterMailboxIdle = ""
+  val _dispatchAfterMailboxIdleLock = new Object
+
+  def dispatchAfterMailboxIdle(actorName: String) {
+    _dispatchAfterMailboxIdleLock.synchronized {
+      assert(_dispatchAfterMailboxIdle == "")
+      _dispatchAfterMailboxIdle = actorName
+    }
+  }
+
+  def mailboxIdle(mbox: Mailbox) = {
+    var shouldDispatch = false
+    _dispatchAfterMailboxIdleLock.synchronized {
+      if (_dispatchAfterMailboxIdle != "" && mbox.actor != null && mbox.actor.self.path.name == _dispatchAfterMailboxIdle) {
+        println("mailboxIdle!: " + mbox.actor.self)
+        _dispatchAfterMailboxIdle = ""
+        shouldDispatch = true
+        previousActor = ""
+      }
+    }
+    if (shouldDispatch) {
+      assert(!started.get)
+      scheduler.handleMailboxIdle
+    }
   }
 
   /**
@@ -245,6 +294,12 @@ class Instrumenter {
     }
 
     assert(receiver != null)
+
+    if (!receiverIsAlive(receiver)) {
+      logger.warn("Dropping message to non-existent receiver: " + sender +
+        " -> " + receiver + " " + msg)
+      return false
+    }
 
     if (_passThrough.get()) {
       return true
@@ -271,11 +326,19 @@ class Instrumenter {
     return true
   }
   
-  def blockUntilActorCreated(ref: ActorRef) {
-    actorMappings.synchronized {
-      while (!(actorMappings contains ref.path.name)) {
-         actorMappings.wait
+  def blockUntilPreStartCalled(ref: ActorRef) {
+    preStartCalled.synchronized {
+      while (!(preStartCalled contains ref)) {
+        preStartCalled.wait
       }
+      preStartCalled -= ref
+    }
+  }
+
+  def preStartCalled(ref: ActorRef) {
+    preStartCalled.synchronized {
+      preStartCalled += ref
+      preStartCalled.notifyAll
     }
   }
   
@@ -284,6 +347,10 @@ class Instrumenter {
       props: Props, name: String, actor: ActorRef) : Unit = {
 
     if (_passThrough.get()) {
+      return
+    }
+
+    if (actor.toString.contains("/system/")) {
       return
     }
    
@@ -321,6 +388,7 @@ class Instrumenter {
   
   def reset_per_system_state() {
     actorMappings.clear()
+    preStartCalled.clear()
     seenActors.clear()
     allowedEvents.clear()
     dispatchers.clear()
@@ -449,7 +517,11 @@ class Instrumenter {
         }
         dispatch_new_message(new_cell, envelope)
       case None =>
-        logger.warn("Actor is blocked, yet there are no messages to schedule")
+        // Hopefully because the scheduler wanted to quiesce early!
+        logger.warn("Actor " + currentActor +
+                    " is blocked, yet there are no messages to schedule. " +
+                    Thread.currentThread.getName)
+        started.set(false)
         scheduler.notify_quiescence()
     }
   }
@@ -476,18 +548,20 @@ class Instrumenter {
     logger.trace("done tellEnqueue.await()")
 
     inActor = false
+    previousActor = currentActor
     currentActor = ""
 
     stopDispatch.synchronized {
       if (stopDispatch.get()) {
         println("Stopping dispatch..")
         stopDispatch.set(false)
+        started.set(false)
         return
       }
     }
 
-    scheduler.after_receive(cell) 
-    
+    scheduler.after_receive(cell)
+
     scheduler.schedule_new_message(blockedActors) match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name
@@ -582,7 +656,12 @@ class Instrumenter {
     return timerToCancellable contains (rcv, msg)
   }
   
-  // Called when dispatch is called.
+  // Called when dispatch is called. One of two cases:
+  //  - right after the message has first been `tell`ed but before the message
+  //    is delivered. In this case we notify the scheduler that the message is
+  //    pending, but don't allow the message to actually be delivered.
+  //  - right after the scheduler has decided to deliver the message. In this
+  //    case we let the message through.
   def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
       envelope: Envelope): Boolean = {
     if (_passThrough.get()) {
@@ -625,7 +704,7 @@ class Instrumenter {
         case false => throw new Exception("internal error")
       }
     }
-    
+
     // Record the dispatcher for the current receiver.
     dispatchers(receiver) = dispatcher
 
@@ -639,6 +718,7 @@ class Instrumenter {
   // Start scheduling and dispatching messages. This makes the scheduler responsible for
   // actually kickstarting things. 
   def start_dispatch() {
+    assert(!started.get)
     started.set(true)
     scheduler.schedule_new_message(blockedActors) match {
       case Some((new_cell, envelope)) =>
@@ -693,6 +773,10 @@ class Instrumenter {
     if (!(ongoingCancellableTasks contains c)) {
       removeCancellable(c)
     }
+  }
+
+  def actorKnown(ref: ActorRef) : Boolean = {
+    return actorMappings contains ref.path.name
   }
 
   def registerShutdownCallback(callback: ShutdownCallback) {

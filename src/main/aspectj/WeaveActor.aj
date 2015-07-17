@@ -26,6 +26,7 @@ import akka.pattern.PromiseActorRef;
 import akka.dispatch.Envelope;
 import akka.dispatch.MessageQueue;
 import akka.dispatch.MessageDispatcher;
+import akka.dispatch.Mailbox;
 
 import scala.concurrent.impl.CallbackRunnable;
 import scala.concurrent.duration.FiniteDuration;
@@ -45,6 +46,11 @@ privileged public aspect WeaveActor {
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {
     inst.afterMessageReceive(me, msg);
+  }
+
+  after(Mailbox me):
+  execution(* akka.dispatch.Mailbox.run()) && this(me) {
+    inst.mailboxIdle(me);
   }
 
   pointcut dispatchOperation(MessageDispatcher me, ActorCell receiver, Envelope handle): 
@@ -90,12 +96,19 @@ privileged public aspect WeaveActor {
     inst.new_actor(me.system(), me.props, me.self);
   }
 
+  // after preStart has been called, i.e. actor is ready to receive messages.
+  after(ActorCell me):
+  execution(* akka.actor.ActorCell.create(..)) &&
+  this(me) {
+    inst.preStartCalled(me.self);
+  }
+
   // Block until the actor has actually been created and preStart has been invoked!
   // (which is done asynchronously)
   after(ActorSystem me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props)) &&
   args(props) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   // Block until the actor has actually been created and preStart has been invoked!
@@ -103,7 +116,7 @@ privileged public aspect WeaveActor {
   after(ActorSystem me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorSystem.actorOf(Props, String)) &&
   args(props, name) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   // Block until the actor has actually been created and preStart has been invoked!
@@ -111,7 +124,7 @@ privileged public aspect WeaveActor {
   after(ActorContext me, Props props) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props)) &&
   args(props) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   // Block until the actor has actually been created and preStart has been invoked!
@@ -119,7 +132,7 @@ privileged public aspect WeaveActor {
   after(ActorContext me, Props props, String name) returning(ActorRef actor):
   execution(ActorRef akka.actor.ActorContext.actorOf(Props, String)) &&
   args(props, name) && this(me) {
-    inst.blockUntilActorCreated(actor);
+    inst.blockUntilPreStartCalled(actor);
   }
 
   Object around(ActorRef me, Object msg, ActorRef sender):
@@ -140,6 +153,9 @@ privileged public aspect WeaveActor {
   // ! directly, but instead calls enqueue_message..
   Object around(LightArrayRevolverScheduler me, FiniteDuration delay, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
   scheduleOnce(me, delay, receiver, msg, exc, sender) {
+    if (!inst.actorKnown(receiver)) {
+      return proceed(me,delay,receiver,msg,exc,sender);
+    }
     class MyRunnable implements java.lang.Runnable {
       // Make it a no-op!
       public void run() {
@@ -160,6 +176,9 @@ privileged public aspect WeaveActor {
   // ! directly, but instead calls enqueue_message..
   Object around(LightArrayRevolverScheduler me, FiniteDuration delay, FiniteDuration interval, ActorRef receiver, Object msg, ExecutionContext exc, ActorRef sender):
   schedule(me, delay, interval, receiver, msg, exc, sender) {
+    if (!inst.actorKnown(receiver)) {
+      return proceed(me,delay,interval,receiver,msg,exc,sender);
+    }
     class MyRunnable implements java.lang.Runnable {
       // Make it a no-op!
       public void run() {

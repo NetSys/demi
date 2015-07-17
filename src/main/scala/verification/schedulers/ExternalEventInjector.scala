@@ -97,7 +97,7 @@ trait ExternalEventInjector[E] {
   var enqueuedExternalMessages = new MultiSet[Any]
 
   // A set of external messages to send. Messages sent between actors are not
-  // queued here. Tuple is: (sender, receiver, msg, isTimer)
+  // queued here. Tuple is: (sender, receiver, msg)
   var messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]()
 
   // Whether populateActors has been invoked.
@@ -290,11 +290,16 @@ trait ExternalEventInjector[E] {
               event_orchestrator.events += EndExternalAtomicBlock(taskId)
             case _ =>
               // It's a normal message
-              senderOpt match {
-                case Some(sendRef) =>
-                  receiver.!(msg)(sendRef)
-                case None =>
-                  receiver ! msg
+              if (!Instrumenter().receiverIsAlive(receiver)) {
+                println("Dropping message to non-existent receiver: " +
+                        receiver + " " + msg)
+              } else {
+                senderOpt match {
+                  case Some(sendRef) =>
+                    receiver.!(msg)(sendRef)
+                  case None =>
+                    receiver ! msg
+                }
               }
           }
         }
@@ -374,11 +379,13 @@ trait ExternalEventInjector[E] {
     // events.
     schedSemaphore.acquire
     started.set(true)
-    event_orchestrator.inject_until_quiescence(enqueue_message)
+    val should_dispatch = event_orchestrator.inject_until_quiescence(enqueue_message)
     schedSemaphore.release
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
-    Instrumenter().start_dispatch()
+    if (should_dispatch) {
+      Instrumenter().start_dispatch()
+    }
   }
 
   /**
@@ -535,6 +542,7 @@ trait ExternalEventInjector[E] {
   // Return true if we found the timer in our messagesToSend
   def handle_timer_cancel(rcv: ActorRef, msg: Any): Boolean = {
     messagesToSend.dequeueFirst(tuple =>
+      tuple._2 != null &&
       tuple._2.path.name == rcv.path.name && tuple._3 == msg) match {
       case Some(_) => return true
       case None => return false

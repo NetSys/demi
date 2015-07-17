@@ -104,6 +104,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // Are we currently pausing the ActorSystem in order to invoke Peek()
   var pausing = new AtomicBoolean(false)
 
+  // Are we currently pausing the ActorSystem in order to hard kill an actor?
+  var stopDispatch = new AtomicBoolean(false)
+
   // Whether the recorded event trace indicates that we should (soon) be in a
   // "UnignoreableEvents" block in the current execution, as indicated by the value
   // of the ExternalEventInjector.unignorableEvents variable
@@ -171,6 +174,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
                                   subsequenceIntersection(subseq, filterKnownAbsents=filterKnownAbsents)
     val updatedEvents = filtered.recomputeExternalMsgSends(subseq)
     event_orchestrator.set_trace(updatedEvents)
+
+    if (logger.isTraceEnabled()) {
+      println("events:----")
+      updatedEvents.zipWithIndex.foreach { case (e,i) => println(i + " " + e) }
+      println("----")
+    }
 
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
@@ -328,6 +337,20 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_start(name)
           case KillEvent (name) =>
             event_orchestrator.trigger_kill(name)
+          case k @ HardKill (name) =>
+            // If we just delivered a message to the actor we're about to kill,
+            // the current thread is still in the process of
+            // handling the Mailbox for that actor. In that
+            // case we need to wait for the Mailbox to be set to "Idle" before
+            // we can kill the actor, since otherwise the Mailbox will not be
+            // able to process the akka-internal "Terminated" messages, i.e.
+            // killing it now will result in a deadlock.
+            if (Instrumenter().previousActor == name) {
+              Instrumenter().dispatchAfterMailboxIdle(name)
+              stopDispatch.set(true)
+              break
+            }
+            event_orchestrator.trigger_hard_kill(k)
           case PartitionEvent((a,b)) =>
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
@@ -494,6 +517,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
+    if (stopDispatch.get()) {
+      // Return None to stop dispatching.
+      return None
+    }
+
     if (pausing.get) {
       // Return None to stop dispatching.
       return None
@@ -608,6 +636,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   }
 
   override def notify_quiescence () {
+    if (stopDispatch.get()) {
+      stopDispatch.set(false)
+      return
+    }
+
     if (pausing.get) {
       // We've now paused the ActorSystem. Go ahead with peek()
       peek()
@@ -682,6 +715,26 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
   override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
 
+  override def actorTerminated(name: String): Seq[(String, Any)] = {
+    val result = new Queue[(String, Any)]
+    // TODO(cs): also deal with pendingSystemMessages
+    for ((snd,rcv,fingerprint) <- pendingEvents.keys) {
+      if (rcv == name) {
+        val queue = pendingEvents((snd,rcv,fingerprint))
+        for (e <- queue) {
+          result += ((snd, e.element._2.message))
+        }
+        pendingEvents -= ((snd,rcv,fingerprint))
+      }
+    }
+    return result
+  }
+
+  override def handleMailboxIdle() {
+    firstMessage = true
+    advanceReplay
+  }
+
   override def reset_all_state() {
     super.reset_all_state
     reset_state(shouldShutdownActorSystem)
@@ -691,5 +744,6 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     expectUnignorableEvents = false
     expectedExternalAtomicBlocks = new HashSet[Long]
     pausing = new AtomicBoolean(false)
+    stopDispatch.set(false)
   }
 }

@@ -243,11 +243,14 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     // include that in result, and pop off the head of subseq. Otherwise that external event has been
     // pruned and should not be included. All internal events are included in
     // result.
-    var remaining = ListBuffer[ExternalEvent]() ++ subseq
-    var result = new Queue[Event]()
-
     // N.B. we deal with external messages separately after this for loop,
     // since they're a bit trickier.
+    var remaining = ListBuffer[ExternalEvent]() ++ subseq.filter {
+      case Send(_,_) => false
+      case _ => true
+    }
+    var result = new Queue[Event]()
+
     // N.B. it'd be nicer to use a filter() here, but it isn't guarenteed to
     // iterate left to right.
     for (event <- events) {
@@ -299,6 +302,11 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
             }
           case c @ CodeBlock(_) =>
             if (remaining(0) == c) {
+              result += event
+              remaining = remaining.tail
+            }
+          case h @ HardKill(_) =>
+            if (remaining(0) == h) {
               result += event
               remaining = remaining.tail
             }

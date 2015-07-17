@@ -7,20 +7,20 @@ class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends M
   def this(oracle: TestOracle) = this(oracle, true)
   val stats = new MinimizationStats("LeftToRightRemoval", oracle.getName)
 
-  def minimize(events: Seq[ExternalEvent],
+  def minimize(_dag: EventDag,
                violation_fingerprint: ViolationFingerprint,
-               initializationRoutine: Option[() => Any]=None) : Seq[ExternalEvent] = {
-    MessageTypes.sanityCheckTrace(events)
+               initializationRoutine: Option[() => Any]) : EventDag = {
+    MessageTypes.sanityCheckTrace(_dag.events)
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
       println("Checking if unmodified trace triggers violation...")
-      if (oracle.test(events, violation_fingerprint, stats,
+      if (oracle.test(_dag.events, violation_fingerprint, stats,
         initializationRoutine=initializationRoutine) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
       }
     }
 
-    var dag : EventDag = new UnmodifiedEventDag(events)
+    var dag = _dag
     var events_to_test = dag.get_atomic_events
     var tested_events = new HashSet[AtomicEvent]()
 
@@ -45,13 +45,13 @@ class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends M
       }
     }
 
-    return dag.get_all_events
+    return dag
   }
 
-  def verify_mcs(mcs: Seq[ExternalEvent],
+  def verify_mcs(mcs: EventDag,
                  violation_fingerprint: ViolationFingerprint,
                  initializationRoutine: Option[() => Any]=None): Option[EventTrace] = {
-    return oracle.test(mcs, violation_fingerprint,
+    return oracle.test(mcs.events, violation_fingerprint,
       new MinimizationStats("NOP", "NOP"), initializationRoutine=initializationRoutine)
   }
 }
