@@ -705,18 +705,20 @@ class SrcDstFIFO extends RandomizationStrategy {
 
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = synchronized {
     val result = new ListBuffer[(Uniq[(Cell,Envelope)],Unique)]
-    for (srcDst <- srcDsts.toSeq) {
-      val src = srcDst._1
-      val dst = srcDst._2
-      if (dst == rcv) {
-        val queue = srcDstToMessages((src, dst))
-        for (e <- queue) {
-          allMessages -= e
-          result += e
+    srcDsts.toSeq.foreach {
+      case (src, dst) =>
+        if (dst == rcv) {
+          val queue = srcDstToMessages((src, dst))
+          for (e <- queue) {
+            allMessages -= e
+            result += e
+          }
+          srcDstToMessages -= ((src,rcv))
+          srcDsts.remove(srcDsts.indexOf(((src,rcv))))
         }
-        srcDstToMessages -= ((src,rcv))
-        srcDsts.remove(srcDsts.indexOf(((src,rcv))))
-      }
+      case null =>
+        // WTF... How did we even get here...
+        assert(!(srcDstToMessages contains null))
     }
     return result
   }
