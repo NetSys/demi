@@ -404,13 +404,33 @@ object RunnerUtils {
 
     // TODO(cs): factor this out to its own file, with nice interfaces.
     // TODO(cs): this is a bit redundant with OneAtATimeRemoval + STSSched.
+    // TODO(cs): ultimately, we should try supporting DPOR removal of
+    // internals.
+    // TODO(cs): support optional FIFO removal between src,dst pairs. i.e.,
+    // account for the possibility of TCP below our interposition.
     println("Minimizing internals..")
     println("verified_mcs.original_externals: " + verified_mcs.original_externals)
     val stats = new MinimizationStats("InternalMin", "STSSched")
 
-    // TODO(cs): minor optimization: don't try to prune external messages.
     // MsgEvents we've tried ignoring so far. MultiSet to account for duplicate MsgEvent's
     val triedIgnoring = new MultiSet[(String, String, MessageFingerprint)]
+
+    // Populate triedIgnoring with all events that lie between a
+    // UnignorableEvents block. Also, external messages.
+    var inUnignorableBlock = false
+    verified_mcs.events.foreach {
+      case BeginUnignorableEvents =>
+        inUnignorableBlock = true
+      case EndUnignorableEvents =>
+        inUnignorableBlock = false
+      case m @ UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
+        if (snd == "deadLetters" || inUnignorableBlock) {
+          // N.B., for Spark, messages sent from a non-actor
+          // should be labeled "external" rather than "deadLetters"
+          triedIgnoring += ((snd, rcv,
+            schedulerConfig.messageFingerprinter.fingerprint(msg)))
+        }
+    }
 
     // Filter out the next MsgEvent, and return the resulting EventTrace.
     // If we've tried filtering out all MsgEvents, return None.
