@@ -337,7 +337,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_start(name)
           case KillEvent (name) =>
             event_orchestrator.trigger_kill(name)
-          case HardKill (name) =>
+          case k @ HardKill (name) =>
             // If we just delivered a message to the actor we're about to kill,
             // the current thread is still in the process of
             // handling the Mailbox for that actor. In that
@@ -350,7 +350,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
               stopDispatch.set(true)
               break
             }
-            event_orchestrator.trigger_hard_kill(name)
+            event_orchestrator.trigger_hard_kill(k)
           case PartitionEvent((a,b)) =>
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>

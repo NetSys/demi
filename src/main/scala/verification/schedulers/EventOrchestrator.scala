@@ -145,7 +145,7 @@ class EventOrchestrator[E] {
             return false
           }
           killCallback(name, actorToActorRef.keys.toSet, k._id)
-          trigger_hard_kill(name)
+          trigger_hard_kill(k)
         case Send (name, messageCtor) =>
           enqueue_message(None, name, messageCtor())
         case p @ Partition (a, b) =>
@@ -158,8 +158,8 @@ class EventOrchestrator[E] {
            // Don't let trace advance here. Only let it advance when the
            // condition holds.
           return true
-        case CodeBlock(block) =>
-          events += current_event.asInstanceOf[Event] // keep the id the same
+        case c @ CodeBlock(block) =>
+          events += c.asInstanceOf[Event] // keep the id the same
           // Since the block might send messages, make sure that we treat the
           // message sends as if they are being triggered by an external
           // thread, i.e. we enqueue them rather than letting them be sent
@@ -229,8 +229,9 @@ class EventOrchestrator[E] {
     }
   }
 
-  def trigger_hard_kill (name: String) = {
-    events += HardKill(name)
+  def trigger_hard_kill (hardKill: HardKill) = {
+    events += hardKill
+    val name = hardKill.name
     Util.logger.log(name, "God is about to hard kill me")
     Instrumenter().preStartCalled.synchronized {
       // Actor should already have been fully initialized
