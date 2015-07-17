@@ -83,4 +83,10 @@ trait Scheduler {
   def actorTerminated(actor: String): Seq[(String, Any)] = {
     throw new RuntimeException("NYI")
   }
+
+  // Invoked by Instrumenter after dispatchAfterMailboxIdle(name) has been
+  // called and name's mailbox has been set to idle state
+  def handleMailboxIdle() {
+    Instrumenter().start_dispatch
+  }
 }

@@ -730,6 +730,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     return result
   }
 
+  override def handleMailboxIdle() {
+    firstMessage = true
+    advanceReplay
+  }
+
   override def reset_all_state() {
     super.reset_all_state
     reset_state(shouldShutdownActorSystem)

@@ -141,6 +141,10 @@ class EventOrchestrator[E] {
           // able to process the akka-internal "Terminated" messages, i.e.
           // killing it now will result in a deadlock.
           if (Instrumenter().previousActor == name) {
+            // N.B. because *this* thread is the one that will eventually set
+            // the mailbox state to idle, we should be guarenteed that we will
+            // not end up with start_dispatch being called concurrently with
+            // what we're currently doing here.
             Instrumenter().dispatchAfterMailboxIdle(name)
             return false
           }

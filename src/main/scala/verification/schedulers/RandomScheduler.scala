@@ -522,6 +522,10 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     handle_timer(receiver, msg)
   }
 
+  override def handleMailboxIdle() {
+    advanceTrace
+  }
+
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
     reset_state(true)

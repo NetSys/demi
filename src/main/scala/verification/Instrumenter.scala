@@ -270,7 +270,8 @@ class Instrumenter {
       }
     }
     if (shouldDispatch) {
-      start_dispatch
+      assert(!started.get)
+      scheduler.handleMailboxIdle
     }
   }
 
