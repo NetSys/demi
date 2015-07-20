@@ -221,6 +221,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // Wait until the initialization thread is done. Assumes that it
     // terminates!
     if (initThread != null) {
+      println("Joining on initialization thread")
       initThread.join
     }
     reset_all_state
