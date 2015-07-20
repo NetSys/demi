@@ -530,6 +530,26 @@ object RunnerUtils {
     Instrumenter().scheduler = dummy_sched
     dummy_sched.populateActorSystem(deserializer.get_actors)
 
+    val origTrace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val provenanceTrace = deserializer.get_filtered_initial_trace()
+
+    deserializer = new ExperimentDeserializer(mcs_dir)
+
+    val mcsTrace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val intMinTrace = deserializer.get_events(
+          messageDeserializer, Instrumenter().actorSystem,
+          traceFile=ExperimentSerializer.minimizedInternalTrace)
+
+    printMinimizationStats(origTrace, provenanceTrace, mcsTrace, intMinTrace,
+      schedulerConfig.messageFingerprinter)
+
+    dummy_sched.shutdown
+  }
+
+  def printMinimizationStats(
+    origTrace: EventTrace, provenanceTrace: Option[Queue[Unique]],
+    mcsTrace: EventTrace, intMinTrace: EventTrace, messageFingerprinter: FingerprintFactory) {
+
     def get_deliveries(trace: EventTrace) : Seq[MsgEvent] = {
       // Make sure not to count checkpoint and failure detector messages.
       // Also filter out Timers from other messages, by ensuring that the
@@ -537,7 +557,7 @@ object RunnerUtils {
       trace.filterFailureDetectorMessages.
             filterCheckpointMessages.flatMap {
         case m @ MsgEvent(s, r, msg) =>
-          val fingerprint = schedulerConfig.messageFingerprinter.fingerprint(msg)
+          val fingerprint = messageFingerprinter.fingerprint(msg)
           if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
             Some(MsgEvent("Timer", r, fingerprint))
           } else {
@@ -560,55 +580,63 @@ object RunnerUtils {
       } length
     }
 
-    val orig_deliveries = get_deliveries(deserializer.get_events(messageDeserializer, Instrumenter().actorSystem))
+    val orig_deliveries = get_deliveries(origTrace)
     val orig_externals = count_externals(orig_deliveries)
     val orig_timers = count_timers(orig_deliveries)
 
     // Assumes get_filtered_initial_trace only contains Unique(MsgEvent)s
-    val provenance_deliveries = deserializer.get_filtered_initial_trace().get.flatMap {
-      case Unique(m @ MsgEvent(s,r,msg), id) =>
-        if (MessageTypes.fromFailureDetector(msg) ||
-            MessageTypes.fromCheckpointCollector(msg)) {
-          None
-        } else if (id == 0) {
-          // Filter out root event
-          None
-        } else {
-          val fingerprint = schedulerConfig.messageFingerprinter.fingerprint(msg)
-          if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
-            Some(MsgEvent("Timer", r, fingerprint))
-          } else {
-            Some(MsgEvent(s, r, fingerprint))
-          }
+    val provenance_deliveries = provenanceTrace match {
+      case Some(trace) =>
+        trace.flatMap {
+          case Unique(m @ MsgEvent(s,r,msg), id) =>
+            if (MessageTypes.fromFailureDetector(msg) ||
+                MessageTypes.fromCheckpointCollector(msg)) {
+              None
+            } else if (id == 0) {
+              // Filter out root event
+              None
+            } else {
+              val fingerprint = messageFingerprinter.fingerprint(msg)
+              if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
+                Some(MsgEvent("Timer", r, fingerprint))
+              } else {
+                Some(MsgEvent(s, r, fingerprint))
+              }
+            }
+          case e => throw new UnsupportedOperationException("Non-MsgEvent:" + e)
         }
-      case e => throw new UnsupportedOperationException("Non-MsgEvent:" + e)
+      case None =>
+        Seq.empty
     }
     val provenance_externals = count_externals(provenance_deliveries)
     val provenance_timers = count_timers(provenance_deliveries)
 
-    deserializer = new ExperimentDeserializer(mcs_dir)
-
     // Should be same actors, so no need to populateActorSystem
-    val mcs_deliveries = get_deliveries(deserializer.get_events(messageDeserializer, Instrumenter().actorSystem))
+    val mcs_deliveries = get_deliveries(mcsTrace)
     val mcs_externals = count_externals(mcs_deliveries)
     val mcs_timers = count_timers(mcs_deliveries)
 
-    val intmin_deliveries = get_deliveries(deserializer.get_events(
-          messageDeserializer, Instrumenter().actorSystem,
-          traceFile=ExperimentSerializer.minimizedInternalTrace))
+    val intmin_deliveries = get_deliveries(intMinTrace)
     val intmin_externals = count_externals(intmin_deliveries)
     val intmin_timers = count_timers(intmin_deliveries)
 
-    dummy_sched.shutdown
-
     println("Original message deliveries: " + orig_deliveries.size +
             " ("+orig_externals+" externals, "+orig_timers+" timers)")
-    println("Removed by provenance: " + (orig_deliveries.size - provenance_deliveries.size) +
-            " ("+(orig_externals - provenance_externals)+" externals, "+
-            (orig_timers - provenance_timers)+" timers)")
-    println("Removed by DDMin: " + (provenance_deliveries.size - mcs_deliveries.size) +
-            " ("+(provenance_externals - mcs_externals)+" externals, "+
-            (provenance_timers - mcs_timers)+" timers)")
+    if (!provenance_deliveries.isEmpty) {
+      println("Removed by provenance: " + (orig_deliveries.size - provenance_deliveries.size) +
+              " ("+(orig_externals - provenance_externals)+" externals, "+
+              (orig_timers - provenance_timers)+" timers)")
+    }
+    val ddminPriorDeliveries = if (!provenance_deliveries.isEmpty) provenance_deliveries
+                               else orig_deliveries
+    val ddminPriorExternals = if (!provenance_deliveries.isEmpty) provenance_externals
+                              else orig_externals
+    val ddminPriorTimers = if (!provenance_deliveries.isEmpty) provenance_timers
+                              else orig_timers
+
+    println("Removed by DDMin: " + (ddminPriorDeliveries.size - mcs_deliveries.size) +
+            " ("+(ddminPriorExternals - mcs_externals)+" externals, "+
+            (ddminPriorTimers - mcs_timers)+" timers)")
     println("Removed by internal minimization: " + (mcs_deliveries.size - intmin_deliveries.size) +
             " ("+(mcs_externals - intmin_externals)+" externals, "+
             (mcs_timers - intmin_timers)+" timers)")
@@ -616,9 +644,7 @@ object RunnerUtils {
             " ("+intmin_externals + " externals, "+
             intmin_timers + " timers)")
     println("Final messages delivered:") // w/o fingerints
-    deserializer.get_events(
-          messageDeserializer, Instrumenter().actorSystem,
-          traceFile=ExperimentSerializer.minimizedInternalTrace) foreach {
+    intMinTrace foreach {
       case m: MsgEvent => println(m)
       case t: TimerDelivery => println(t)
       case _ =>
