@@ -149,7 +149,6 @@ trait ExternalEventInjector[E] {
    */
   def endUnignorableEvents() {
     assert(unignorableEvents.get())
-    println("endUnignorableEvents")
     unignorableEvents.set(false)
     // TODO(cs): should these be placed into messagesToSend too?
     event_orchestrator.events += EndUnignorableEvents

@@ -34,6 +34,9 @@ import org.slf4j.LoggerFactory,
 // but it's possible that this might trigger a bug.
 
 object STSScheduler {
+  type PreTestCallback = () => Unit
+  type PostTestCallback = () => Unit
+
   // The maximum number of unexpected messages to try in a Peek() run before
   // giving up.
   val maxPeekMessagesToTry = 100
@@ -119,14 +122,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   var expectedExternalAtomicBlocks = new HashSet[Long]
 
   // An optional callback that will be before we execute the trace.
-  type PreTestCallback = () => Unit
-  var preTestCallback : PreTestCallback = () => None
-  def setPreTestCallback(c: PreTestCallback) { preTestCallback = c }
+  var preTestCallback : STSScheduler.PreTestCallback = () => None
+  def setPreTestCallback(c: STSScheduler.PreTestCallback) { preTestCallback = c }
 
   // An optional callback that will be invoked after we execute the trace.
-  type PostTestCallback = () => Unit
-  var postTestCallback : PostTestCallback = () => None
-  def setPostTestCallback(c: PostTestCallback) { postTestCallback = c }
+  var postTestCallback : STSScheduler.PostTestCallback = () => None
+  def setPostTestCallback(c: STSScheduler.PostTestCallback) { postTestCallback = c }
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
@@ -142,8 +143,6 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
-
-    preTestCallback()
 
     // We only ever replay once
     if (stats != null) {
@@ -185,6 +184,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     event_orchestrator.reset_events
 
     currentlyInjecting.set(true)
+
+    preTestCallback()
 
     // Kick off the system's initialization routine
     var initThread : Thread = null

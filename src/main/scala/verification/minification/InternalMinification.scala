@@ -1,17 +1,14 @@
 package akka.dispatch.verification
 
 import scala.collection.mutable.SynchronizedQueue
+import scala.collection.mutable.Queue
 import akka.actor.Props
 
-// Minimizes internal events
+// Minimizes internal events. One-time-use -- shouldn't invoke minimize() more
+// than once.
 // TODO(cs): ultimately, we should try supporting DPOR removal of
 // internals.
-abstract class InternalEventMinimizer(
-  mcs: Seq[ExternalEvent],
-  verified_mcs: EventTrace,
-  violation: ViolationFingerprint,
-  removalStrategy: RemovalStrategy) {
-
+trait InternalEventMinimizer {
   def minimize(): Tuple2[MinimizationStats, EventTrace]
 }
 
@@ -21,8 +18,11 @@ class STSSchedMinimizer(
   violation: ViolationFingerprint,
   removalStrategy: RemovalStrategy,
   schedulerConfig: SchedulerConfig,
-  actorNameProps: Seq[Tuple2[Props, String]])
-  extends InternalEventMinimizer(mcs, verified_mcs, violation, removalStrategy) {
+  actorNameProps: Seq[Tuple2[Props, String]],
+  initializationRoutine: Option[() => Any]=None,
+  preTest: Option[STSScheduler.PreTestCallback]=None,
+  postTest: Option[STSScheduler.PostTestCallback]=None)
+  extends InternalEventMinimizer {
 
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
     val stats = new MinimizationStats("InternalMin", "STSSched")
@@ -34,7 +34,8 @@ class STSSchedMinimizer(
 
     while (!nextTrace.isEmpty) {
       RunnerUtils.testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
-                       violation, stats) match {
+                       violation, stats, initializationRoutine=initializationRoutine,
+                       preTest=preTest, postTest=postTest) match {
         case Some(trace) =>
           // Some other events may have been pruned by virtue of being absent. So
           // we reassign lastFailingTrace, then pick then next trace based on
@@ -87,6 +88,7 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
         if (inUnignorableBlock) {
           triedIgnoring += ((snd, rcv, messageFingerprinter.fingerprint(msg)))
         }
+      case _ =>
     }
   }
 
@@ -162,3 +164,47 @@ class LeftToRightOneAtATime(
     return None
   }
 }
+
+/*
+// For any <src, dst> pair, maintains FIFO delivery (i.e. assumes TCP as the
+// underlying transport medium), and only tries removing the last message
+// (iteratively) from each FIFO queue.
+class SrcDstFIFORemoval(
+  verified_mcs: EventTrace, messageFingerprinter:  FingerprintFactory)
+  extends RemovalStrategy(verified_mcs, messageFingerprinter) {
+
+  // N.B. the queue is actually reversed: last message is at the head.
+  // N.B. doesn't actually contain TimerDeliveries; only real messages. Timers
+  // are harder to reason about, and this is just an optimization anyway, so
+  // just try removing them in random order.
+  val srcDstToMessages = new HashMap[(String, String), Queue[UniqueMsgEvent]]
+  // Set of <src, dst> pairs that still have a message that we can try
+  // ignoring.
+  val remainingSrcDsts = new HashSet[(String, String)]
+
+  verified_mcs.events.reverse.foreach {
+    case m @ UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
+      srcDstToMessages.getOrElse((snd,rcv), new Queue[UniqueMsgEvent]) += m
+    case e =>
+  }
+
+  srcDstToMessages.keys.foreach {
+    case (src, dst) =>
+      if (srcDstToMessages((src,dst)).head) {
+      }
+    remainingSrcDsts
+  }
+
+  def getNextEventToIgnore(): Option[Event] = {
+    // First check if there are any remainingSrcDsts.
+
+    // Finally, try to find an arbitrary UniqueTimerDelivery we haven't tried
+    // ignoring yet.
+  }
+
+  // TODO(cs): account for HardKills, which should reset the FIFO queues
+  // involving that node.
+  def getNextTrace(lastFailingTrace: EventTrace) : Option[EventTrace] = {
+  }
+}
+*/

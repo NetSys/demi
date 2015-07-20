@@ -386,12 +386,25 @@ object RunnerUtils {
                        trace: EventTrace,
                        actorNameProps: Seq[Tuple2[Props, String]],
                        violation: ViolationFingerprint,
-                       stats: MinimizationStats)
+                       stats: MinimizationStats,
+                       initializationRoutine: Option[() => Any]=None,
+                       preTest: Option[STSScheduler.PreTestCallback]=None,
+                       postTest: Option[STSScheduler.PostTestCallback]=None)
                      : Option[EventTrace] = {
     val sched = new STSScheduler(schedulerConfig, trace, false)
     Instrumenter().scheduler = sched
     sched.setActorNamePropPairs(actorNameProps)
-    return sched.test(mcs, violation, stats)
+    preTest match {
+      case Some(callback) =>
+        sched.setPreTestCallback(callback)
+      case _ =>
+    }
+    postTest match {
+      case Some(callback) =>
+        sched.setPostTestCallback(callback)
+      case _ =>
+    }
+    return sched.test(mcs, violation, stats, initializationRoutine=initializationRoutine)
   }
 
   // pre: replay(verified_mcs) reproduces the violation.
@@ -399,14 +412,19 @@ object RunnerUtils {
                         mcs: Seq[ExternalEvent],
                         verified_mcs: EventTrace,
                         actorNameProps: Seq[Tuple2[Props, String]],
-                        violation: ViolationFingerprint) :
+                        violation: ViolationFingerprint,
+                        preTest: Option[STSScheduler.PreTestCallback]=None,
+                        postTest: Option[STSScheduler.PostTestCallback]=None,
+                        initializationRoutine: Option[() => Any]=None) :
       Tuple2[MinimizationStats, EventTrace] = {
 
     println("Minimizing internals..")
     println("verified_mcs.original_externals: " + verified_mcs.original_externals)
     val removalStrategy = new LeftToRightOneAtATime(verified_mcs, schedulerConfig.messageFingerprinter)
     val minimizer = new STSSchedMinimizer(mcs, verified_mcs, violation,
-      removalStrategy, schedulerConfig, actorNameProps)
+      removalStrategy, schedulerConfig, actorNameProps,
+      initializationRoutine=initializationRoutine,
+      preTest=preTest, postTest=postTest)
     return minimizer.minimize()
   }
 
