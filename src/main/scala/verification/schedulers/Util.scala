@@ -195,6 +195,12 @@ class VCLogger () {
   }
 }
 
+class ScheduleFunctionReceiver extends Actor {
+  def receive = {
+    case e => throw new UnsupportedOperationException("")
+  }
+}
+
 // A Cell that only provides functionality for `self()` (which is the only field we need anyway).
 // We use this class to shoehorn `ask` responses
 // (which don't go through the normal dispatch()->ActorCell pipeline)

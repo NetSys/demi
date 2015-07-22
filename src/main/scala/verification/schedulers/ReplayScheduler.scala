@@ -345,11 +345,10 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
     }
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {
-    if (handle_timer_cancel(receiver, msg)) {
+  def notify_timer_cancel(rcv: String, msg: Any): Unit = {
+    if (handle_timer_cancel(rcv, msg)) {
       return
     }
-    val rcv = receiver.path.name
     val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
     pendingEvents.get(key) match {
       case Some(queue) =>

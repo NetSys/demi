@@ -112,6 +112,10 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   // justScheduledTimers, put it here rather than pendingEvents.
   val timersToResend = new SynchronizedQueue[(String, Any)]
 
+  // if a code block was retriggered while it was also contained in
+  // justScheduledTimers, put it here rather than pendingEvents.
+  val codeBlocksToResend = new SynchronizedQueue[(Cell, Envelope)]
+
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
   setQuiescenceCallback(() => {
@@ -399,6 +403,9 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         // TODO(cs): I don't know if this screws up depGraph...
         timersToResend foreach { case (rcv, timer) => handle_timer(rcv, timer) }
         timersToResend.clear
+        codeBlocksToResend foreach { case (cell, env) =>
+          handle_enqueue_code_block(cell, env) }
+        codeBlocksToResend.clear
         justScheduledTimers.clear
       }
     }
@@ -490,13 +497,13 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     test_invariant = invariant
   }
 
-  def notify_timer_cancel(rcv: ActorRef, msg: Any): Unit = {
+  def notify_timer_cancel(rcv: String, msg: Any): Unit = {
     if (handle_timer_cancel(rcv, msg)) {
       return
     }
     // Awkward, we need to walk through the entire hashset to find what we're
     // looking for.
-    pendingEvents.remove("deadLetters",rcv.path.name, msg)
+    pendingEvents.remove("deadLetters",rcv, msg)
   }
 
   override def actorTerminated(name: String): Seq[(String, Any)] = {
@@ -526,6 +533,16 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     advanceTrace
   }
 
+  override def enqueue_code_block(cell: Cell, envelope: Envelope) {
+    if (justScheduledTimers contains ((cell.self.path.name, envelope.message))) {
+      // We just scheduled this code block, don't yet put it in pendingEvents!
+      // This is to avoid an infinite loop of scheduling timers.
+      codeBlocksToResend += ((cell, envelope))
+      return
+    }
+    handle_enqueue_code_block(cell, envelope)
+  }
+
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
     reset_state(true)
@@ -534,6 +551,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     super.reset_all_state
     justScheduledTimers.clear()
     timersToResend.clear()
+    codeBlocksToResend.clear()
     pendingEvents.clear()
     pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
     lookingFor = None

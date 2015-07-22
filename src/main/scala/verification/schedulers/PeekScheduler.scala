@@ -151,7 +151,7 @@ class PeekScheduler(val schedulerConfig: SchedulerConfig)
     super[ExternalEventInjector].enqueue_message(sender, receiver, msg)
   }
 
-  override def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {
+  override def notify_timer_cancel(receiver: String, msg: Any): Unit = {
     if (handle_timer_cancel(receiver, msg)) {
       return
     }

@@ -699,11 +699,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     test_invariant = invariant
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any) : Unit = {
-    if (handle_timer_cancel(receiver, msg)) {
+  def notify_timer_cancel(rcv: String, msg: Any) : Unit = {
+    if (handle_timer_cancel(rcv, msg)) {
       return
     }
-    val rcv = receiver.path.name
     val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
     pendingEvents.get(key) match {
       case Some(queue) =>
@@ -716,6 +715,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   }
 
   override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
+
+  override def enqueue_code_block(cell: Cell, envelope: Envelope) {
+    handle_enqueue_code_block(cell, envelope)
+  }
 
   override def actorTerminated(name: String): Seq[(String, Any)] = {
     val result = new Queue[(String, Any)]

@@ -87,8 +87,7 @@ class FairScheduler extends AbstractScheduler {
     println("No more messages to process " + pendingEvents)
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
-    val rcv = receiver.path.name
+  def notify_timer_cancel(rcv: String, msg: Any) {
     pendingEvents(rcv).dequeueFirst(tuple => tuple.element._2.message == msg)
     if (pendingEvents(rcv).isEmpty) {
       pendingEvents -= rcv

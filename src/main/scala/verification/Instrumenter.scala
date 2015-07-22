@@ -46,7 +46,7 @@ import org.slf4j.LoggerFactory,
 
 
 // Wrap cancellable so we get notified about cancellation
-class WrappedCancellable (c: Cancellable, rcv: ActorRef, msg: Any) extends Cancellable {
+class WrappedCancellable (c: Cancellable, rcv: String, msg: Any) extends Cancellable {
   val instrumenter = Instrumenter()
   def cancel(): Boolean = {
     val success = c.cancel
@@ -131,10 +131,15 @@ class Instrumenter {
   var cancellableToTimer = new HashMap[Cancellable, Tuple2[String, Any]]
   // And vice versa
   var timerToCancellable = new HashMap[Tuple2[String,Any], Cancellable]
+  // Fake actor, used to designate a code block (as opposed to a message) scheduled through
+  // akka.scheduler. Should never receive messages; only used for its ActorRef.
+  var scheduleFunctionRef : ActorRef = null
+  // Messages sent within a scheduled code block.
+  var codeBlockSends = new MultiSet[(String,Any)]
 
   val logger = LoggerFactory.getLogger("Instrumenter")
 
-  private[dispatch] def cancelTimer (c: Cancellable, rcv: ActorRef, msg: Any, success: Boolean) = {
+  private[dispatch] def cancelTimer (c: Cancellable, rcv: String, msg: Any, success: Boolean) = {
     // Need this here since by the time DPORwHeuristics gets here the thing is already canceled
     if (cancellableToTimer contains c) {
       removeCancellable(c)
@@ -156,6 +161,8 @@ class Instrumenter {
           _actorSystem = ActorSystem("new-system-" + counter)
       }
       _random = new Random(0)
+      scheduleFunctionRef = _actorSystem.actorOf(Props(classOf[ScheduleFunctionReceiver]),
+        name="ScheduleFunctionPlaceholder")
       counter += 1
     }
     _actorSystem
@@ -164,6 +171,8 @@ class Instrumenter {
   def actorSystem () : ActorSystem = {
     return actorSystem(None)
   }
+
+  def actorSystemInitialized: Boolean = _actorSystem != null
 
   private[this] var _random = new Random(0)
   def seededRandom() : Random = {
@@ -303,6 +312,10 @@ class Instrumenter {
 
     if (_passThrough.get()) {
       return true
+    }
+
+    if (Thread.currentThread.getName().startsWith("codeBlock-")) {
+      codeBlockSends += ((receiver.path.name, msg))
     }
 
     // First check if it's an external thread sending outside of
@@ -619,7 +632,6 @@ class Instrumenter {
     val snd = envelope.sender.path.name
     val rcv = _cell.self.path.name
     val msg = envelope.message
-    Util.logger.mergeVectorClocks(snd, rcv)
 
     if (_cell.self.isInstanceOf[PromiseActorRef]) {
       // This is an answer to an `ask`, and the scheduler just told us to
@@ -629,6 +641,42 @@ class Instrumenter {
       tempRef.!(envelope.message)(envelope.sender)
       return
     }
+
+    if (_cell.self == scheduleFunctionRef) {
+      // This is a code block scheduled by akka.scheduler.schedule().
+      // Run the code block rather than delivering any message.
+      // Run it in a separate thread! Since it may block, e.g. by calling
+      // `Await.result`
+      new Thread(new Runnable {
+          def run() = { msg.asInstanceOf[Function0[_]].apply() }
+      }, "codeBlock-"+msg.hashCode).start()
+
+      // Check if it was a repeating timer. If so, retrigger it.
+      assert(timerToCancellable contains ("ScheduleFunction", msg))
+      val cancellable = timerToCancellable(("ScheduleFunction", msg))
+      if (ongoingCancellableTasks contains cancellable) {
+        println("Retriggering repeating code block: " + msg)
+        handleTick("ScheduleFunction", msg, cancellable)
+      }
+      // Keep the scheduling loop going -- need to explicitly call
+      // schedule_new_message, since afterMessageReceive will not be invoked.
+      scheduler.schedule_new_message(blockedActors) match {
+        case Some((new_cell, envelope)) =>
+          val dst = new_cell.self.path.name
+          if (blockedActors contains dst) {
+            throw new IllegalArgumentException("schedule_new_message returned a " +
+                                               "dst that is blocked: " + dst)
+          }
+          dispatch_new_message(new_cell, envelope)
+        case None =>
+          counter += 1
+          started.set(false)
+          scheduler.notify_quiescence()
+      }
+      return
+    }
+
+    Util.logger.mergeVectorClocks(snd, rcv)
 
     // We now know that cell is a real ActorCell, not a FakeCell.
     val cell = _cell.asInstanceOf[ActorCell]
@@ -641,21 +689,26 @@ class Instrumenter {
     }
     
     scheduler.event_consumed(cell, envelope)
+    if (codeBlockSends contains ((rcv, msg))) {
+      codeBlockSends -= ((rcv, msg))
+    }
     dispatcher.dispatch(cell, envelope)
     // Check if it was a repeating timer. If so, retrigger it.
     if (timerToCancellable contains (rcv, msg)) {
       val cancellable = timerToCancellable((rcv, msg))
       if (ongoingCancellableTasks contains cancellable) {
         println("Retriggering repeating timer: " + rcv + " " + msg)
-        handleTick(cell.self, msg, cancellable)
+        handleTick(cell.self.path.name, msg, cancellable)
       }
     }
   }
 
   def isTimer(rcv: String, msg: Any) : Boolean = {
-    return timerToCancellable contains (rcv, msg)
+    return (timerToCancellable contains (rcv, msg)) ||
+           rcv == "ScheduleFunctionPlaceholder" ||
+           (codeBlockSends contains ((rcv, msg)))
   }
-  
+
   // Called when dispatch is called. One of two cases:
   //  - right after the message has first been `tell`ed but before the message
   //    is delivered. In this case we notify the scheduler that the message is
@@ -738,8 +791,7 @@ class Instrumenter {
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
-                          rcv: ActorRef, msg: Any) {
-    val receiver = rcv.path.name
+                          receiver: String, msg: Any) {
     registeredCancellableTasks += c
     if (ongoingTimer) {
       ongoingCancellableTasks += c
@@ -751,7 +803,7 @@ class Instrumenter {
     }
     timerToCancellable((receiver, msg)) = c
     // Schedule it immediately!
-    handleTick(rcv, msg, c)
+    handleTick(receiver, msg, c)
   }
 
   def removeCancellable(c: Cancellable) {
@@ -761,15 +813,21 @@ class Instrumenter {
     cancellableToTimer -= c
   }
 
-  // When akka.actor.schedulerOnce decides to schedule a message to be sent,
-  // we intercept it here.
-  def handleTick(receiver: ActorRef, msg: Any, c: Cancellable) {
+  // Invoked when a timer is sent
+  def handleTick(receiver: String, msg: Any, c: Cancellable) {
     // println("handleTick " + receiver + " " + msg)
     if (!(registeredCancellableTasks contains c)) {
-      throw new IllegalArgumentException("Cancellable " + (receiver.path.name, msg) +
-                                         "is already cancelled...")
+      throw new IllegalArgumentException("Cancellable " + (receiver, msg) +
+                                         " is already cancelled...")
     }
-    scheduler.enqueue_timer(receiver.path.name, msg)
+    if (receiver == "ScheduleFunction") {
+      // Create a fake ActorCell and Envelope and give it to scheduler.
+      val cell = new FakeCell(scheduleFunctionRef)
+      val env = Envelope.apply(msg, null, _actorSystem)
+      scheduler.enqueue_code_block(cell, env)
+    } else {
+      scheduler.enqueue_timer(receiver, msg)
+    }
     if (!(ongoingCancellableTasks contains c)) {
       removeCancellable(c)
     }
@@ -880,5 +938,14 @@ object Instrumenter {
     return Thread.currentThread.getName().contains("dispatcher") &&
            !Thread.currentThread().getStackTrace().map(e => e.getMethodName).exists(e => e == "preStart") &&
            !_overrideInternalThreadRule.get()
+  }
+
+  // When a code block is about to be scheduled through
+  // akka.scheduler.schedule, check if it's an akka internal code block.
+  // TODO(cs): would be nice to have a better interface.
+  def akkaInternalCodeBlockSchedule(): Boolean = {
+    val callStack = Thread.currentThread().getStackTrace().map(e => e.getMethodName)
+    // https://github.com/akka/akka/blob/release-2.2/akka-actor/src/main/scala/akka/pattern/AskSupport.scala#L334
+    return callStack.contains("ask$extension")
   }
 }

@@ -249,7 +249,6 @@ trait ExternalEventInjector[E] {
         messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
         messagesToSend.notifyAll()
       }
-
     } else {
       println("WARNING! Unknown timer receiver " + receiver)
     }
@@ -539,12 +538,27 @@ trait ExternalEventInjector[E] {
   }
 
   // Return true if we found the timer in our messagesToSend
-  def handle_timer_cancel(rcv: ActorRef, msg: Any): Boolean = {
+  def handle_timer_cancel(rcv: String, msg: Any): Boolean = {
     messagesToSend.dequeueFirst(tuple =>
       tuple._2 != null &&
-      tuple._2.path.name == rcv.path.name && tuple._3 == msg) match {
+      tuple._2.path.name == rcv && tuple._3 == msg) match {
       case Some(_) => return true
       case None => return false
+    }
+  }
+
+  def handle_enqueue_code_block(cell: Cell, envelope: Envelope) {
+    dispatchAfterEnqueueMessage.synchronized {
+      if (dispatchAfterEnqueueMessage.get()) {
+        dispatchAfterEnqueueMessage.set(false)
+        started.set(true)
+        Instrumenter().scheduler.event_produced(cell, envelope)
+        println("dispatching after enqueue_code_block")
+        Instrumenter().start_dispatch()
+      } else {
+        assert(started.get)
+        Instrumenter().scheduler.event_produced(cell, envelope)
+      }
     }
   }
 

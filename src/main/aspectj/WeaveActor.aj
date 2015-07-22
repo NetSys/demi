@@ -31,6 +31,8 @@ import akka.dispatch.Mailbox;
 import scala.concurrent.impl.CallbackRunnable;
 import scala.concurrent.duration.FiniteDuration;
 import scala.concurrent.ExecutionContext;
+import scala.Function0;
+import scala.runtime.BoxedUnit;
 import java.lang.Runnable;
 
 privileged public aspect WeaveActor {
@@ -162,8 +164,9 @@ privileged public aspect WeaveActor {
       }
     }
     MyRunnable runnable = new MyRunnable();
-    Cancellable c = new WrappedCancellable(me.scheduleOnce(delay, runnable, exc), receiver, msg);
-    inst.registerCancellable(c, false, receiver, msg);
+    Cancellable c = new WrappedCancellable(
+      me.scheduleOnce(delay, runnable, exc), receiver.path().name(), msg);
+    inst.registerCancellable(c, false, receiver.path().name(), msg);
     return c;
   }
 
@@ -185,8 +188,61 @@ privileged public aspect WeaveActor {
       }
     }
     MyRunnable runnable = new MyRunnable();
-    Cancellable c = me.schedule(delay, interval, runnable, exc);
-    inst.registerCancellable(c, true, receiver, msg);
+    Cancellable c = new WrappedCancellable(
+      me.schedule(delay, interval, runnable, exc), receiver.path().name(), msg);
+    inst.registerCancellable(c, true, receiver.path().name(), msg);
+    return c;
+  }
+
+  // Override akka.actor.Scheduler.scheduler(block)
+  pointcut scheduleBlock(LightArrayRevolverScheduler me, FiniteDuration delay, FiniteDuration interval, scala.Function0<scala.runtime.BoxedUnit> block, ExecutionContext exc):
+  execution(public * schedule(scala.concurrent.duration.FiniteDuration, scala.concurrent.duration.FiniteDuration, scala.Function0<scala.runtime.BoxedUnit>, scala.concurrent.ExecutionContext)) &&
+  args(delay, interval, block, exc) && this(me);
+
+  // Wrap the function in a special "Message" wrapper, that appears to
+  // STS2 schedulers like a message, but which the Instrumenter understands as a
+  // function to be invoked rather than a message to be sent.
+  // TODO(cs): issue: no receiver.
+  Object around(LightArrayRevolverScheduler me, FiniteDuration delay, FiniteDuration interval, scala.Function0<scala.runtime.BoxedUnit> block, ExecutionContext exc):
+  scheduleBlock(me, delay, interval, block, exc) {
+    if (!inst.actorSystemInitialized() || Instrumenter.akkaInternalCodeBlockSchedule()) {
+      return proceed(me, delay, interval, block, exc);
+    }
+
+    class MyRunnable implements java.lang.Runnable {
+      // Make it a no-op!
+      public void run() {
+      }
+    }
+    MyRunnable runnable = new MyRunnable();
+    Cancellable c = new WrappedCancellable(me.schedule(delay, interval, runnable, exc), "ScheduleFunction", block);
+    inst.registerCancellable(c, true, "ScheduleFunction", block);
+    return c;
+  }
+
+  // Override akka.actor.Scheduler.scheduler(block)
+  pointcut scheduleOnceBlock(LightArrayRevolverScheduler me, FiniteDuration delay, scala.Function0<scala.runtime.BoxedUnit> block, ExecutionContext exc):
+  execution(public * scheduleOnce(scala.concurrent.duration.FiniteDuration, scala.Function0<scala.runtime.BoxedUnit>, scala.concurrent.ExecutionContext)) &&
+  args(delay, block, exc) && this(me);
+
+  // Wrap the function in a special "Message" wrapper, that appears to
+  // STS2 schedulers like a message, but which the Instrumenter understands as a
+  // function to be invoked rather than a message to be sent.
+  // TODO(cs): issue: no receiver.
+  Object around(LightArrayRevolverScheduler me, FiniteDuration delay, scala.Function0<scala.runtime.BoxedUnit> block, ExecutionContext exc):
+  scheduleOnceBlock(me, delay, block, exc) {
+    if (!inst.actorSystemInitialized() || Instrumenter.akkaInternalCodeBlockSchedule()) {
+      return proceed(me, delay, block, exc);
+    }
+
+    class MyRunnable implements java.lang.Runnable {
+      // Make it a no-op!
+      public void run() {
+      }
+    }
+    MyRunnable runnable = new MyRunnable();
+    Cancellable c = new WrappedCancellable(me.scheduleOnce(delay, runnable, exc), "ScheduleFunction", block);
+    inst.registerCancellable(c, false, "ScheduleFunction", block);
     return c;
   }
 }
