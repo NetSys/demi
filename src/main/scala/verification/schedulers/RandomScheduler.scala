@@ -672,7 +672,6 @@ class SrcDstFIFO extends RandomizationStrategy {
   def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = synchronized {
     val src = tuple._1.element._2.sender.path.name
     val dst = tuple._1.element._1.self.path.name
-    println("+=! " + src + " " + dst)
     if (!(srcDstToMessages contains ((src, dst)))) {
       // If there is no queue, create one
       assert(((src, dst)) != null)
@@ -728,13 +727,10 @@ class SrcDstFIFO extends RandomizationStrategy {
 
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = synchronized {
     val result = new ListBuffer[(Uniq[(Cell,Envelope)],Unique)]
-    println("removeAll: " + rcv + " " + rcv.hashCode)
     val itr = srcDsts.iterator
     while (itr.hasNext) {
       val (src, dst) = itr.next
-      println(src + " " + dst + " " + src.hashCode + " " + dst.hashCode)
       if (dst == rcv) {
-        println("dst == rcv")
         val queue = srcDstToMessages((src, dst))
         for (e <- queue) {
           allMessages -= e

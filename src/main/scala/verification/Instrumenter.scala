@@ -652,11 +652,12 @@ class Instrumenter {
       }, "codeBlock-"+msg.hashCode).start()
 
       // Check if it was a repeating timer. If so, retrigger it.
-      assert(timerToCancellable contains ("ScheduleFunction", msg))
-      val cancellable = timerToCancellable(("ScheduleFunction", msg))
-      if (ongoingCancellableTasks contains cancellable) {
-        println("Retriggering repeating code block: " + msg)
-        handleTick("ScheduleFunction", msg, cancellable)
+      if (timerToCancellable contains ("ScheduleFunction", msg)) {
+        val cancellable = timerToCancellable(("ScheduleFunction", msg))
+        if (ongoingCancellableTasks contains cancellable) {
+          println("Retriggering repeating code block: " + msg)
+          handleTick("ScheduleFunction", msg, cancellable)
+        }
       }
       // Keep the scheduling loop going -- need to explicitly call
       // schedule_new_message, since afterMessageReceive will not be invoked.
@@ -685,7 +686,7 @@ class Instrumenter {
 
     val dispatcher = dispatchers.get(cell.self) match {
       case Some(value) => value
-      case None => throw new Exception("internal error")
+      case None => throw new Exception("internal error: " + cell.self + " " + msg)
     }
     
     scheduler.event_consumed(cell, envelope)
