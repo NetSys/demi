@@ -11,12 +11,12 @@ import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Set
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.HashSet
-import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
 import scala.collection.generic.Growable
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.ArrayList
 import java.util.Random
 
 import org.slf4j.LoggerFactory,
@@ -652,15 +652,15 @@ class FullyRandom extends RandomizationStrategy {
 // to why it happens, not even synchronized methods everywhere helps it. For
 // now, keep the synchronized methods in...
 class SrcDstFIFO extends RandomizationStrategy {
-  private var srcDsts = new ArrayBuffer[(String, String)]
+  private var srcDsts = new ArrayList[(String, String)]
   private val rand = new Random(System.currentTimeMillis())
   private val srcDstToMessages = new HashMap[(String, String),
                                              Queue[(Uniq[(Cell,Envelope)],Unique)]]
   private val allMessages = new MultiSet[(Uniq[(Cell,Envelope)],Unique)]
 
   def getRandomSrcDst(): ((String, String), Int) = synchronized {
-    val idx = rand.nextInt(srcDsts.length)
-    return (srcDsts(idx), idx)
+    val idx = rand.nextInt(srcDsts.size)
+    return (srcDsts.get(idx), idx)
   }
 
   def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] = synchronized {
@@ -672,10 +672,11 @@ class SrcDstFIFO extends RandomizationStrategy {
   def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = synchronized {
     val src = tuple._1.element._2.sender.path.name
     val dst = tuple._1.element._1.self.path.name
+    println("+=! " + src + " " + dst)
     if (!(srcDstToMessages contains ((src, dst)))) {
       // If there is no queue, create one
       assert(((src, dst)) != null)
-      srcDsts += ((src, dst))
+      srcDsts.add((src, dst))
       srcDstToMessages((src, dst)) = new Queue[(Uniq[(Cell,Envelope)],Unique)]
     }
 
@@ -727,20 +728,21 @@ class SrcDstFIFO extends RandomizationStrategy {
 
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = synchronized {
     val result = new ListBuffer[(Uniq[(Cell,Envelope)],Unique)]
-    srcDsts.toSeq.foreach {
-      case (src, dst) =>
-        if (dst == rcv) {
-          val queue = srcDstToMessages((src, dst))
-          for (e <- queue) {
-            allMessages -= e
-            result += e
-          }
-          srcDstToMessages -= ((src,rcv))
-          srcDsts.remove(srcDsts.indexOf(((src,rcv))))
+    println("removeAll: " + rcv + " " + rcv.hashCode)
+    val itr = srcDsts.iterator
+    while (itr.hasNext) {
+      val (src, dst) = itr.next
+      println(src + " " + dst + " " + src.hashCode + " " + dst.hashCode)
+      if (dst == rcv) {
+        println("dst == rcv")
+        val queue = srcDstToMessages((src, dst))
+        for (e <- queue) {
+          allMessages -= e
+          result += e
         }
-      case null =>
-        // WTF... How did we even get here...
-        assert(!(srcDstToMessages contains null))
+        srcDstToMessages -= ((src,rcv))
+        itr.remove
+      }
     }
     return result
   }
