@@ -648,7 +648,7 @@ class Instrumenter {
       // Run it in a separate thread! Since it may block, e.g. by calling
       // `Await.result`
       new Thread(new Runnable {
-          def run() = { msg.asInstanceOf[Function0[_]].apply() }
+          def run() = { msg.asInstanceOf[ScheduleBlock].apply() }
       }, "codeBlock-"+msg.hashCode).start()
 
       // Check if it was a repeating timer. If so, retrigger it.
@@ -796,14 +796,18 @@ class Instrumenter {
     if (ongoingTimer) {
       ongoingCancellableTasks += c
     }
-    cancellableToTimer(c) = ((receiver, msg))
-    // TODO(cs): for now, assume that msg's are unique. Don't assume that.
-    if (timerToCancellable contains (receiver, msg)) {
-      throw new RuntimeException("Non-unique timer: "+ receiver + " " + msg)
+    var _msg = msg
+    if (receiver == "ScheduleFunction") {
+      _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]])
     }
-    timerToCancellable((receiver, msg)) = c
+    cancellableToTimer(c) = ((receiver, _msg))
+    // TODO(cs): for now, assume that msg's are unique. Don't assume that.
+    if (timerToCancellable contains (receiver, _msg)) {
+      throw new RuntimeException("Non-unique timer: "+ receiver + " " + _msg)
+    }
+    timerToCancellable((receiver, _msg)) = c
     // Schedule it immediately!
-    handleTick(receiver, msg, c)
+    handleTick(receiver, _msg, c)
   }
 
   def removeCancellable(c: Cancellable) {
@@ -947,5 +951,27 @@ object Instrumenter {
     val callStack = Thread.currentThread().getStackTrace().map(e => e.getMethodName)
     // https://github.com/akka/akka/blob/release-2.2/akka-actor/src/main/scala/akka/pattern/AskSupport.scala#L334
     return callStack.contains("ask$extension")
+  }
+}
+
+// Wraps a scala.function0 scheduled through akka.scheduler.schedule, but its
+// toString tells us where it came from.
+class ScheduleBlock(f: Function0[Any]) {
+  def getCallStack(): String = {
+    // TODO(cs): magic number 6 is brittle
+    val callStack = Thread.currentThread.getStackTrace.drop(6)
+    val min3 = math.min(3, callStack.length)
+    var truncated = callStack.take(min3).toList
+    return truncated.map(e => e.getFileName + ":" + e.getLineNumber).mkString("-")
+  }
+
+  val callStack = getCallStack
+
+  override def toString(): String = {
+    "ScheduleBlock-" + callStack
+  }
+
+  def apply(): Any = {
+    return f()
   }
 }
