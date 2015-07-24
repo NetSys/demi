@@ -946,10 +946,12 @@ object Instrumenter {
   // send events to be treated as if they are coming from an external thread,
   // i.e. have message sends enqueued rather than sent immediately.
   def overrideInternalThreadRule() {
+    assert(!_overrideInternalThreadRule.get)
     _overrideInternalThreadRule.set(true)
   }
 
   def unsetInternalThreadRuleOverride() {
+    assert(_overrideInternalThreadRule.get)
     _overrideInternalThreadRule.set(false)
   }
 
