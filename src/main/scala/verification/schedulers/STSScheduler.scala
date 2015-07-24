@@ -359,11 +359,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_unpartition(a,b)
           // MsgSend is the initial send
           case m @ MsgSend (sender, receiver, message) =>
-            // sender == "deadLetters" means the message is a Send event.
-            // N.B. we should have pruned all messages from the failure
-            // detector -> actors from event_orchestrator.trace, to ensure
-            // that we don't send redundant messages.
-            if (sender == "deadLetters") {
+            if (EventTypes.isExternal(m)) {
               enqueue_message(None, receiver, message)
             }
           case TimerDelivery(snd, rcv, fingerprint) =>

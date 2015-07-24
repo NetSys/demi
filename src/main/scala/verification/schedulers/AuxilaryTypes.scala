@@ -126,6 +126,13 @@ final case class TimerDelivery(sender: String, receiver: String, fingerprint: Ti
 
 
 object EventTypes {
+  // Should return true if the given message is an external message
+  var externalMessageFilter: (Any) => Boolean = (_) => false
+  // Should be set by applications during initialization.
+  def setExternalMessageFilter(filter: (Any) => Boolean) {
+    externalMessageFilter = filter
+  }
+
   // Internal events that correspond to ExternalEvents.
   def isExternal(e: Event) : Boolean = {
     if (e.isInstanceOf[ExternalEvent]) {
@@ -134,14 +141,14 @@ object EventTypes {
     return e match {
       case _: KillEvent | _: SpawnEvent | _: PartitionEvent | _: UnPartitionEvent =>
         return true
-      case MsgEvent(snd, _, _) =>
-        return snd == "deadLetters" // TODO(cs): Timers break this
-      case MsgSend(snd, _, _) =>
-        return snd == "deadLetters"
-      case UniqueMsgEvent(MsgEvent(snd, _, _), _) =>
-        return snd == "deadLetters"
-      case UniqueMsgSend(MsgSend(snd, _, _), _) =>
-        return snd == "deadLetters"
+      case MsgEvent(_, _, m) =>
+        return externalMessageFilter(m)
+      case MsgSend(_, _, m) =>
+        return externalMessageFilter(m)
+      case UniqueMsgEvent(MsgEvent(_, _, m), _) =>
+        return externalMessageFilter(m)
+      case UniqueMsgSend(MsgSend(_, _, m), _) =>
+        return externalMessageFilter(m)
       case _ => return false
     }
   }

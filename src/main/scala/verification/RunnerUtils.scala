@@ -569,7 +569,12 @@ object RunnerUtils {
     }
     def count_externals(msgEvents: Seq[MsgEvent]): Int = {
       msgEvents flatMap {
-        case m @ MsgEvent("deadLetters", _, _) => Some(m)
+        case m @ MsgEvent(_, _, _) =>
+          if (EventTypes.isExternal(m)) {
+            Some(m)
+          } else {
+            None
+          }
         case _ => None
       } length
     }

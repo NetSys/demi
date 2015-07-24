@@ -79,9 +79,7 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
       case EndUnignorableEvents =>
         inUnignorableBlock = false
       case m @ UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
-        if (snd == "deadLetters" || inUnignorableBlock) {
-          // N.B., for Spark, messages sent from a non-actor
-          // should be labeled "external" rather than "deadLetters"
+        if (EventTypes.isExternal(m) || inUnignorableBlock) {
           triedIgnoring += ((snd, rcv, messageFingerprinter.fingerprint(msg)))
         }
       case t @ UniqueTimerDelivery(TimerDelivery(snd, rcv, msg), id) =>

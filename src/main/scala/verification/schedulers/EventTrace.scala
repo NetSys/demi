@@ -51,6 +51,8 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     return getEvents(events)
   }
 
+  def length = events.length
+
   private[this] def getEvents(_events: Seq[Event]): Seq[Event] = {
     return _events.map(e =>
       e match {
@@ -219,13 +221,13 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     }
     val sendsQueue = Queue(sends: _*)
     return getEvents(events map {
-      case u @ UniqueMsgSend(MsgSend("deadLetters", receiver, msg), id) =>
-        if (MessageTypes.fromCheckpointCollector(msg)) {
-          u
-        } else {
+      case u @ UniqueMsgSend(MsgSend(snd, receiver, msg), id) =>
+        if (EventTypes.isExternal(u)) {
           val send = sendsQueue.dequeue
           val new_msg = send.messageCtor()
-          UniqueMsgSend(MsgSend("deadLetters", receiver, new_msg), id)
+          UniqueMsgSend(MsgSend(snd, receiver, new_msg), id)
+        } else {
+          u
         }
       case m: MsgSend =>
         throw new IllegalArgumentException("Must be UniqueMsgSend")
@@ -255,7 +257,7 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     // iterate left to right.
     for (event <- events) {
       if (remaining.isEmpty) {
-        if (!EventTypes.isExternal(event)) {
+        if (!EventTypes.isExternal(event) && !event.isInstanceOf[ChangeContext]) {
           result += event
         }
       } else {
@@ -370,8 +372,8 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
 
     for (e <- events) {
       e match {
-        case UniqueMsgSend(m, id) =>
-          if (m.sender == "deadLetters") {
+        case m @ UniqueMsgSend(msgEvent, id) =>
+          if (EventTypes.isExternal(m)) {
             msg_send_idx += 1
             if (!(missing_indices contains msg_send_idx)) {
               remaining += e

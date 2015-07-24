@@ -141,9 +141,8 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
             event_orchestrator.trigger_unpartition(a,b)
-          case MsgSend (sender, receiver, message) =>
-            // sender == "deadLetters" means the message is external.
-            if (sender == "deadLetters") {
+          case m @ MsgSend (sender, receiver, message) =>
+            if (EventTypes.isExternal(m)) {
               enqueue_message(None, receiver, message)
             }
           case t: TimerDelivery =>
