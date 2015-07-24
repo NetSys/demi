@@ -18,6 +18,7 @@ import akka.actor.Scheduler;
 import akka.actor.Cancellable;
 import akka.actor.LightArrayRevolverScheduler;
 import akka.actor.LocalActorRefProvider;
+import akka.actor.VirtualPathContainer;
 import akka.actor.ActorPath;
 
 import akka.pattern.AskSupport;
@@ -80,6 +81,31 @@ privileged public aspect WeaveActor {
     }
     return null;
   }
+
+  // Sanity check: make sure we don't allocate two temp actors at the same
+  // time with the same name.
+  before(VirtualPathContainer me, String name, InternalActorRef ref):
+  execution(* VirtualPathContainer.addChild(String, InternalActorRef)) &&
+  this(me) && args(name, ref) {
+    if (me.children.containsKey(name)) {
+      System.err.println("WARNING: temp name already taken: " + name);
+    }
+  }
+
+  /*
+   For debugging redundant temp names:
+  before(VirtualPathContainer me, String name, InternalActorRef ref):
+  execution(* VirtualPathContainer.removeChild(String, InternalActorRef)) &&
+  this(me) && args(name, ref) {
+    System.out.println("removeChild: " + name);
+  }
+
+  before(VirtualPathContainer me, String name):
+  execution(* VirtualPathContainer.removeChild(String)) &&
+  this(me) && args(name) {
+    System.out.println("removeChild: " + name);
+  }
+  */
 
   // Interposition on the code that assigns IDs to temporary actors. See this
   // doc for more details:

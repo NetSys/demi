@@ -648,17 +648,23 @@ class Instrumenter {
       // Run it in a separate thread! Since it may block, e.g. by calling
       // `Await.result`
       new Thread(new Runnable {
-          def run() = { msg.asInstanceOf[ScheduleBlock].apply() }
-      }, "codeBlock-"+msg.hashCode).start()
+        def run() = {
+          // If the timer is repeating, wait until the block is completed until
+          // we retrigger it.
+          msg.asInstanceOf[ScheduleBlock].apply()
 
-      // Check if it was a repeating timer. If so, retrigger it.
-      if (timerToCancellable contains ("ScheduleFunction", msg)) {
-        val cancellable = timerToCancellable(("ScheduleFunction", msg))
-        if (ongoingCancellableTasks contains cancellable) {
-          println("Retriggering repeating code block: " + msg)
-          handleTick("ScheduleFunction", msg, cancellable)
+          timerToCancellable.synchronized {
+            if (timerToCancellable contains ("ScheduleFunction", msg)) {
+              val cancellable = timerToCancellable(("ScheduleFunction", msg))
+              if (ongoingCancellableTasks contains cancellable) {
+                println("Retriggering repeating code block: " + msg)
+                handleTick("ScheduleFunction", msg, cancellable)
+              }
+            }
+          }
         }
-      }
+      }, msg.asInstanceOf[ScheduleBlock].toString).start()
+
       // Keep the scheduling loop going -- need to explicitly call
       // schedule_new_message, since afterMessageReceive will not be invoked.
       scheduler.schedule_new_message(blockedActors) match {
@@ -695,19 +701,23 @@ class Instrumenter {
     }
     dispatcher.dispatch(cell, envelope)
     // Check if it was a repeating timer. If so, retrigger it.
-    if (timerToCancellable contains (rcv, msg)) {
-      val cancellable = timerToCancellable((rcv, msg))
-      if (ongoingCancellableTasks contains cancellable) {
-        println("Retriggering repeating timer: " + rcv + " " + msg)
-        handleTick(cell.self.path.name, msg, cancellable)
+    timerToCancellable.synchronized {
+      if (timerToCancellable contains (rcv, msg)) {
+        val cancellable = timerToCancellable((rcv, msg))
+        if (ongoingCancellableTasks contains cancellable) {
+          println("Retriggering repeating timer: " + rcv + " " + msg)
+          handleTick(cell.self.path.name, msg, cancellable)
+        }
       }
     }
   }
 
   def isTimer(rcv: String, msg: Any) : Boolean = {
-    return (timerToCancellable contains (rcv, msg)) ||
-           rcv == "ScheduleFunctionPlaceholder" ||
-           (codeBlockSends contains ((rcv, msg)))
+    timerToCancellable.synchronized {
+      return (timerToCancellable contains (rcv, msg)) ||
+             rcv == "ScheduleFunctionPlaceholder" ||
+             (codeBlockSends contains ((rcv, msg)))
+    }
   }
 
   // Called when dispatch is called. One of two cases:
@@ -793,29 +803,34 @@ class Instrumenter {
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
                           receiver: String, msg: Any) {
-    registeredCancellableTasks += c
-    if (ongoingTimer) {
-      ongoingCancellableTasks += c
-    }
     var _msg = msg
-    if (receiver == "ScheduleFunction") {
-      _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]])
+
+    timerToCancellable.synchronized {
+      registeredCancellableTasks += c
+      if (ongoingTimer) {
+        ongoingCancellableTasks += c
+      }
+      if (receiver == "ScheduleFunction") {
+        _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]])
+      }
+      cancellableToTimer(c) = ((receiver, _msg))
+      // TODO(cs): for now, assume that msg's are unique. Don't assume that.
+      if (timerToCancellable contains (receiver, _msg)) {
+        throw new RuntimeException("Non-unique timer: "+ receiver + " " + _msg)
+      }
+      timerToCancellable((receiver, _msg)) = c
     }
-    cancellableToTimer(c) = ((receiver, _msg))
-    // TODO(cs): for now, assume that msg's are unique. Don't assume that.
-    if (timerToCancellable contains (receiver, _msg)) {
-      throw new RuntimeException("Non-unique timer: "+ receiver + " " + _msg)
-    }
-    timerToCancellable((receiver, _msg)) = c
     // Schedule it immediately!
     handleTick(receiver, _msg, c)
   }
 
   def removeCancellable(c: Cancellable) {
-    registeredCancellableTasks -= c
-    val (receiver, msg) = cancellableToTimer(c)
-    timerToCancellable -= ((receiver, msg))
-    cancellableToTimer -= c
+    timerToCancellable.synchronized {
+      registeredCancellableTasks -= c
+      val (receiver, msg) = cancellableToTimer(c)
+      timerToCancellable -= ((receiver, msg))
+      cancellableToTimer -= c
+    }
   }
 
   // Invoked when a timer is sent
@@ -862,26 +877,29 @@ class Instrumenter {
     // reinitialize_system, due to shutdownCallback. This is problematic,
     // unless the application properly uses CheckpointSink's protocol for
     // checking invariants
-    val checkpoint = new InstrumenterCheckpoint(
-      new HashMap[String, ActorRef] ++ actorMappings,
-      new HashSet[(ActorSystem, Any)] ++ seenActors,
-      new HashSet[(ActorCell, Envelope)] ++ allowedEvents,
-      new HashMap[ActorRef, MessageDispatcher] ++ dispatchers,
-      new HashMap[String, VectorClock] ++ Util.logger.actor2vc,
-      _actorSystem,
-      new HashMap[Cancellable, Tuple2[String, Any]] ++ cancellableToTimer,
-      new HashSet[Cancellable] ++ ongoingCancellableTasks,
-      new HashMap[Tuple2[String,Any], Cancellable] ++ timerToCancellable,
-      checkpointCallback()
-    )
+
+    timerToCancellable.synchronized {
+      val checkpoint = new InstrumenterCheckpoint(
+        new HashMap[String, ActorRef] ++ actorMappings,
+        new HashSet[(ActorSystem, Any)] ++ seenActors,
+        new HashSet[(ActorCell, Envelope)] ++ allowedEvents,
+        new HashMap[ActorRef, MessageDispatcher] ++ dispatchers,
+        new HashMap[String, VectorClock] ++ Util.logger.actor2vc,
+        _actorSystem,
+        new HashMap[Cancellable, Tuple2[String, Any]] ++ cancellableToTimer,
+        new HashSet[Cancellable] ++ ongoingCancellableTasks,
+        new HashMap[Tuple2[String,Any], Cancellable] ++ timerToCancellable,
+        checkpointCallback()
+      )
+
+      // Reset all state so that a new actor system can be started.
+      registeredCancellableTasks.clear
+      ongoingCancellableTasks.clear
+      cancellableToTimer.clear
+      timerToCancellable.clear
+    }
 
     Util.logger.reset
-
-    // Reset all state so that a new actor system can be started.
-    registeredCancellableTasks.clear
-    ongoingCancellableTasks.clear
-    cancellableToTimer.clear
-    timerToCancellable.clear
 
     reinitialize_system(null, null)
 
