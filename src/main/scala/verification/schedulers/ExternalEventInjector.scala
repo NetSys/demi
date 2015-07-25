@@ -263,54 +263,56 @@ trait ExternalEventInjector[E] {
   // up in event_produced as messages to be scheduled by schedule_new_message.
   def send_external_messages(acquireSemaphore: Boolean) {
     // Ensure that only one thread is accessing shared scheduler structures
-    if (acquireSemaphore) {
-      schedSemaphore.acquire
-    }
-    assert(started.get)
-
-    // Send all pending fd responses
-    if (fd != null) {
-      fd.send_all_pending_responses()
-    }
-    // Drain message queue
-    Instrumenter().sendKnownExternalMessages(() => {
-      messagesToSend.synchronized {
-        for ((senderOpt, receiver, msg) <- messagesToSend) {
-          // Check if the message is actually a special marker
-          msg match {
-            case BeginExternalAtomicBlock(taskId) =>
-              event_orchestrator.events += BeginExternalAtomicBlock(taskId)
-            case EndExternalAtomicBlock(taskId) =>
-              endedExternalAtomicBlocks.synchronized {
-                endedExternalAtomicBlocks += taskId
-                endedExternalAtomicBlocks.notifyAll()
-              }
-              event_orchestrator.events += EndExternalAtomicBlock(taskId)
-            case _ =>
-              // It's a normal message
-              if (!Instrumenter().receiverIsAlive(receiver)) {
-                println("Dropping message to non-existent receiver: " +
-                        receiver + " " + msg)
-              } else {
-                senderOpt match {
-                  case Some(sendRef) =>
-                    receiver.!(msg)(sendRef)
-                  case None =>
-                    receiver ! msg
-                }
-              }
-          }
-        }
-        messagesToSend.clear()
+    try {
+      if (acquireSemaphore) {
+        schedSemaphore.acquire
       }
-    })
+      assert(started.get)
 
-    // Wait to make sure all messages are enqueued
-    Instrumenter().await_enqueue()
+      // Send all pending fd responses
+      if (fd != null) {
+        fd.send_all_pending_responses()
+      }
+      // Drain message queue
+      Instrumenter().sendKnownExternalMessages(() => {
+        messagesToSend.synchronized {
+          for ((senderOpt, receiver, msg) <- messagesToSend) {
+            // Check if the message is actually a special marker
+            msg match {
+              case BeginExternalAtomicBlock(taskId) =>
+                event_orchestrator.events += BeginExternalAtomicBlock(taskId)
+              case EndExternalAtomicBlock(taskId) =>
+                endedExternalAtomicBlocks.synchronized {
+                  endedExternalAtomicBlocks += taskId
+                  endedExternalAtomicBlocks.notifyAll()
+                }
+                event_orchestrator.events += EndExternalAtomicBlock(taskId)
+              case _ =>
+                // It's a normal message
+                if (!Instrumenter().receiverIsAlive(receiver)) {
+                  println("Dropping message to non-existent receiver: " +
+                          receiver + " " + msg)
+                } else {
+                  senderOpt match {
+                    case Some(sendRef) =>
+                      receiver.!(msg)(sendRef)
+                    case None =>
+                      receiver ! msg
+                  }
+                }
+            }
+          }
+          messagesToSend.clear()
+        }
+      })
 
-    // schedule_new_message is reenterant, hence release before calling.
-    if (acquireSemaphore) {
-      schedSemaphore.release
+      // Wait to make sure all messages are enqueued
+      Instrumenter().await_enqueue()
+    } finally {
+      // schedule_new_message is reenterant, hence release before calling.
+      if (acquireSemaphore) {
+        schedSemaphore.release
+      }
     }
   }
 
@@ -376,9 +378,13 @@ trait ExternalEventInjector[E] {
     // Make sure the actual scheduler makes no progress until we have injected all
     // events.
     schedSemaphore.acquire
-    started.set(true)
-    val should_dispatch = event_orchestrator.inject_until_quiescence(enqueue_message)
-    schedSemaphore.release
+    var should_dispatch = true
+    try {
+      started.set(true)
+      should_dispatch = event_orchestrator.inject_until_quiescence(enqueue_message)
+    } finally {
+      schedSemaphore.release
+    }
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
     if (should_dispatch) {
