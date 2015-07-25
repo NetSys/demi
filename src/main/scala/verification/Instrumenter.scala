@@ -118,6 +118,10 @@ class Instrumenter {
   // delivery, we store the temp actor (receipient) here to mark it as
   // pending.
   var askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
+  // If the parent (asker) of a temp actor was *not* blocked on the `ask`,
+  // make sure that the scheduling loop keeps going after the ask answer is
+  // delivered.
+  var dispatchAfterAskAnswer = new AtomicBoolean(false)
   // Set to true an when external thread signals that it wants to send
   // messages in a thread-safe manner (rather than having its sends delayed)
   var sendingKnownExternalMessages = new AtomicBoolean(false)
@@ -621,10 +625,38 @@ class Instrumenter {
     // was called.
     askAnswerNotYetScheduled -= temp
     // Mark parent as unblocked.
-    blockedActors = blockedActors - tempToParent(temp.path)
+    if (!(blockedActors contains tempToParent(temp.path))) {
+      // Parent wasn't previously unblocked! This probably means that the
+      // `ask` was initialized by a ScheduleBlock.
+      // To keep the scheduling loop going, we need to dispatch again after
+      // this answer has been delivered.
+      dispatchAfterAskAnswer.set(true)
+    } else {
+      blockedActors = blockedActors - tempToParent(temp.path)
+    }
     currentActor = tempToParent(temp.path)
     tempToParent -= temp.path
     return true
+  }
+
+  def afterReceiveAskAnswer(temp: PromiseActorRef, msg: Any, sender: ActorRef) = {
+    if (dispatchAfterAskAnswer.get) {
+      println("Dispatching after receiveAskAnswer")
+      dispatchAfterAskAnswer.set(false)
+      scheduler.schedule_new_message(blockedActors) match {
+        case Some((new_cell, envelope)) =>
+          val dst = new_cell.self.path.name
+          if (blockedActors contains dst) {
+            throw new IllegalArgumentException("schedule_new_message returned a " +
+                                               "dst that is blocked: " + dst)
+          }
+          dispatch_new_message(new_cell, envelope)
+        case None =>
+          counter += 1
+          started.set(false)
+          scheduler.notify_quiescence()
+      }
+    }
   }
 
   // Dispatch a message, i.e., deliver it to the intended recipient

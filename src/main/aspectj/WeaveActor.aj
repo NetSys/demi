@@ -77,7 +77,9 @@ privileged public aspect WeaveActor {
   Object around(PromiseActorRef me, Object message, ActorRef sender):
   receiveAnswer(me, message, sender) {
     if (inst.receiveAskAnswer(me, message, sender)) {
-      return proceed(me, message, sender);
+      Object ret = proceed(me, message, sender);
+      inst.afterReceiveAskAnswer(me, message, sender);
+      return ret;
     }
     return null;
   }
