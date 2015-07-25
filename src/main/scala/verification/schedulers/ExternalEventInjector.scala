@@ -263,10 +263,11 @@ trait ExternalEventInjector[E] {
   // up in event_produced as messages to be scheduled by schedule_new_message.
   def send_external_messages(acquireSemaphore: Boolean) {
     // Ensure that only one thread is accessing shared scheduler structures
+    if (acquireSemaphore) {
+      schedSemaphore.acquire
+    }
+
     try {
-      if (acquireSemaphore) {
-        schedSemaphore.acquire
-      }
       assert(started.get)
 
       // Send all pending fd responses
@@ -287,6 +288,8 @@ trait ExternalEventInjector[E] {
                   endedExternalAtomicBlocks.notifyAll()
                 }
                 event_orchestrator.events += EndExternalAtomicBlock(taskId)
+              case s @ ScheduleBlock(f, cell) =>
+                Instrumenter().scheduler.event_produced(cell, s.envelope)
               case _ =>
                 // It's a normal message
                 if (!Instrumenter().receiverIsAlive(receiver)) {
@@ -554,16 +557,20 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_enqueue_code_block(cell: Cell, envelope: Envelope) {
+    // signal to the main thread that it should wake up if it's blocked on
+    // external messages
+    assert(envelope.message.isInstanceOf[ScheduleBlock], envelope.message)
+    messagesToSend.synchronized {
+      messagesToSend += ((None, null, envelope.message))
+      messagesToSend.notifyAll()
+    }
+
     dispatchAfterEnqueueMessage.synchronized {
       if (dispatchAfterEnqueueMessage.get()) {
         dispatchAfterEnqueueMessage.set(false)
-        started.set(true)
-        Instrumenter().scheduler.event_produced(cell, envelope)
         println("dispatching after enqueue_code_block")
+        started.set(true)
         Instrumenter().start_dispatch()
-      } else {
-        assert(started.get)
-        Instrumenter().scheduler.event_produced(cell, envelope)
       }
     }
   }

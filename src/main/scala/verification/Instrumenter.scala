@@ -515,8 +515,9 @@ class Instrumenter {
       return
     }
 
-    if (!Instrumenter.threadNameIsAkkaInternal) {
-      // External thread, so we don't care if it blocks.
+    if ((!Instrumenter.threadNameIsAkkaInternal) ||
+        sendingKnownExternalMessages.get) {
+      // External thread (or ScheduleBlock), so we don't care if it blocks.
       return
     }
 
@@ -843,7 +844,9 @@ class Instrumenter {
         ongoingCancellableTasks += c
       }
       if (receiver == "ScheduleFunction") {
-        _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]])
+        // Create a fake ActorCell and Envelope to give to scheduler.
+        val cell = new FakeCell(scheduleFunctionRef)
+        _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]], cell)
       }
       cancellableToTimer(c) = ((receiver, _msg))
       // TODO(cs): for now, assume that msg's are unique. Don't assume that.
@@ -873,10 +876,8 @@ class Instrumenter {
                                          " is already cancelled...")
     }
     if (receiver == "ScheduleFunction") {
-      // Create a fake ActorCell and Envelope and give it to scheduler.
-      val cell = new FakeCell(scheduleFunctionRef)
-      val env = Envelope.apply(msg, null, _actorSystem)
-      scheduler.enqueue_code_block(cell, env)
+      val m = msg.asInstanceOf[ScheduleBlock]
+      scheduler.enqueue_code_block(m.cell, m.envelope)
     } else {
       scheduler.enqueue_timer(receiver, msg)
     }
@@ -1009,7 +1010,10 @@ object Instrumenter {
 
 // Wraps a scala.function0 scheduled through akka.scheduler.schedule, but its
 // toString tells us where it came from.
-class ScheduleBlock(f: Function0[Any]) {
+case class ScheduleBlock(f: Function0[Any], cell: Cell) {
+  val callStack = getCallStack
+  val envelope = Envelope.apply(this, null, Instrumenter()._actorSystem)
+
   def getCallStack(): String = {
     // TODO(cs): magic number 6 is brittle
     val callStack = Thread.currentThread.getStackTrace.drop(6)
@@ -1017,8 +1021,6 @@ class ScheduleBlock(f: Function0[Any]) {
     var truncated = callStack.take(min3).toList
     return truncated.map(e => e.getFileName + ":" + e.getLineNumber).mkString("-")
   }
-
-  val callStack = getCallStack
 
   override def toString(): String = {
     "ScheduleBlock-" + callStack
