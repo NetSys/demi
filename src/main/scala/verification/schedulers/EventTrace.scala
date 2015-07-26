@@ -1,23 +1,24 @@
 package akka.dispatch.verification
 
-import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Cell, ActorRef, ActorSystem, Props}
 import akka.dispatch.Envelope
 
 import scala.collection.mutable.ListBuffer
 import scala.collection.generic.Growable
-import scala.collection.mutable.Queue
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.SynchronizedQueue
+import scala.collection.mutable.Queue
 
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
 case class UniqueMsgEvent(m: MsgEvent, id: Int) extends Event
 case class UniqueTimerDelivery(t: TimerDelivery, id: Int) extends Event
 
-case class EventTrace(val events: Queue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
-  def this() = this(new Queue[Event], null)
-  def this(original_externals: Seq[ExternalEvent]) = this(new Queue[Event], original_externals)
+case class EventTrace(val events: SynchronizedQueue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
+  def this() = this(new SynchronizedQueue[Event], null)
+  def this(original_externals: Seq[ExternalEvent]) = this(new SynchronizedQueue[Event], original_externals)
 
   override def hashCode = this.events.hashCode
   override def equals(other: Any) : Boolean = other match {
@@ -35,7 +36,11 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     assume(original_externals != null)
     assume(!events.isEmpty)
     assume(!original_externals.isEmpty)
-    return new EventTrace(new Queue[Event] ++ events,
+    // I can't figure out the type signature for SynchronizedQueue's ++ operator, so we
+    // do it in two separate steps here
+    val copy = new SynchronizedQueue[Event]
+    copy ++= events
+    return new EventTrace(copy,
                           new Queue[ExternalEvent] ++ original_externals)
   }
 
@@ -43,7 +48,13 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
   // we hide UniqueMsgSend/Events here
   // TODO(cs): this is a dangerous API; easy to mix this up with .events...
   def getEvents() : Seq[Event] = {
-    return events.map(e =>
+    return getEvents(events)
+  }
+
+  def length = events.length
+
+  private[this] def getEvents(_events: Seq[Event]): Seq[Event] = {
+    return _events.map(e =>
       e match {
         case UniqueMsgSend(m, id) => m
         case UniqueMsgEvent(m, id) => m
@@ -64,7 +75,7 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     this.+=(m)
   }
 
-  def appendMsgEvent(pair: (ActorCell, Envelope), id: Int) = {
+  def appendMsgEvent(pair: (Cell, Envelope), id: Int) = {
     val cell = pair._1
     val envelope = pair._2
     val snd = envelope.sender.path.name
@@ -82,6 +93,75 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     return getEvents().iterator
   }
 
+  // Take the result of ProvenanceTracker.pruneConcurrentEvents, and use that
+  // to filter out any MsgEvents in our events that were pruned.
+  // TODO(cs): have ProvenanceTracker act directly on us rather than on a
+  // separate Queue[Unique].
+  def intersection(uniqs: Queue[Unique], fingerprintFactory: FingerprintFactory) : EventTrace = {
+    val msgEvents = new Queue[MsgEvent] ++ uniqs flatMap {
+      case Unique(m: MsgEvent, id) =>
+        // Filter out the root event
+        if (id == 0) {
+          None
+        } else {
+          Some(m)
+        }
+      case u => throw new IllegalArgumentException("Non MsgEvent:" + u)
+    }
+
+    // first pass: remove any UniqueMsgEvents that don't show up in msgEvents
+    // track which UniqueMsgEvent ids were pruned
+    val pruned = new HashSet[Int]
+    var filtered = events flatMap {
+      case u @ UniqueMsgEvent(m, id) =>
+        msgEvents.headOption match {
+          case Some(msgEvent) =>
+            val fingerprinted = MsgEvent(m.sender, m.receiver,
+              fingerprintFactory.fingerprint(m.msg))
+            if (fingerprinted == msgEvent) {
+              msgEvents.dequeue
+              Some(u)
+            } else {
+              // u was filtered
+              pruned += id
+              None
+            }
+          case None =>
+            // u was filtered
+            pruned += id
+            None
+        }
+      case t: TimerDelivery =>
+        throw new UnsupportedOperationException("TimerDelivery not yet supported")
+      case t: UniqueTimerDelivery =>
+        throw new UnsupportedOperationException("UniqueTimerDelivery not yet supported")
+      case m: MsgEvent =>
+        throw new IllegalStateException("Should be UniqueMsgEvent")
+      case e => Some(e)
+    }
+
+    // Should always be a strict subsequence
+    assert(msgEvents.isEmpty)
+
+    // second pass: remove any UniqueMsgSends that correspond to
+    // UniqueMsgEvents that were pruned in the first pass
+    // TODO(cs): not sure this is actually necessary.
+    filtered = filtered flatMap {
+      case u @ UniqueMsgSend(m, id) =>
+        if (pruned contains id) {
+          None
+        } else {
+          Some(u)
+        }
+      case e => Some(e)
+    }
+
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+
+    return new EventTrace(filteredQueue, original_externals)
+  }
+
   // Ensure that all failure detector messages are pruned from the original trace,
   // since we are now in a divergent execution and the failure detector may
   // need to respond differently.
@@ -94,45 +174,90 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       return MessageTypes.fromFailureDetector(msg)
     }
 
-    return new EventTrace(events.filterNot(e => e match {
+    val filtered = events.filterNot(e => e match {
         case UniqueMsgEvent(m, _) =>
           fromFD(m.sender, m.msg) || m.receiver == FailureDetector.fdName
         case UniqueMsgSend(m, _) =>
           fromFD(m.sender, m.msg) || m.receiver == FailureDetector.fdName
         case _ => false
       }
-    ), original_externals)
+    )
+
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+
+    return new EventTrace(filteredQueue, original_externals)
   }
 
   def filterCheckpointMessages(): EventTrace = {
-    return new EventTrace(events flatMap {
+    val filtered = events flatMap {
       case UniqueMsgEvent(MsgEvent(_, _, CheckpointRequest), _) => None
       case UniqueMsgEvent(MsgEvent(_, _, CheckpointReply(_)), _) => None
       case UniqueMsgSend(MsgSend(_, _, CheckpointRequest), _) => None
       case UniqueMsgSend(MsgSend(_, _, CheckpointReply(_)), _) => None
       case e => Some(e)
-    }, original_externals)
+    }
+
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+
+    return new EventTrace(filteredQueue, original_externals)
+  }
+
+  // Pre: externals corresponds exactly to our external MsgSend
+  // events, i.e. subsequenceIntersection(externals) was used to create this
+  // EventTrace.
+  // Pre: no checkpoint messages in events
+  def recomputeExternalMsgSends(externals: Seq[ExternalEvent]): Seq[Event] = {
+    if (externals == null) {
+      throw new IllegalStateException("original_externals must not be null")
+    }
+    val sends = externals flatMap {
+      case s: Send => Some(s)
+      case _ => None
+    }
+    if (sends.isEmpty) {
+      return getEvents
+    }
+    val sendsQueue = Queue(sends: _*)
+    return getEvents(events map {
+      case u @ UniqueMsgSend(MsgSend(snd, receiver, msg), id) =>
+        if (EventTypes.isExternal(u)) {
+          val send = sendsQueue.dequeue
+          val new_msg = send.messageCtor()
+          UniqueMsgSend(MsgSend(snd, receiver, new_msg), id)
+        } else {
+          u
+        }
+      case m: MsgSend =>
+        throw new IllegalArgumentException("Must be UniqueMsgSend")
+      case e => e
+    })
   }
 
   // Filter all external events in original_trace that aren't in subseq.
   // As an optimization, also filter out some internal events that we know a priori
   // aren't going to occur in the subsequence execution.
-  def subsequenceIntersection(subseq: Seq[ExternalEvent]) : EventTrace = {
+  def subsequenceIntersection(subseq: Seq[ExternalEvent],
+                              filterKnownAbsents:Boolean=true) : EventTrace = {
     // Walk through all events in original_trace. As we walk through, check if
     // the current event corresponds to an external event at the head of subseq. If it does, we
     // include that in result, and pop off the head of subseq. Otherwise that external event has been
     // pruned and should not be included. All internal events are included in
     // result.
-    var remaining = ListBuffer[ExternalEvent]() ++ subseq
-    var result = new Queue[Event]()
-
     // N.B. we deal with external messages separately after this for loop,
     // since they're a bit trickier.
+    var remaining = ListBuffer[ExternalEvent]() ++ subseq.filter {
+      case Send(_,_) => false
+      case _ => true
+    }
+    var result = new Queue[Event]()
+
     // N.B. it'd be nicer to use a filter() here, but it isn't guarenteed to
     // iterate left to right.
     for (event <- events) {
       if (remaining.isEmpty) {
-        if (!EventTypes.isExternal(event)) {
+        if (!EventTypes.isExternal(event) && !event.isInstanceOf[ChangeContext]) {
           result += event
         }
       } else {
@@ -177,6 +302,16 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
               }
               case _ => None
             }
+          case c @ CodeBlock(_) =>
+            if (remaining(0) == c) {
+              result += event
+              remaining = remaining.tail
+            }
+          case h @ HardKill(_) =>
+            if (remaining(0) == h) {
+              result += event
+              remaining = remaining.tail
+            }
           // We don't currently use ContextSwitches, so prune them to remove
           // clutter.
           case ChangeContext(_) => None
@@ -185,11 +320,16 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
         } // close match
       } // close else
     } // close for
-    return new EventTrace(filterSends(result, subseq), original_externals)
+
+    val filtered = filterSends(result, subseq, filterKnownAbsents=filterKnownAbsents)
+    val filteredQueue = new SynchronizedQueue[Event]
+    filteredQueue ++= filtered
+    return new EventTrace(filteredQueue, original_externals)
   }
 
   private[this] def filterSends(events: Queue[Event],
-                                subseq: Seq[ExternalEvent]) : Queue[Event] = {
+                                subseq: Seq[ExternalEvent],
+                                filterKnownAbsents:Boolean=true) : Queue[Event] = {
     // We assume that Send messages are sent in FIFO order, i.e. so that the
     // the zero-th MsgSend event from deadLetters corresponds to the zero-th Send event.
 
@@ -227,14 +367,13 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
     var msg_send_idx = -1
     val pruned_msg_ids = new HashSet[Int]
 
-    // N.B. it'd be nicer to use a filter() here, but it isn't guarenteed to
-    // iterate left to right according to the spec.
+    // N.B. it'd be nicer to use a filter() here
     var remaining = new Queue[Event]()
 
     for (e <- events) {
       e match {
-        case UniqueMsgSend(m, id) =>
-          if (m.sender == "deadLetters") {
+        case m @ UniqueMsgSend(msgEvent, id) =>
+          if (EventTypes.isExternal(m)) {
             msg_send_idx += 1
             if (!(missing_indices contains msg_send_idx)) {
               remaining += e
@@ -254,7 +393,10 @@ case class EventTrace(val events: Queue[Event], var original_externals: Seq[Exte
       } // end match
     } // end for
 
-    return filterKnownAbsentInternals(remaining, subseq)
+    if (filterKnownAbsents) {
+      return filterKnownAbsentInternals(remaining, subseq)
+    }
+    return remaining
   }
 
   // Remove internal events that we know a priori aren't going to occur for

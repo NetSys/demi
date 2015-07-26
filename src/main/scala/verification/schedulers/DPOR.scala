@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 
-import akka.actor.ActorCell,
+import akka.actor.Cell,
        akka.actor.ActorSystem,
        akka.actor.ActorRef,
        akka.actor.LocalActorRef,
@@ -27,8 +27,7 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
        
-import com.typesafe.scalalogging.LazyLogging,
-       org.slf4j.LoggerFactory,
+import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
@@ -37,7 +36,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
        
 // DPOR scheduler.
-class DPOR extends Scheduler with LazyLogging {
+class DPOR extends Scheduler {
+  val logger = LoggerFactory.getLogger("DPOR")
   
   var instrumenter = Instrumenter
 
@@ -56,7 +56,7 @@ class DPOR extends Scheduler with LazyLogging {
   val producedEvents = new Queue[Event]
   val consumedEvents = new Queue[Event]
   
-  val pendingEvents = new HashMap[String, Queue[(Unique, ActorCell, Envelope)]]  
+  val pendingEvents = new HashMap[String, Queue[(Unique, Cell, Envelope)]]  
   val actorNames = new HashSet[String]
   val actorToActorRef = new HashMap[String, ActorRef]
  
@@ -87,7 +87,7 @@ class DPOR extends Scheduler with LazyLogging {
 
   // Analogous to pendingEvents, except we always dispatch external events
   // in the order they arrived.
-  val pendingExternalEvents = new Queue[(ActorCell, Envelope)]
+  val pendingExternalEvents = new Queue[(Cell, Envelope)]
   
   
   def getRootEvent : Unique = {
@@ -152,9 +152,11 @@ class DPOR extends Scheduler with LazyLogging {
     // Send all pending fd responses
     fd.send_all_pending_responses()
     // Drain message queue
-    for ((receiver, msg) <- messagesToSend) {
-      receiver ! msg
-    }
+    Instrumenter().sendKnownExternalMessages(() => {
+      for ((receiver, msg) <- messagesToSend) {
+        receiver ! msg
+      }
+    })
     messagesToSend.clear()
 
     // Wait to make sure all messages are enqueued
@@ -167,7 +169,8 @@ class DPOR extends Scheduler with LazyLogging {
   
   
   // Figure out what is the next message to schedule.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  // TODO(cs): make sure not to send to blockedActors!
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     
     // First, try to enqueue and dispatch external messages, if there are any.
     enqueue_external_messages
@@ -178,7 +181,7 @@ class DPOR extends Scheduler with LazyLogging {
     // When there are no external message, proceed with DPOR-controlled messages.
 
     // Filter messages belonging to a particular actor.
-    def is_the_same(u1: Unique, other: (Unique, ActorCell, Envelope)) : 
+    def is_the_same(u1: Unique, other: (Unique, Cell, Envelope)) : 
     Boolean = (u1, other) match {
       case (Unique(MsgEvent(snd1, rcv1, msg1), id1), 
             (Unique(MsgEvent(snd2, rcv2, msg2), id2) , cell, env) ) =>
@@ -189,7 +192,7 @@ class DPOR extends Scheduler with LazyLogging {
 
 
     // Get from the current set of pending events.
-    def get_pending_event(): Option[(Unique, ActorCell, Envelope)] = {
+    def get_pending_event(): Option[(Unique, Cell, Envelope)] = {
       // Do we have some pending events
       pendingEvents.headOption match {
         case Some((receiver, queue)) =>
@@ -283,7 +286,7 @@ class DPOR extends Scheduler with LazyLogging {
     consumedEvents.enqueue(event)
   
   
-  def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  def event_consumed(cell: Cell, envelope: Envelope) = {
     var event = new MsgEvent(
         envelope.sender.path.name, cell.self.path.name, 
         envelope.message)
@@ -334,14 +337,14 @@ class DPOR extends Scheduler with LazyLogging {
         fd.handle_start_event(name)
         
       case Send(rcv, msgCtor) =>
-        enqueue_message(rcv, msgCtor())
+        enqueue_message(None, rcv, msgCtor())
         
       case _ => throw new Exception("unsuported external event")
     }
     
     instrumenter().tellEnqueue.await()
     
-    schedule_new_message() match {
+    schedule_new_message(instrumenter().blockedActors) match {
       case Some((cell, env)) =>
         instrumenter().dispatch_new_message(cell, env)
       case None => 
@@ -356,7 +359,7 @@ class DPOR extends Scheduler with LazyLogging {
   }
   
   
-  def getMessage(cell: ActorCell, envelope: Envelope) : Unique = {
+  def getMessage(cell: Cell, envelope: Envelope) : Unique = {
     
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
@@ -384,7 +387,7 @@ class DPOR extends Scheduler with LazyLogging {
   
   
   
-  def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
+  def event_produced(cell: Cell, envelope: Envelope) : Unit = {
     if (cell.self.path.name == FailureDetector.fdName) {
       fd.handle_fd_message(envelope.message, envelope.sender.path.name)
       return
@@ -400,7 +403,7 @@ class DPOR extends Scheduler with LazyLogging {
     // Else, it's an internal event.
 
     val unique @ Unique(msg : MsgEvent , id) = getMessage(cell, envelope)
-    val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, ActorCell, Envelope)])
+    val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, Cell, Envelope)])
     pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
     
     logger.trace(Console.BLUE + "New event: " +
@@ -416,12 +419,12 @@ class DPOR extends Scheduler with LazyLogging {
   
   
   // Called before we start processing a newly received event
-  def before_receive(cell: ActorCell) {
+  def before_receive(cell: Cell) {
   }
   
   
   // Called after receive is done being processed 
-  def after_receive(cell: ActorCell) {
+  def after_receive(cell: Cell) {
   }
   
 
@@ -682,20 +685,21 @@ class DPOR extends Scheduler with LazyLogging {
   // Enqueue a message for future delivery
   // TODO(cs): redundant with ExternalEventInjector's enqueue_message. Consider
   // mixing in ExternalEventInjector.
-  override def enqueue_message(receiver: String, msg: Any) {
+  override def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) {
     if (actorNames contains receiver) {
-      enqueue_message(actorToActorRef(receiver), msg)
+      enqueue_message(sender, actorToActorRef(receiver), msg)
     } else {
       throw new IllegalArgumentException("Unknown receiver " + receiver)
     }
   }
 
-  private[this] def enqueue_message(actor: ActorRef, msg: Any) {
+  private[this] def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
+    // TODO(cs): track sender
     enqueuedExternalMessages += msg
     messagesToSend += ((actor, msg))
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
+  def notify_timer_cancel(receiver: String, msg: Any) {
     throw new RuntimeException("NYI!") // TODO(cs): do what DPORwHeuristics does..
   }
 

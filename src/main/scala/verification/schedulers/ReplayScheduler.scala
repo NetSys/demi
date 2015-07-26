@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -29,21 +29,11 @@ class ReplayException(message:String=null, cause:Throwable=null) extends
  *  - If the application sends unexpected messages
  *  - If the application does not send a message that was previously sent
  */
-class ReplayScheduler(messageFingerprinter: FingerprintFactory,
-                      enableFailureDetector:Boolean,
-                      strictChecking:Boolean,
-                      invariant_check:Option[TestOracle.Invariant]=None)
-    extends AbstractScheduler with ExternalEventInjector[Event] with HistoricalScheduler {
-  def this() = this(new FingerprintFactory, false, false)
+class ReplayScheduler(val schedulerConfig: SchedulerConfig,
+                      strictChecking:Boolean=false)
+    extends AbstractScheduler with ExternalEventInjector[Event] {
 
-  if (!enableFailureDetector) {
-    disableFailureDetector()
-  }
-
-  invariant_check match {
-    case Some(c) => enableCheckpointing()
-    case None =>
-  }
+  val messageFingerprinter = schedulerConfig.messageFingerprinter
 
   // Have we started off the execution yet?
   private[this] var firstMessage = true
@@ -51,12 +41,12 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
   // Current set of enabled events.
   // (snd, rcv, msg fingerprint) => Queue(rcv's cell, envelope of message)
   val pendingEvents = new HashMap[(String, String, MessageFingerprint),
-                                  Queue[Uniq[(ActorCell, Envelope)]]]
+                                  Queue[Uniq[(Cell, Envelope)]]]
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
   // Always prioritized over internal messages.
-  var pendingSystemMessages = new Queue[(ActorCell, Envelope)]
+  var pendingSystemMessages = new Queue[(Cell, Envelope)]
 
   // Just do a cheap test to ensure that no new unexpected messages are sent. This
   // is not perfect.
@@ -77,12 +67,12 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
     // We don't actually want to allow the failure detector to send messages,
     // since all the failure detector messages are recorded in _trace. So we
     // give it a no-op enqueue_message parameter.
-    if (enableFailureDetector) {
-      fd = new FDMessageOrchestrator((s: String, m: Any) => Unit)
+    if (schedulerConfig.enableFailureDetector) {
+      fd = new FDMessageOrchestrator((o: Option[ActorRef], s: String, m: Any) => Unit)
       event_orchestrator.set_failure_detector(fd)
       fd.startFD(instrumenter.actorSystem)
     }
-    if (_enableCheckpointing) {
+    if (schedulerConfig.enableCheckpointing) {
       checkpointer.startCheckpointCollector(Instrumenter().actorSystem)
     }
 
@@ -108,7 +98,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
           None
       }
     }
-    val updatedEvents = updateEvents(_trace.getEvents)
+    val updatedEvents = _trace.recomputeExternalMsgSends(_trace.original_externals)
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
@@ -123,7 +113,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
     if (nonDeterministicErrorMsg != "") {
       throw new ReplayException(message=nonDeterministicErrorMsg)
     }
-    invariant_check match {
+    schedulerConfig.invariant_check match {
       case Some(check) =>
         val checkpoint = takeCheckpoint()
         val violation = check(List.empty, checkpoint)
@@ -151,10 +141,9 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
             event_orchestrator.trigger_unpartition(a,b)
-          case MsgSend (sender, receiver, message) =>
-            // sender == "deadLetters" means the message is external.
-            if (sender == "deadLetters") {
-              enqueue_message(receiver, message)
+          case m @ MsgSend (sender, receiver, message) =>
+            if (EventTypes.isExternal(m)) {
+              enqueue_message(None, receiver, message)
             }
           case t: TimerDelivery =>
             // Check that the Timer wasn't destined for a dead actor.
@@ -185,7 +174,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
   }
 
   // Check no unexpected messages are enqueued
-  def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
+  def event_produced(cell: Cell, envelope: Envelope) : Unit = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
@@ -195,7 +184,7 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
       return
     }
 
-    if (rcv == CheckpointSink.name && _enableCheckpointing) {
+    if (rcv == CheckpointSink.name && schedulerConfig.enableCheckpointing) {
       checkpointer.handleCheckpointResponse(envelope.message, snd)
       return
     }
@@ -217,11 +206,11 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
       allSends((snd, rcv, fingerprint)) = allSends.getOrElse((snd, rcv, fingerprint), 0) - 1
     }
 
-    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     // Drop any messages that crosses a partition.
     if (!event_orchestrator.crosses_partition(snd, rcv) && rcv != FailureDetector.fdName) {
       val msgs = pendingEvents.getOrElse((snd, rcv, fingerprint),
-                          new Queue[Uniq[(ActorCell, Envelope)]])
+                          new Queue[Uniq[(Cell, Envelope)]])
       pendingEvents((snd, rcv, fingerprint)) = msgs += uniq
     }
 
@@ -244,13 +233,15 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
   }
 
   // Record a message send event
-  override def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  override def event_consumed(cell: Cell, envelope: Envelope) = {
     handle_event_consumed(cell, envelope)
   }
 
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
-  def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  // TODO(cs): make sure not to send to blockedActors! Then again, that would
+  // indicate divergence, so maybe no need.
+  def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     if (nonDeterministicErrorMsg != "") {
       return None
     }
@@ -353,11 +344,10 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
     }
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {
-    if (handle_timer_cancel(receiver, msg)) {
+  def notify_timer_cancel(rcv: String, msg: Any): Unit = {
+    if (handle_timer_cancel(rcv, msg)) {
       return
     }
-    val rcv = receiver.path.name
     val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
     pendingEvents.get(key) match {
       case Some(queue) =>
@@ -381,13 +371,13 @@ class ReplayScheduler(messageFingerprinter: FingerprintFactory,
   }
 
   // Called before we start processing a newly received event
-  override def before_receive(cell: ActorCell) {
+  override def before_receive(cell: Cell) {
     super.before_receive(cell)
     handle_before_receive(cell)
   }
 
   // Called after receive is done being processed
-  override def after_receive(cell: ActorCell) {
+  override def after_receive(cell: Cell) {
     handle_after_receive(cell)
   }
 

@@ -9,7 +9,7 @@ abstract trait ExternalEvent {
 }
 
 trait UniqueExternalEvent {
-  val _id : Int = IDGenerator.get()
+  var _id : Int = IDGenerator.get()
 
   def label: String = "e"+_id
   def toStringWithId: String = label+":"+toString()
@@ -28,21 +28,78 @@ trait UniqueExternalEvent {
 }
 abstract trait Event
 
+/**
+ * ExternalMessageConstructors are instance variables of Send() events.
+ * They serve two purposes:
+ *  - They allow the client to late-bind the construction of their message.
+ *    apply() is invoked after the ActorSystem and all actors have been
+ *    created.
+ *  - Optionally: they provide an interface for `shrinking` the contents of
+ *    the messages. This is achieved through `getComponents` and
+ *    `maskComponents`.
+ */
+// TODO(cs): should probably force this to be serializable
+trait ExternalMessageConstructor {
+  // Construct the message
+  def apply() : Any
+  // Optional, for `shrinking`:
+  // Get the components that make up the content of the message we construct
+  // in apply(). For now, only relevant to cluster membership messages.
+  def getComponents() : Seq[ActorRef] = List.empty
+  // Given a sequence of indices (pointing to elements in `getComponents()`),
+  // create a new ExternalMessageConstructor that does not include those
+  // components upon apply().
+  // Default: no-op
+  def maskComponents(indices: Set[Int]): ExternalMessageConstructor = this
+}
+
+case class BasicMessageConstructor(msg: Any) extends ExternalMessageConstructor {
+  def apply(): Any = msg
+}
+
 final case class Start (propCtor: () => Props, name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
+// Really: isolate the actor.
 final case class Kill (name: String) extends
     ExternalEvent with Event with UniqueExternalEvent
-// Allow the client to late-bind the construction of the message. Invoke the
-// function at the point that the Send is about to be injected.
-final case class Send (name: String, messageCtor: () => Any) extends
+// Actually kill the actor rather than just isolating it.
+// TODO(cs): support killing of actors that aren't direct children of /user/
+final case class HardKill (name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class Send (name: String, messageCtor: ExternalMessageConstructor) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class WaitQuiescence() extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Stronger than WaitQuiescence: schedule indefinitely until cond returns true.
+// if quiescence has been reached but cond does
+// not return true, wait indefinitely until scheduler.enqueue_message is
+// invoked, schedule it, and again wait for quiescence. Repeat until cond
+// returns true. (Useful for systems that use external threads to send
+// messages indefinitely.
+final case class WaitCondition(cond: () => Boolean) extends
     ExternalEvent with Event with UniqueExternalEvent
 // Bidirectional partitions.
 final case class Partition (a: String, b: String) extends
     ExternalEvent with Event with UniqueExternalEvent
 final case class UnPartition (a: String, b: String) extends
     ExternalEvent with Event with UniqueExternalEvent
+// Executed synchronously, i.e. by the scheduler itself. The code block must
+// terminate (quickly)!
+final case class CodeBlock (block: () => Any) extends
+    ExternalEvent with Event with UniqueExternalEvent
+
+// Metadata events, not actually events.
+// MsgEvents appearing between `BeginUnignorableEvents' and `EndUnigorableEvents'
+// will never be skipped over during replay.
+final case object BeginUnignorableEvents extends Event
+final case object EndUnignorableEvents extends Event
+// An external thread has just started an `atomic block`, where it will now
+// send some number of messages. Upon replay, wait until the end of the
+// atomic block before deciding whether those messages are or are not going
+// to show up.
+final case class BeginExternalAtomicBlock(taskId: Long) extends Event
+final case class EndExternalAtomicBlock(taskId: Long) extends Event
+
 
 // Internal events in addition to those defined in ../AuxilaryTypes
 // MsgSend is the initial send, not the delivery
@@ -69,19 +126,29 @@ final case class TimerDelivery(sender: String, receiver: String, fingerprint: Ti
 
 
 object EventTypes {
+  // Should return true if the given message is an external message
+  var externalMessageFilter: (Any) => Boolean = (_) => false
+  // Should be set by applications during initialization.
+  def setExternalMessageFilter(filter: (Any) => Boolean) {
+    externalMessageFilter = filter
+  }
+
   // Internal events that correspond to ExternalEvents.
   def isExternal(e: Event) : Boolean = {
+    if (e.isInstanceOf[ExternalEvent]) {
+      return true
+    }
     return e match {
       case _: KillEvent | _: SpawnEvent | _: PartitionEvent | _: UnPartitionEvent =>
         return true
-      case MsgEvent(snd, _, _) =>
-        return snd == "deadLetters" // TODO(cs): Timers break this
-      case MsgSend(snd, _, _) =>
-        return snd == "deadLetters"
-      case UniqueMsgEvent(MsgEvent(snd, _, _), _) =>
-        return snd == "deadLetters"
-      case UniqueMsgSend(MsgSend(snd, _, _), _) =>
-        return snd == "deadLetters"
+      case MsgEvent(_, _, m) =>
+        return externalMessageFilter(m)
+      case MsgSend(_, _, m) =>
+        return externalMessageFilter(m)
+      case UniqueMsgEvent(MsgEvent(_, _, m), _) =>
+        return externalMessageFilter(m)
+      case UniqueMsgSend(MsgSend(_, _, m), _) =>
+        return externalMessageFilter(m)
       case _ => return false
     }
   }

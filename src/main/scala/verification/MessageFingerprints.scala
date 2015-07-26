@@ -66,6 +66,13 @@ class BaseFingerprinter(parent: FingerprintFactory) extends MessageFingerprinter
   }
 }
 
+object BaseFingerprinter {
+  def isFSMTimer(f: MessageFingerprint) : Boolean = {
+    return (f == TimeoutMarkerFingerprint ||
+            f.isInstanceOf[TimerFingerprint])
+  }
+}
+
 class FingerprintFactory {
   val fingerprinters = new ListBuffer[MessageFingerprinter] ++
       List(new BaseFingerprinter(this))

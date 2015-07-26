@@ -7,6 +7,7 @@ import akka.serialization._
 import scala.sys.process._
 import scala.sys.process.BasicIO
 import scala.collection.mutable.Queue
+import scala.collection.mutable.SynchronizedQueue
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
@@ -60,6 +61,7 @@ object ExperimentSerializer {
   // Stats when minimizing internal events.
   val internal_stats = "/internal_minimization_stats.json"
   val depGraph = "/depGraph.bin"
+  // trace of Unique(MsgEvent)s
   val initialTrace = "/initialTrace.bin"
   // initialTrace minus all events that were concurrent with the violation.
   val filteredTrace = "/filteredTrace.bin"
@@ -79,6 +81,13 @@ object ExperimentSerializer {
     // Block until the process exits.
     proc.exitValue
     return output_dir.trim
+  }
+
+  def getActorNameProps(trace: EventTrace) : Seq[Tuple2[Props, String]] = {
+    return trace.events.flatMap {
+      case SpawnEvent(_,props,name,_) => Some((props, name))
+      case _ => None
+    }.toSet.toSeq
   }
 }
 
@@ -144,11 +153,8 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.idGenerator,
       JavaSerialization.serialize(IDGenerator.uniqueId.get()))
 
-    val actorPropNamePairs = trace.events.flatMap {
-      case SpawnEvent(_,props,name,_) => Some((props, name))
-      case _ => None
-    }
-    val actorNameBuf = JavaSerialization.serialize(actorPropNamePairs.toSet.toArray)
+    val actorPropNamePairs = ExperimentSerializer.getActorNameProps(trace)
+    val actorNameBuf = JavaSerialization.serialize(actorPropNamePairs.toArray)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.actors,
                                   actorNameBuf)
 
@@ -197,12 +203,17 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     }
   }
 
+  // shrunk: whether the external events have been shrunk
+  // (RunnerUtils.shrinkSendContents)
+  // Return: the MCS dir
   def serializeMCS(old_experiment_dir: String, mcs: Seq[ExternalEvent],
                    stats: MinimizationStats,
                    mcs_execution: Option[EventTrace],
-                   violation: ViolationFingerprint) {
+                   violation: ViolationFingerprint,
+                   shrunk: Boolean) : String = {
+    val shrunk_str = if (shrunk) "_shrunk" else ""
     val new_experiment_dir = old_experiment_dir + "_" +
-        stats.minimization_strategy + "_" + stats.test_oracle
+        stats.minimization_strategy + "_" + stats.test_oracle + shrunk_str
     ExperimentSerializer.create_experiment_dir(new_experiment_dir, add_timestamp=false)
 
     val mcsBuf = JavaSerialization.serialize(mcs.toArray)
@@ -222,7 +233,10 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
 
     // Overwrite actors.bin, to make sure we include all actors, not just
     // those left in the MCS.
+    // TODO(cs): figure out how to do this properly in scala
     ("cp " + old_experiment_dir + ExperimentSerializer.actors + " " + new_experiment_dir).!
+
+    return new_experiment_dir
   }
 
   def recordMinimizedInternals(output_dir: String,
@@ -312,7 +326,9 @@ class ExperimentDeserializer(results_dir: String) {
     // `sbt run`, invoke `sbt assembly; java -cp /path/to/assembledjar Main`
     val originalExternals = JavaSerialization.deserialize[Seq[ExternalEvent]](originalExternalBuf)
 
-    return new EventTrace(new Queue[Event] ++ events, originalExternals)
+    val queue = new SynchronizedQueue[Event]
+    queue ++= events
+    return new EventTrace(queue, originalExternals)
   }
 }
 

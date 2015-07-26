@@ -1,6 +1,6 @@
 package akka.dispatch.verification
 
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, Cell, ActorRef, ActorSystem, Props}
 import akka.dispatch.Envelope
 
 import scala.collection.mutable.Queue
@@ -40,7 +40,7 @@ object IntervalPeekScheduler {
 
   // Flatten all enabled events into a sorted list of (raw, non-fingerprinted) MsgEvents
   def flattenedEnabled(pendingEvents: HashMap[
-      (String, String, MessageFingerprint), Queue[Uniq[(ActorCell, Envelope)]]]) : Seq[MsgEvent] = {
+      (String, String, MessageFingerprint), Queue[Uniq[(Cell, Envelope)]]]) : Seq[MsgEvent] = {
     // Last element of queue's tuple is the unique id, which is assumed to be
     // monotonically increasing by time of arrival.
     val unsorted = new Queue[(String, String, Any, Int)]
@@ -74,19 +74,10 @@ object IntervalPeekScheduler {
  */
 // N.B. both expected and lookingFor should have their msg fields as a MessageFingerprint instead
 // of the raw message.
-class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
-                            max_peek_messages: Int,
-                            messageFingerprinter: FingerprintFactory,
-                            enableFailureDetector: Boolean) extends
-      ReplayScheduler(messageFingerprinter, enableFailureDetector, false) {
-
-  def this(expected: MultiSet[MsgEvent], lookingFor: MsgEvent) =
-      this(expected, lookingFor, 10, new FingerprintFactory, true)
-
-  if (!enableFailureDetector) {
-    disableFailureDetector
-  }
-
+class IntervalPeekScheduler(schedulerConfig: SchedulerConfig,
+                            expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
+                            max_peek_messages:Int=10) extends
+      ReplayScheduler(schedulerConfig, false) {
   // Whether we are currently restoring the checkpoint (by replaying a prefix
   // of events), or have moved on to peeking.
   val doneReplayingPrefix = new AtomicBoolean(false)
@@ -103,7 +94,7 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
   val postfix = new Queue[MsgEvent]
 
   // FIFO queue of unexpected events.
-  var pendingUnexpectedEvents = new Queue[(ActorCell, Envelope)]
+  var pendingUnexpectedEvents = new Queue[(Cell, Envelope)]
 
   /*
    * peek() schedules a fixed number of unexpected messages in FIFO order
@@ -158,7 +149,7 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     return None
   }
 
-  override def event_produced(cell: ActorCell, envelope: Envelope) : Unit = {
+  override def event_produced(cell: Cell, envelope: Envelope) : Unit = {
     if (!doneReplayingPrefix.get) {
       return super.event_produced(cell, envelope)
     }
@@ -178,9 +169,10 @@ class IntervalPeekScheduler(expected: MultiSet[MsgEvent], lookingFor: MsgEvent,
     }
   }
 
-  override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  // TODO(cs): make sure not to send to blockedActors!
+  override def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     if (!doneReplayingPrefix.get) {
-      return super.schedule_new_message
+      return super.schedule_new_message(blockedActors)
     }
 
     if (foundLookingFor.get) {

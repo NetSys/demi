@@ -1,7 +1,7 @@
 package akka.dispatch.verification
 
 import com.typesafe.config.ConfigFactory
-import akka.actor.{Actor, ActorCell, ActorRef, ActorSystem, Props}
+import akka.actor.{Actor, Cell, ActorRef, ActorSystem, Props}
 
 import akka.dispatch.Envelope
 
@@ -24,9 +24,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * PeekScheduler finally returns all events observed during the execution, including
  * external and internal events.
  */
-class PeekScheduler(enableFailureDetector: Boolean)
+class PeekScheduler(val schedulerConfig: SchedulerConfig)
     extends FairScheduler with ExternalEventInjector[ExternalEvent] with TestOracle {
-  def this() = this(true)
 
   def getName: String = "FairScheduler"
 
@@ -39,12 +38,9 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
   var messagesScheduledSoFar = 0
 
-  var test_invariant : Invariant = null
-
-  enableCheckpointing()
-
-  if (!enableFailureDetector) {
-    disableFailureDetector()
+  var test_invariant : Invariant = schedulerConfig.invariant_check match {
+    case Some(i) => i
+    case None => null
   }
 
   def peek (_trace: Seq[ExternalEvent]) : EventTrace = {
@@ -55,11 +51,11 @@ class PeekScheduler(enableFailureDetector: Boolean)
     return execute_trace(_trace)
   }
 
-  override def event_produced(cell: ActorCell, envelope: Envelope) = {
+  override def event_produced(cell: Cell, envelope: Envelope) = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(ActorCell, Envelope)]])
-    val uniq = Uniq[(ActorCell, Envelope)]((cell, envelope))
+    val msgs = pendingEvents.getOrElse(rcv, new Queue[Uniq[(Cell, Envelope)]])
+    val uniq = Uniq[(Cell, Envelope)]((cell, envelope))
     var isTimer = false
     handle_event_produced(snd, rcv, envelope) match {
       case FailureDetectorQuery => None
@@ -91,11 +87,12 @@ class PeekScheduler(enableFailureDetector: Boolean)
   }
 
   // Record a message send event
-  override def event_consumed(cell: ActorCell, envelope: Envelope) = {
+  override def event_consumed(cell: Cell, envelope: Envelope) = {
     handle_event_consumed(cell, envelope)
   }
 
-  override def schedule_new_message() : Option[(ActorCell, Envelope)] = {
+  // TODO(cs): make sure not to send to blockedActors!
+  override def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     // Check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
       println("Exceeded maxMessages")
@@ -105,7 +102,7 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
     send_external_messages()
     // FairScheduler gives us round-robin message dispatches.
-    val uniq_option = find_message_to_schedule()
+    val uniq_option = find_message_to_schedule(blockedActors)
     uniq_option match {
       case Some(uniq) =>
         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
@@ -138,11 +135,11 @@ class PeekScheduler(enableFailureDetector: Boolean)
     handle_start_trace
   }
 
-  override def after_receive(cell: ActorCell) : Unit = {
+  override def after_receive(cell: Cell) : Unit = {
     handle_after_receive(cell)
   }
 
-  override def before_receive(cell: ActorCell) : Unit = {
+  override def before_receive(cell: Cell) : Unit = {
     handle_before_receive(cell)
   }
 
@@ -150,11 +147,11 @@ class PeekScheduler(enableFailureDetector: Boolean)
     test_invariant = invariant
   }
 
-  override def enqueue_message(receiver: String, msg: Any) = {
-    super[ExternalEventInjector].enqueue_message(receiver, msg)
+  override def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any) = {
+    super[ExternalEventInjector].enqueue_message(sender, receiver, msg)
   }
 
-  override def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {
+  override def notify_timer_cancel(receiver: String, msg: Any): Unit = {
     if (handle_timer_cancel(receiver, msg)) {
       return
     }
@@ -170,7 +167,8 @@ class PeekScheduler(enableFailureDetector: Boolean)
 
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
-           stats: MinimizationStats) : Option[EventTrace] = {
+           stats: MinimizationStats,
+           init:Option[()=>Any]=None) : Option[EventTrace] = {
     Instrumenter().scheduler = this
     peek(events)
     if (test_invariant == null) {
@@ -190,7 +188,7 @@ class PeekScheduler(enableFailureDetector: Boolean)
     }
 
     // reset ExternalEventInjector
-    reset_state
+    reset_state(true)
     // reset FairScheduler
     reset_all_state
 
