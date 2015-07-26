@@ -259,7 +259,7 @@ privileged public aspect WeaveActor {
   // TODO(cs): issue: no receiver.
   Object around(LightArrayRevolverScheduler me, FiniteDuration delay, scala.Function0<scala.runtime.BoxedUnit> block, ExecutionContext exc):
   scheduleOnceBlock(me, delay, block, exc) {
-    if (!inst.actorSystemInitialized() || Instrumenter.akkaInternalCodeBlockSchedule()) {
+    if (!inst.actorSystemInitialized()) {
       return proceed(me, delay, block, exc);
     }
 
@@ -269,6 +269,10 @@ privileged public aspect WeaveActor {
       }
     }
     MyRunnable runnable = new MyRunnable();
+    if (Instrumenter.akkaInternalCodeBlockSchedule()) {
+      // Don't ever allow the `ask` timer to expire
+      return me.scheduleOnce(delay, runnable, exc);
+    }
     Cancellable c = new WrappedCancellable(me.scheduleOnce(delay, runnable, exc), "ScheduleFunction", block);
     inst.registerCancellable(c, false, "ScheduleFunction", block);
     return c;
