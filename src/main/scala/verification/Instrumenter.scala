@@ -680,6 +680,8 @@ class Instrumenter {
       // Run the code block rather than delivering any message.
       // Run it in a separate thread! Since it may block, e.g. by calling
       // `Await.result`
+      // TODO(cs): shutdown this thread if it hasn't terminated, and the actor
+      // system is also shutting down.
       new Thread(new Runnable {
         def run() = {
           // If the timer is repeating, wait until the block is completed until
