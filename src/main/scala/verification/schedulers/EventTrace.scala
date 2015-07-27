@@ -257,7 +257,10 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     // iterate left to right.
     for (event <- events) {
       if (remaining.isEmpty) {
-        if (!EventTypes.isExternal(event) && !event.isInstanceOf[ChangeContext]) {
+        if (EventTypes.isMessageType(event)) {
+          result += event
+        } else if (!EventTypes.isExternal(event) &&
+                   !event.isInstanceOf[ChangeContext]) {
           result += event
         }
       } else {

@@ -133,6 +133,21 @@ object EventTypes {
     externalMessageFilter = filter
   }
 
+  def isMessageType(e: Event) : Boolean = {
+    e match {
+      case MsgEvent(_, _, m) =>
+        return true
+      case MsgSend(_, _, m) =>
+        return true
+      case UniqueMsgEvent(MsgEvent(_, _, m), _) =>
+        return true
+      case UniqueMsgSend(MsgSend(_, _, m), _) =>
+        return true
+      case _ =>
+        return false
+    }
+  }
+
   // Internal events that correspond to ExternalEvents.
   def isExternal(e: Event) : Boolean = {
     if (e.isInstanceOf[ExternalEvent]) {
