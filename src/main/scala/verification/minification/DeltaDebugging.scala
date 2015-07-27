@@ -21,30 +21,29 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
   //
   // Note that this differs from the 2001 version:
   //   https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf
-  def minimize(events: Seq[ExternalEvent],
+  def minimize(dag: EventDag,
                _violation_fingerprint: ViolationFingerprint,
-               _initializationRoutine: Option[() => Any]=None) : Seq[ExternalEvent] = {
-    MessageTypes.sanityCheckTrace(events)
+               _initializationRoutine: Option[() => Any]) : EventDag = {
+    MessageTypes.sanityCheckTrace(dag.events)
     violation_fingerprint = _violation_fingerprint
     initializationRoutine = _initializationRoutine
 
     if (logger.isTraceEnabled()) {
       logger.trace("Minimizing:---")
-      events foreach { case e => logger.trace(e.asInstanceOf[UniqueExternalEvent].toStringWithId) }
+      dag.events foreach { case e => logger.trace(e.asInstanceOf[UniqueExternalEvent].toStringWithId) }
       logger.trace("---")
     }
 
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
       println("Checking if unmodified trace triggers violation...")
-      if (oracle.test(events, violation_fingerprint, stats,
+      if (oracle.test(dag.events, violation_fingerprint, stats,
                       initializationRoutine=initializationRoutine) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
       }
     }
     stats.reset()
 
-    var dag : EventDag = new UnmodifiedEventDag(events)
     original_num_events = dag.length
     var remainder : EventDag = new UnmodifiedEventDag(List[ExternalEvent]())
 
@@ -56,13 +55,13 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
     assert(original_num_events - total_inputs_pruned == mcs.length)
     // Record the final iteration (fencepost)
     stats.record_iteration_size(original_num_events - total_inputs_pruned)
-    return mcs
+    return mcs_dag
   }
 
-  def verify_mcs(mcs: Seq[ExternalEvent],
+  def verify_mcs(mcs: EventDag,
       _violation_fingerprint: ViolationFingerprint,
       initializationRoutine: Option[() => Any]=None): Option[EventTrace] = {
-    return oracle.test(mcs, _violation_fingerprint,
+    return oracle.test(mcs.events, _violation_fingerprint,
       new MinimizationStats("NOP", "NOP"), initializationRoutine=initializationRoutine)
   }
 

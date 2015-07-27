@@ -97,7 +97,7 @@ trait ExternalEventInjector[E] {
   var enqueuedExternalMessages = new MultiSet[Any]
 
   // A set of external messages to send. Messages sent between actors are not
-  // queued here. Tuple is: (sender, receiver, msg, isTimer)
+  // queued here. Tuple is: (sender, receiver, msg)
   var messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]()
 
   // Whether populateActors has been invoked.
@@ -149,7 +149,6 @@ trait ExternalEventInjector[E] {
    */
   def endUnignorableEvents() {
     assert(unignorableEvents.get())
-    println("endUnignorableEvents")
     unignorableEvents.set(false)
     // TODO(cs): should these be placed into messagesToSend too?
     event_orchestrator.events += EndUnignorableEvents
@@ -250,7 +249,6 @@ trait ExternalEventInjector[E] {
         messagesToSend += ((None, event_orchestrator.actorToActorRef(receiver), msg))
         messagesToSend.notifyAll()
       }
-
     } else {
       println("WARNING! Unknown timer receiver " + receiver)
     }
@@ -268,46 +266,56 @@ trait ExternalEventInjector[E] {
     if (acquireSemaphore) {
       schedSemaphore.acquire
     }
-    assert(started.get)
 
-    // Send all pending fd responses
-    if (fd != null) {
-      fd.send_all_pending_responses()
-    }
-    // Drain message queue
-    Instrumenter().sendKnownExternalMessages(() => {
-      messagesToSend.synchronized {
-        for ((senderOpt, receiver, msg) <- messagesToSend) {
-          // Check if the message is actually a special marker
-          msg match {
-            case BeginExternalAtomicBlock(taskId) =>
-              event_orchestrator.events += BeginExternalAtomicBlock(taskId)
-            case EndExternalAtomicBlock(taskId) =>
-              endedExternalAtomicBlocks.synchronized {
-                endedExternalAtomicBlocks += taskId
-                endedExternalAtomicBlocks.notifyAll()
-              }
-              event_orchestrator.events += EndExternalAtomicBlock(taskId)
-            case _ =>
-              // It's a normal message
-              senderOpt match {
-                case Some(sendRef) =>
-                  receiver.!(msg)(sendRef)
-                case None =>
-                  receiver ! msg
-              }
-          }
-        }
-        messagesToSend.clear()
+    try {
+      assert(started.get)
+
+      // Send all pending fd responses
+      if (fd != null) {
+        fd.send_all_pending_responses()
       }
-    })
+      // Drain message queue
+      Instrumenter().sendKnownExternalMessages(() => {
+        messagesToSend.synchronized {
+          for ((senderOpt, receiver, msg) <- messagesToSend) {
+            // Check if the message is actually a special marker
+            msg match {
+              case BeginExternalAtomicBlock(taskId) =>
+                event_orchestrator.events += BeginExternalAtomicBlock(taskId)
+              case EndExternalAtomicBlock(taskId) =>
+                endedExternalAtomicBlocks.synchronized {
+                  endedExternalAtomicBlocks += taskId
+                  endedExternalAtomicBlocks.notifyAll()
+                }
+                event_orchestrator.events += EndExternalAtomicBlock(taskId)
+              case s @ ScheduleBlock(f, cell) =>
+                Instrumenter().scheduler.event_produced(cell, s.envelope)
+              case _ =>
+                // It's a normal message
+                if (!Instrumenter().receiverIsAlive(receiver)) {
+                  println("Dropping message to non-existent receiver: " +
+                          receiver + " " + msg)
+                } else {
+                  senderOpt match {
+                    case Some(sendRef) =>
+                      receiver.!(msg)(sendRef)
+                    case None =>
+                      receiver ! msg
+                  }
+                }
+            }
+          }
+          messagesToSend.clear()
+        }
+      })
 
-    // Wait to make sure all messages are enqueued
-    Instrumenter().await_enqueue()
-
-    // schedule_new_message is reenterant, hence release before calling.
-    if (acquireSemaphore) {
-      schedSemaphore.release
+      // Wait to make sure all messages are enqueued
+      Instrumenter().await_enqueue()
+    } finally {
+      // schedule_new_message is reenterant, hence release before calling.
+      if (acquireSemaphore) {
+        schedSemaphore.release
+      }
     }
   }
 
@@ -373,12 +381,18 @@ trait ExternalEventInjector[E] {
     // Make sure the actual scheduler makes no progress until we have injected all
     // events.
     schedSemaphore.acquire
-    started.set(true)
-    event_orchestrator.inject_until_quiescence(enqueue_message)
-    schedSemaphore.release
+    var should_dispatch = true
+    try {
+      started.set(true)
+      should_dispatch = event_orchestrator.inject_until_quiescence(enqueue_message)
+    } finally {
+      schedSemaphore.release
+    }
     // Since this is always called during quiescence, once we have processed all
     // events, let us start dispatching
-    Instrumenter().start_dispatch()
+    if (should_dispatch) {
+      Instrumenter().start_dispatch()
+    }
   }
 
   /**
@@ -533,11 +547,31 @@ trait ExternalEventInjector[E] {
   }
 
   // Return true if we found the timer in our messagesToSend
-  def handle_timer_cancel(rcv: ActorRef, msg: Any): Boolean = {
+  def handle_timer_cancel(rcv: String, msg: Any): Boolean = {
     messagesToSend.dequeueFirst(tuple =>
-      tuple._2.path.name == rcv.path.name && tuple._3 == msg) match {
+      tuple._2 != null &&
+      tuple._2.path.name == rcv && tuple._3 == msg) match {
       case Some(_) => return true
       case None => return false
+    }
+  }
+
+  def handle_enqueue_code_block(cell: Cell, envelope: Envelope) {
+    // signal to the main thread that it should wake up if it's blocked on
+    // external messages
+    assert(envelope.message.isInstanceOf[ScheduleBlock], envelope.message)
+    messagesToSend.synchronized {
+      messagesToSend += ((None, null, envelope.message))
+      messagesToSend.notifyAll()
+    }
+
+    dispatchAfterEnqueueMessage.synchronized {
+      if (dispatchAfterEnqueueMessage.get()) {
+        dispatchAfterEnqueueMessage.set(false)
+        println("dispatching after enqueue_code_block")
+        started.set(true)
+        Instrumenter().start_dispatch()
+      }
     }
   }
 

@@ -34,6 +34,9 @@ import org.slf4j.LoggerFactory,
 // but it's possible that this might trigger a bug.
 
 object STSScheduler {
+  type PreTestCallback = () => Unit
+  type PostTestCallback = () => Unit
+
   // The maximum number of unexpected messages to try in a Peek() run before
   // giving up.
   val maxPeekMessagesToTry = 100
@@ -104,6 +107,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // Are we currently pausing the ActorSystem in order to invoke Peek()
   var pausing = new AtomicBoolean(false)
 
+  // Are we currently pausing the ActorSystem in order to hard kill an actor?
+  var stopDispatch = new AtomicBoolean(false)
+
   // Whether the recorded event trace indicates that we should (soon) be in a
   // "UnignoreableEvents" block in the current execution, as indicated by the value
   // of the ExternalEventInjector.unignorableEvents variable
@@ -116,14 +122,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   var expectedExternalAtomicBlocks = new HashSet[Long]
 
   // An optional callback that will be before we execute the trace.
-  type PreTestCallback = () => Unit
-  var preTestCallback : PreTestCallback = () => None
-  def setPreTestCallback(c: PreTestCallback) { preTestCallback = c }
+  var preTestCallback : STSScheduler.PreTestCallback = () => None
+  def setPreTestCallback(c: STSScheduler.PreTestCallback) { preTestCallback = c }
 
   // An optional callback that will be invoked after we execute the trace.
-  type PostTestCallback = () => Unit
-  var postTestCallback : PostTestCallback = () => None
-  def setPostTestCallback(c: PostTestCallback) { postTestCallback = c }
+  var postTestCallback : STSScheduler.PostTestCallback = () => None
+  def setPostTestCallback(c: STSScheduler.PostTestCallback) { postTestCallback = c }
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
@@ -139,8 +143,6 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     if (test_invariant == null) {
       throw new IllegalArgumentException("Must invoke setInvariant before test()")
     }
-
-    preTestCallback()
 
     // We only ever replay once
     if (stats != null) {
@@ -172,10 +174,18 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     val updatedEvents = filtered.recomputeExternalMsgSends(subseq)
     event_orchestrator.set_trace(updatedEvents)
 
+    if (logger.isTraceEnabled()) {
+      println("events:----")
+      updatedEvents.zipWithIndex.foreach { case (e,i) => println(i + " " + e) }
+      println("----")
+    }
+
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
 
     currentlyInjecting.set(true)
+
+    preTestCallback()
 
     // Kick off the system's initialization routine
     var initThread : Thread = null
@@ -212,6 +222,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // Wait until the initialization thread is done. Assumes that it
     // terminates!
     if (initThread != null) {
+      println("Joining on initialization thread")
       initThread.join
     }
     reset_all_state
@@ -328,17 +339,27 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_start(name)
           case KillEvent (name) =>
             event_orchestrator.trigger_kill(name)
+          case k @ HardKill (name) =>
+            // If we just delivered a message to the actor we're about to kill,
+            // the current thread is still in the process of
+            // handling the Mailbox for that actor. In that
+            // case we need to wait for the Mailbox to be set to "Idle" before
+            // we can kill the actor, since otherwise the Mailbox will not be
+            // able to process the akka-internal "Terminated" messages, i.e.
+            // killing it now will result in a deadlock.
+            if (Instrumenter().previousActor == name) {
+              Instrumenter().dispatchAfterMailboxIdle(name)
+              stopDispatch.set(true)
+              break
+            }
+            event_orchestrator.trigger_hard_kill(k)
           case PartitionEvent((a,b)) =>
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
             event_orchestrator.trigger_unpartition(a,b)
           // MsgSend is the initial send
           case m @ MsgSend (sender, receiver, message) =>
-            // sender == "deadLetters" means the message is a Send event.
-            // N.B. we should have pruned all messages from the failure
-            // detector -> actors from event_orchestrator.trace, to ensure
-            // that we don't send redundant messages.
-            if (sender == "deadLetters") {
+            if (EventTypes.isExternal(m)) {
               enqueue_message(None, receiver, message)
             }
           case TimerDelivery(snd, rcv, fingerprint) =>
@@ -494,6 +515,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
+    if (stopDispatch.get()) {
+      // Return None to stop dispatching.
+      return None
+    }
+
     if (pausing.get) {
       // Return None to stop dispatching.
       return None
@@ -608,6 +634,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   }
 
   override def notify_quiescence () {
+    if (stopDispatch.get()) {
+      stopDispatch.set(false)
+      return
+    }
+
     if (pausing.get) {
       // We've now paused the ActorSystem. Go ahead with peek()
       peek()
@@ -664,11 +695,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     test_invariant = invariant
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any) : Unit = {
-    if (handle_timer_cancel(receiver, msg)) {
+  def notify_timer_cancel(rcv: String, msg: Any) : Unit = {
+    if (handle_timer_cancel(rcv, msg)) {
       return
     }
-    val rcv = receiver.path.name
     val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
     pendingEvents.get(key) match {
       case Some(queue) =>
@@ -682,6 +712,30 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
   override def enqueue_timer(receiver: String, msg: Any) { handle_timer(receiver, msg) }
 
+  override def enqueue_code_block(cell: Cell, envelope: Envelope) {
+    handle_enqueue_code_block(cell, envelope)
+  }
+
+  override def actorTerminated(name: String): Seq[(String, Any)] = {
+    val result = new Queue[(String, Any)]
+    // TODO(cs): also deal with pendingSystemMessages
+    for ((snd,rcv,fingerprint) <- pendingEvents.keys) {
+      if (rcv == name) {
+        val queue = pendingEvents((snd,rcv,fingerprint))
+        for (e <- queue) {
+          result += ((snd, e.element._2.message))
+        }
+        pendingEvents -= ((snd,rcv,fingerprint))
+      }
+    }
+    return result
+  }
+
+  override def handleMailboxIdle() {
+    firstMessage = true
+    advanceReplay
+  }
+
   override def reset_all_state() {
     super.reset_all_state
     reset_state(shouldShutdownActorSystem)
@@ -691,5 +745,6 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     expectUnignorableEvents = false
     expectedExternalAtomicBlocks = new HashSet[Long]
     pausing = new AtomicBoolean(false)
+    stopDispatch.set(false)
   }
 }

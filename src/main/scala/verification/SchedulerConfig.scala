@@ -6,7 +6,7 @@ case class SchedulerConfig(
   enableFailureDetector     : Boolean=false,
   enableCheckpointing       : Boolean=false,
   shouldShutdownActorSystem : Boolean=true,
-  filterKnownAbsents        : Boolean=true,
+  filterKnownAbsents        : Boolean=false,
   invariant_check           : Option[TestOracle.Invariant]=None,
   ignoreTimers              : Boolean=false
 )

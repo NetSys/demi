@@ -1137,21 +1137,29 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     throw new Exception("internal error not a message")
   }
 
-  def notify_timer_cancel (receiver: ActorRef, msg: Any) = {
-    logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver.path.name + " " + msg + Console.BLUE)
+  def notify_timer_cancel (receiver: String, msg: Any) = {
+    logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, Cell, Envelope)): Boolean = {
       u._3 match {
         case null => false
-        case e => e.message == msg && u._2.self.path.name == receiver.path.name
+        case e => e.message == msg && u._2.self.path.name == receiver
       }
     }
 
-    pendingEvents.get(receiver.path.name) match {
+    pendingEvents.get(receiver) match {
       case Some(q) =>
-        q.dequeueFirst(equivalentTo(_))
-        logger.trace(Console.RED + " Removing pending event (" + 
-                    receiver.path.name + " , " + msg + ")" + Console.RESET)
+        q.dequeueFirst(equivalentTo(_)) match {
+          case Some(u) => logger.trace(Console.RED + " Removing pending event (" + 
+                    receiver + " , " + msg + ")" + Console.RESET)
+          case None => logger.trace(Console.RED + 
+                    " Did not remove message due to timer cancellation (" + 
+                      receiver + ", " + msg + ")" +  Console.RESET)
+        }
       case None => // This cancellation came too late, things have already been done.
+        logger.trace(Console.RED +
+                    " Did not remove message due to timer cancellation (" + 
+                      receiver + ", " + msg + ")" +  Console.RESET)
+
     }
   }
   

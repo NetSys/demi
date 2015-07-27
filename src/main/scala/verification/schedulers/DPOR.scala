@@ -699,7 +699,7 @@ class DPOR extends Scheduler {
     messagesToSend += ((actor, msg))
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
+  def notify_timer_cancel(receiver: String, msg: Any) {
     throw new RuntimeException("NYI!") // TODO(cs): do what DPORwHeuristics does..
   }
 

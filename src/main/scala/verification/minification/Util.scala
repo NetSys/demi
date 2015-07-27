@@ -3,6 +3,7 @@ package akka.dispatch.verification
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.Map
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.HashMap
 
 object MinificationUtil {
   def split_list(l: Seq[Any], split_ways: Int) : Seq[Seq[Any]] = {
@@ -90,6 +91,9 @@ trait EventDag {
    */
   def get_all_events() : Seq[ExternalEvent]
 
+  // Alias for get_all_events
+  def events = get_all_events
+
   /**
    * Return get_all_events().length
    */
@@ -155,6 +159,22 @@ object EventDag {
  */
 class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
   val event_to_idx : Map[ExternalEvent, Int] = Util.map_from_iterable(events.zipWithIndex)
+  // Index of event -> index of pair
+  // Should be symmetric
+  val _conjoinedAtoms = new HashMap[Int, Int]
+
+  def conjoinAtoms(e1: ExternalEvent, e2: ExternalEvent) {
+    if (!(event_to_idx contains e1)) {
+      throw new IllegalArgumentException("No such external event:" + e1)
+    }
+    if (!(event_to_idx contains e2)) {
+      throw new IllegalArgumentException("No such external event:" + e2)
+    }
+    assert(!(_conjoinedAtoms contains event_to_idx(e1)))
+    assert(!(_conjoinedAtoms contains event_to_idx(e2)))
+    _conjoinedAtoms(event_to_idx(e1)) = event_to_idx(e2)
+    _conjoinedAtoms(event_to_idx(e2)) = event_to_idx(e1)
+  }
 
   def remove_events(to_remove: Seq[AtomicEvent]) : EventDag = {
     val remaining = EventDag.remove_events(to_remove, events)
@@ -184,7 +204,19 @@ class UnmodifiedEventDag(events: Seq[ExternalEvent]) extends EventDag {
     var fingerprint_2_previous_dual : Map[String, ExternalEvent] = Map()
     var atomics = new ListBuffer[AtomicEvent]()
 
-    for (event <- given_events) {
+    // First deal with explicitly conjoined atoms.
+    val conjoined = new HashSet[ExternalEvent] ++ given_events.filter(e => _conjoinedAtoms contains event_to_idx(e))
+    assert(conjoined.forall(e => conjoined contains events(_conjoinedAtoms(event_to_idx(e)))))
+    while (!conjoined.isEmpty) {
+      val head = conjoined.head
+      val tail = events(_conjoinedAtoms(event_to_idx(head)))
+      atomics += new AtomicEvent(head, tail)
+      conjoined -= head
+      conjoined -= tail
+    }
+
+    // Now deal with domain knowledge.
+    for (event <- given_events.filterNot(e => _conjoinedAtoms contains event_to_idx(e))) {
       event match {
         case Kill(name) => {
           fingerprint_2_previous_dual get name match {

@@ -65,7 +65,7 @@ trait Scheduler {
   // Used to feed messages from the external world into actor systems.
 
    // Called when timer is cancelled
-  def notify_timer_cancel(receiver: ActorRef, msg: Any)
+  def notify_timer_cancel(receiver: String, msg: Any)
   
   // Interface for (safely) sending external messages
   def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any)
@@ -73,7 +73,27 @@ trait Scheduler {
   // Interface for (safely) sending timers (akka.scheduler messages)
   def enqueue_timer(receiver: String, msg: Any) = enqueue_message(None, receiver, msg)
 
+  // Interface for notifying the scheduler about a code block that has just
+  // been scheduled by the application, through akka.scheduler.schedule().
+  // cell and envelope are fake, used as placeholders.
+  def enqueue_code_block(cell: Cell, envelope: Envelope) {
+    event_produced(cell, envelope)
+  }
+
   // Shut down the actor system.
   def shutdown()
 
+  // When an actor has been terminated, the ActorCell references associated
+  // with it are no longer valid. Remove all of them, and return all
+  // (sender, message) pairs that used to be pending for this actor. These
+  // may later be resent by Instrumenter.
+  def actorTerminated(actor: String): Seq[(String, Any)] = {
+    throw new RuntimeException("NYI")
+  }
+
+  // Invoked by Instrumenter after dispatchAfterMailboxIdle(name) has been
+  // called and name's mailbox has been set to idle state
+  def handleMailboxIdle() {
+    Instrumenter().start_dispatch
+  }
 }

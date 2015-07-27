@@ -204,8 +204,7 @@ class BasicScheduler extends Scheduler {
   def notify_quiescence () {
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
-    val rcv = receiver.path.name
+  def notify_timer_cancel(rcv: String, msg: Any) {
     pendingEvents(rcv).dequeueFirst(tuple => tuple._2.message == msg)
     if (pendingEvents(rcv).isEmpty) {
       pendingEvents -= rcv
