@@ -23,7 +23,9 @@ object RunnerUtils {
   def countMsgEvents(trace: Iterable[Event]) : Int = {
     return trace.filter {
       case m: MsgEvent => true
+      case u: UniqueMsgEvent => true
       case t: TimerDelivery => true
+      case u: UniqueTimerDelivery => true
       case _ => false
     } size
   }
