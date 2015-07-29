@@ -378,8 +378,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
           case m @ MsgSend (sender, receiver, message) =>
             if (EventTypes.isExternal(m)) {
               enqueue_message(None, receiver, message)
-            } else if (expectUnignorableEvents &&
-                       (sender == "deadLetters" || sender == "Timer")) {
+            } else if (expectUnignorableEvents && sender == "deadLetters") {
               // We need to wait until this message is enqueued, since once
               // UnignorableEvents is over we might proceed directly to
               // delivering this message.

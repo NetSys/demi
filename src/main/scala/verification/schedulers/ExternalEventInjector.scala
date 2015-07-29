@@ -175,7 +175,9 @@ trait ExternalEventInjector[E] {
     beganExternalAtomicBlocks.synchronized {
       beganExternalAtomicBlocks += taskId
     }
-    messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
+    messagesToSend.synchronized {
+      messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
+    }
     pendingExternalAtomicBlocks.incrementAndGet()
     // We shouldn't be dispatching while the atomic block executes.
     Instrumenter().stopDispatch.set(true)
@@ -189,7 +191,9 @@ trait ExternalEventInjector[E] {
   def endExternalAtomicBlock(taskId: Long) {
     // Place the marker into the current place in messagesToSend; any messages
     // already enqueued before this are part of the atomic block.
-    messagesToSend += ((None, null, EndExternalAtomicBlock(taskId)))
+    messagesToSend.synchronized {
+      messagesToSend += ((None, null, EndExternalAtomicBlock(taskId)))
+    }
     // Signal that the main thread should invoke send_external_messages
     endedExternalAtomicBlocks.synchronized {
       endedExternalAtomicBlocks.notifyAll()
@@ -436,12 +440,14 @@ trait ExternalEventInjector[E] {
     val checkpointRequests = checkpointer.prepareRequests(actorRefs)
     // Put our requests at the front of the queue, and any existing requests
     // at the end of the queue.
-    val existingExternals = new Queue[(Option[ActorRef], ActorRef, Any)] ++ messagesToSend
-    messagesToSend.clear
-    for ((actor, request) <- checkpointRequests) {
-      enqueue_message(None, actor, request)
+    messagesToSend.synchronized {
+      val existingExternals = new Queue[(Option[ActorRef], ActorRef, Any)] ++ messagesToSend
+      messagesToSend.clear
+      for ((actor, request) <- checkpointRequests) {
+        enqueue_message(None, actor, request)
+      }
+      messagesToSend ++= existingExternals
     }
-    messagesToSend ++= existingExternals
   }
 
   /**
@@ -555,11 +561,13 @@ trait ExternalEventInjector[E] {
 
   // Return true if we found the timer in our messagesToSend
   def handle_timer_cancel(rcv: String, msg: Any): Boolean = {
-    messagesToSend.dequeueFirst(tuple =>
-      tuple._2 != null &&
-      tuple._2.path.name == rcv && tuple._3 == msg) match {
-      case Some(_) => return true
-      case None => return false
+    messagesToSend.synchronized {
+      messagesToSend.dequeueFirst(tuple =>
+        tuple._2 != null &&
+        tuple._2.path.name == rcv && tuple._3 == msg) match {
+        case Some(_) => return true
+        case None => return false
+      }
     }
   }
 
