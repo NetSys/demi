@@ -4,7 +4,7 @@ import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Queue
 import akka.actor.Props
 
-// Minimizes internal events. One-time-use -- shouldn't invoke minimize() more
+// Minimizes internal events. One-time-use -- you shouldn't invoke minimize() more
 // than once.
 // TODO(cs): ultimately, we should try supporting DPOR removal of
 // internals.
@@ -57,8 +57,8 @@ class STSSchedMinimizer(
     val origSize = RunnerUtils.countMsgEvents(origTrace)
     val newSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
     val diff = origSize - newSize
-    println("Pruned " + diff + "/" + origSize + " deliveries in " +
-            stats.total_replays + " replays")
+    println("Pruned " + diff + "/" + origSize + " deliveries (" + removalStrategy.unignorable + " unignorable)" +
+            " in " + stats.total_replays + " replays")
     return (stats, lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
   }
 }
@@ -68,11 +68,13 @@ class STSSchedMinimizer(
 abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: FingerprintFactory) {
   // MsgEvents we've tried ignoring so far. MultiSet to account for duplicate MsgEvent's
   val triedIgnoring = new MultiSet[(String, String, MessageFingerprint)]
+  var _unignorable = 0
 
   // Populate triedIgnoring with all events that lie between a
   // UnignorableEvents block. Also, external messages.
   private def init() {
     var inUnignorableBlock = false
+
     verified_mcs.events.foreach {
       case BeginUnignorableEvents =>
         inUnignorableBlock = true
@@ -88,11 +90,15 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
         }
       case _ =>
     }
+
+    _unignorable = triedIgnoring.size
   }
 
   init()
 
   def getNextTrace(lastFailingTrace: EventTrace) : Option[EventTrace]
+
+  def unignorable: Int = _unignorable
 }
 
 // TODO(cs): this is a bit redundant with OneAtATimeRemoval + STSSched.
@@ -103,7 +109,7 @@ class LeftToRightOneAtATime(
   // Filter out the next MsgEvent, and return the resulting EventTrace.
   // If we've tried filtering out all MsgEvents, return None.
   def getNextTrace(trace: EventTrace): Option[EventTrace] = {
-    // Track what events we've kept so far in this iteration because we
+    // Track what events we've kept so far because we
     // already tried ignoring them previously. MultiSet to account for
     // duplicate MsgEvent's. TODO(cs): this may lead to some ambiguous cases.
     val keysThisIteration = new MultiSet[(String, String, MessageFingerprint)]

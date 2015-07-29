@@ -651,6 +651,7 @@ object RunnerUtils {
             " ("+intmin_externals + " externals, "+
             intmin_timers + " timers)")
     println("Final messages delivered:") // w/o fingerints
+    // TODO(cs): annotate which events are unignorable.
     intMinTrace foreach {
       case m: MsgEvent => println(m)
       case t: TimerDelivery => println(t)
