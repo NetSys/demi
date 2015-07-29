@@ -150,8 +150,13 @@ trait ExternalEventInjector[E] {
   def endUnignorableEvents() {
     assert(unignorableEvents.get())
     unignorableEvents.set(false)
-    // TODO(cs): should these be placed into messagesToSend too?
-    event_orchestrator.events += EndUnignorableEvents
+
+    // Make sure the marker appears after any currently enqueued external
+    // message sends.
+    messagesToSend.synchronized {
+      messagesToSend += ((None, null, EndUnignorableEvents))
+      messagesToSend.notifyAll()
+    }
   }
 
   /**
@@ -280,6 +285,8 @@ trait ExternalEventInjector[E] {
           for ((senderOpt, receiver, msg) <- messagesToSend) {
             // Check if the message is actually a special marker
             msg match {
+              case EndUnignorableEvents =>
+                event_orchestrator.events += EndUnignorableEvents
               case BeginExternalAtomicBlock(taskId) =>
                 event_orchestrator.events += BeginExternalAtomicBlock(taskId)
               case EndExternalAtomicBlock(taskId) =>
