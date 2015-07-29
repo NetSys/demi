@@ -384,7 +384,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
               // UnignorableEvents is over we might proceed directly to
               // delivering this message.
               messagesToSend.synchronized {
-                while (!messagePending(m.sender, m.receiver, m.msg)) {
+                while (!messagePending("deadLetters", m.receiver, m.msg)) {
                   println("Blocking until enqueue_message... (MsgSend)")
                   messagesToSend.wait()
                   println("Checking messagePending..")
