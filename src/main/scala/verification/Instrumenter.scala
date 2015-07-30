@@ -18,6 +18,7 @@ import akka.dispatch.Mailbox
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.Semaphore
 import java.io.Closeable
 
@@ -46,7 +47,7 @@ import org.slf4j.LoggerFactory,
 
 
 // Wrap cancellable so we get notified about cancellation
-class WrappedCancellable (c: Cancellable, rcv: ActorRef, msg: Any) extends Cancellable {
+class WrappedCancellable (c: Cancellable, rcv: String, msg: Any) extends Cancellable {
   val instrumenter = Instrumenter()
   def cancel(): Boolean = {
     val success = c.cancel
@@ -95,7 +96,7 @@ class Instrumenter {
   // Track the executing context (i.e., source of events)
   var currentActor = ""
   var previousActor = ""
-  var inActor = false
+  var inActor = new AtomicBoolean(false)
   var counter = 0   
   // Whether we're currently dispatching.
   var started = new AtomicBoolean(false)
@@ -109,7 +110,8 @@ class Instrumenter {
   // tracks which actors are currently blocked.
   // For a detailed design doc see:
   // https://docs.google.com/document/d/1RnCDOQFLa2prliF5y5VDNcdGDmEeOlgUcXSNk7abpSo
-  var blockedActors = Set[String]()
+  // { parent -> value of currentPendingDispatch at the time the parent became blocked }
+  var blockedActors = Map[String,(String,Any)]()
   // Mapping from temp actors (used for `ask`) to the name of the actor that created them.
   // For a detailed design doc see:
   // https://docs.google.com/document/d/1_LUceHvQoamlBtNNbqA4CxBH-zvUKlZhnSjLwTc16q4
@@ -118,6 +120,10 @@ class Instrumenter {
   // delivery, we store the temp actor (receipient) here to mark it as
   // pending.
   var askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
+  // If the parent (asker) of a temp actor was *not* blocked on the `ask`,
+  // make sure that the scheduling loop keeps going after the ask answer is
+  // delivered.
+  var dispatchAfterAskAnswer = new AtomicBoolean(false)
   // Set to true an when external thread signals that it wants to send
   // messages in a thread-safe manner (rather than having its sends delayed)
   var sendingKnownExternalMessages = new AtomicBoolean(false)
@@ -131,10 +137,19 @@ class Instrumenter {
   var cancellableToTimer = new HashMap[Cancellable, Tuple2[String, Any]]
   // And vice versa
   var timerToCancellable = new HashMap[Tuple2[String,Any], Cancellable]
+  // Fake actor, used to designate a code block (as opposed to a message) scheduled through
+  // akka.scheduler. Should never receive messages; only used for its ActorRef.
+  var scheduleFunctionRef : ActorRef = null
+  // Messages sent within a scheduled code block.
+  var codeBlockSends = new MultiSet[(String,Any)]
+  // Which threads have been spawned to execute scheduled code blocks
+  val codeBlockThreads = new HashSet[Thread]
+  // For checking asserts
+  var currentPendingDispatch = new AtomicReference[Option[(String,Any)]](None)
 
   val logger = LoggerFactory.getLogger("Instrumenter")
 
-  private[dispatch] def cancelTimer (c: Cancellable, rcv: ActorRef, msg: Any, success: Boolean) = {
+  private[dispatch] def cancelTimer (c: Cancellable, rcv: String, msg: Any, success: Boolean) = {
     // Need this here since by the time DPORwHeuristics gets here the thing is already canceled
     if (cancellableToTimer contains c) {
       removeCancellable(c)
@@ -156,6 +171,8 @@ class Instrumenter {
           _actorSystem = ActorSystem("new-system-" + counter)
       }
       _random = new Random(0)
+      scheduleFunctionRef = _actorSystem.actorOf(Props(classOf[ScheduleFunctionReceiver]),
+        name="ScheduleFunctionPlaceholder")
       counter += 1
     }
     _actorSystem
@@ -164,6 +181,8 @@ class Instrumenter {
   def actorSystem () : ActorSystem = {
     return actorSystem(None)
   }
+
+  def actorSystemInitialized: Boolean = _actorSystem != null
 
   private[this] var _random = new Random(0)
   def seededRandom() : Random = {
@@ -305,6 +324,10 @@ class Instrumenter {
       return true
     }
 
+    if (Thread.currentThread.getName().startsWith("codeBlock-")) {
+      codeBlockSends += ((receiver.path.name, msg))
+    }
+
     // First check if it's an external thread sending outside of
     // sendKnownExternalMessages.
     if (!scheduler.isSystemCommunication(sender, receiver, msg) &&
@@ -350,7 +373,7 @@ class Instrumenter {
       return
     }
 
-    if (actor.toString.contains("/system/")) {
+    if (actor.toString.contains("/system/") || name == "/") {
       return
     }
    
@@ -393,11 +416,21 @@ class Instrumenter {
     allowedEvents.clear()
     dispatchers.clear()
     Util.logger.reset()
-    blockedActors = Set[String]()
+    blockedActors = Map[String, (String, Any)]()
     tempToParent = new HashMap[ActorPath, String]
     askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
     sendingKnownExternalMessages = new AtomicBoolean(false)
     stopDispatch = new AtomicBoolean(false)
+    interruptAllScheduleBlocks
+  }
+
+  def interruptAllScheduleBlocks() {
+    codeBlockThreads.synchronized {
+      codeBlockThreads.foreach {
+        case t => t.interrupt
+      }
+      codeBlockThreads.clear
+    }
   }
 
   // Restart the system:
@@ -481,10 +514,19 @@ class Instrumenter {
         cell.sender.path.name, 
         cell.self.path.name,
         msg)) return
+
+    if (cell.system != _actorSystem) {
+      // Somehow, bizzarely, afterMessageReceive can be invoked for actors
+      // from prior actor systems, after they have been shutdown. This obviously throws a
+      // huge wrench into our current dispatching loop.
+      println("cell.system != _actorSystem")
+      return
+    }
    
     scheduler.before_receive(cell, msg)
     currentActor = cell.self.path.name
-    inActor = true
+    assert(!inActor.get)
+    inActor.set(true)
   }
   
   /**
@@ -498,15 +540,21 @@ class Instrumenter {
       return
     }
 
-    if (!Instrumenter.threadNameIsAkkaInternal) {
-      // External thread, so we don't care if it blocks.
+    if ((!Instrumenter.threadNameIsAkkaInternal) ||
+        sendingKnownExternalMessages.get) {
+      // External thread (or ScheduleBlock), so we don't care if it blocks.
       return
     }
 
     // Mark the current actor as blocked.
-    blockedActors = blockedActors + currentActor
+    val oldPendingDispatch = currentPendingDispatch.getAndSet(None)
+    assert(!oldPendingDispatch.isEmpty)
+    blockedActors = blockedActors + (currentActor -> oldPendingDispatch.get)
 
-    scheduler.schedule_new_message(blockedActors) match {
+    assert(inActor.get)
+    inActor.set(false)
+
+    scheduler.schedule_new_message(blockedActors.keySet) match {
       // Note that dispatch_new_message is a non-blocking call; it hands off
       // the message to a new thread and returns immediately.
       case Some((new_cell, envelope)) =>
@@ -532,6 +580,14 @@ class Instrumenter {
       return
     }
 
+    if (cell.system != _actorSystem) {
+      // Somehow, bizzarely, afterMessageReceive can be invoked for actors
+      // from prior actor systems, after they have been shutdown. This obviously throws a
+      // huge wrench into our current dispatching loop.
+      println("cell.system != _actorSystem")
+      return
+    }
+
     if (scheduler.isSystemMessage(
         cell.sender.path.name,
         cell.self.path.name,
@@ -547,7 +603,12 @@ class Instrumenter {
 
     logger.trace("done tellEnqueue.await()")
 
-    inActor = false
+    val oldPendingDispatch = currentPendingDispatch.getAndSet(None)
+    assert(!oldPendingDispatch.isEmpty)
+    assert(oldPendingDispatch.get == (cell.self.path.name, msg),
+      oldPendingDispatch.get + " " + (cell.self.path.name, msg))
+    assert(inActor.get, "!inActor.get: " + Thread.currentThread.getName + " " + currentActor)
+    inActor.set(false)
     previousActor = currentActor
     currentActor = ""
 
@@ -562,7 +623,7 @@ class Instrumenter {
 
     scheduler.after_receive(cell)
 
-    scheduler.schedule_new_message(blockedActors) match {
+    scheduler.schedule_new_message(blockedActors.keySet) match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name
         if (blockedActors contains dst) {
@@ -608,10 +669,46 @@ class Instrumenter {
     // was called.
     askAnswerNotYetScheduled -= temp
     // Mark parent as unblocked.
-    blockedActors = blockedActors - tempToParent(temp.path)
+    if (!(blockedActors contains tempToParent(temp.path))) {
+      // Parent wasn't previously unblocked! This probably means that the
+      // `ask` was initialized by a ScheduleBlock.
+      // To keep the scheduling loop going, we need to dispatch again after
+      // this answer has been delivered.
+      dispatchAfterAskAnswer.set(true)
+    } else {
+      // We're about to wake up the parent who was previously blocked. Reset
+      // currentPendingDispatch to what was previously pending when the parent
+      // became blocked.
+      val oldPendingDispatch = currentPendingDispatch.getAndSet(
+        Some(blockedActors.get(tempToParent(temp.path)).get))
+      blockedActors = blockedActors - tempToParent(temp.path)
+      inActor.set(true)
+    }
     currentActor = tempToParent(temp.path)
     tempToParent -= temp.path
     return true
+  }
+
+  def afterReceiveAskAnswer(temp: PromiseActorRef, msg: Any, sender: ActorRef) = {
+    if (dispatchAfterAskAnswer.get) {
+      println("Dispatching after receiveAskAnswer")
+      inActor.set(false)
+      currentPendingDispatch.set(None)
+      dispatchAfterAskAnswer.set(false)
+      scheduler.schedule_new_message(blockedActors.keySet) match {
+        case Some((new_cell, envelope)) =>
+          val dst = new_cell.self.path.name
+          if (blockedActors contains dst) {
+            throw new IllegalArgumentException("schedule_new_message returned a " +
+                                               "dst that is blocked: " + dst)
+          }
+          dispatch_new_message(new_cell, envelope)
+        case None =>
+          counter += 1
+          started.set(false)
+          scheduler.notify_quiescence()
+      }
+    }
   }
 
   // Dispatch a message, i.e., deliver it to the intended recipient
@@ -619,7 +716,6 @@ class Instrumenter {
     val snd = envelope.sender.path.name
     val rcv = _cell.self.path.name
     val msg = envelope.message
-    Util.logger.mergeVectorClocks(snd, rcv)
 
     if (_cell.self.isInstanceOf[PromiseActorRef]) {
       // This is an answer to an `ask`, and the scheduler just told us to
@@ -630,6 +726,59 @@ class Instrumenter {
       return
     }
 
+    if (_cell.self == scheduleFunctionRef) {
+      // This is a code block scheduled by akka.scheduler.schedule().
+      // Run the code block rather than delivering any message.
+      // Run it in a separate thread! Since it may block, e.g. by calling
+      // `Await.result`
+      // TODO(cs): shutdown this thread if it hasn't terminated, and the actor
+      // system is also shutting down.
+      val t = new Thread(new Runnable {
+        def run() = {
+          // If the timer is repeating, wait until the block is completed until
+          // we retrigger it.
+          msg.asInstanceOf[ScheduleBlock].apply()
+
+          timerToCancellable.synchronized {
+            if (timerToCancellable contains ("ScheduleFunction", msg)) {
+              val cancellable = timerToCancellable(("ScheduleFunction", msg))
+              if (ongoingCancellableTasks contains cancellable) {
+                println("Retriggering repeating code block: " + msg)
+                handleTick("ScheduleFunction", msg, cancellable)
+              }
+            }
+          }
+        }
+      }, msg.asInstanceOf[ScheduleBlock].toString)
+
+      codeBlockThreads.synchronized {
+        codeBlockThreads += t
+      }
+      t.start()
+
+      // Keep the scheduling loop going -- need to explicitly call
+      // schedule_new_message, since afterMessageReceive will not be invoked.
+      println("Dispatching after kicking off schedule block!")
+      scheduler.schedule_new_message(blockedActors.keySet) match {
+        case Some((new_cell, envelope)) =>
+          val dst = new_cell.self.path.name
+          if (blockedActors contains dst) {
+            throw new IllegalArgumentException("schedule_new_message returned a " +
+                                               "dst that is blocked: " + dst)
+          }
+          dispatch_new_message(new_cell, envelope)
+        case None =>
+          counter += 1
+          started.set(false)
+          scheduler.notify_quiescence()
+      }
+      return
+    }
+
+    Util.logger.mergeVectorClocks(snd, rcv)
+
+    currentPendingDispatch.set(Some((rcv, msg)))
+
     // We now know that cell is a real ActorCell, not a FakeCell.
     val cell = _cell.asInstanceOf[ActorCell]
     
@@ -637,25 +786,34 @@ class Instrumenter {
 
     val dispatcher = dispatchers.get(cell.self) match {
       case Some(value) => value
-      case None => throw new Exception("internal error")
+      case None => throw new Exception("internal error: " + cell.self + " " + msg)
     }
     
     scheduler.event_consumed(cell, envelope)
+    if (codeBlockSends contains ((rcv, msg))) {
+      codeBlockSends -= ((rcv, msg))
+    }
     dispatcher.dispatch(cell, envelope)
     // Check if it was a repeating timer. If so, retrigger it.
-    if (timerToCancellable contains (rcv, msg)) {
-      val cancellable = timerToCancellable((rcv, msg))
-      if (ongoingCancellableTasks contains cancellable) {
-        println("Retriggering repeating timer: " + rcv + " " + msg)
-        handleTick(cell.self, msg, cancellable)
+    timerToCancellable.synchronized {
+      if (timerToCancellable contains (rcv, msg)) {
+        val cancellable = timerToCancellable((rcv, msg))
+        if (ongoingCancellableTasks contains cancellable) {
+          println("Retriggering repeating timer: " + rcv + " " + msg)
+          handleTick(cell.self.path.name, msg, cancellable)
+        }
       }
     }
   }
 
   def isTimer(rcv: String, msg: Any) : Boolean = {
-    return timerToCancellable contains (rcv, msg)
+    timerToCancellable.synchronized {
+      return (timerToCancellable contains (rcv, msg)) ||
+             rcv == "ScheduleFunctionPlaceholder" ||
+             (codeBlockSends contains ((rcv, msg)))
+    }
   }
-  
+
   // Called when dispatch is called. One of two cases:
   //  - right after the message has first been `tell`ed but before the message
   //    is delivered. In this case we notify the scheduler that the message is
@@ -676,6 +834,14 @@ class Instrumenter {
     // If this is a system message just let it through.
     if (scheduler.isSystemMessage(snd, rcv, envelope.message)) {
       return true
+    }
+
+    if (cell.system != _actorSystem) {
+      // Somehow, bizzarely, afterMessageReceive can be invoked for actors
+      // from prior actor systems, after they have been shutdown. This obviously throws a
+      // huge wrench into our current dispatching loop.
+      println("cell.system != _actorSystem")
+      return false
     }
 
     // At this point, this should only ever be an internal thread.
@@ -720,7 +886,8 @@ class Instrumenter {
   def start_dispatch() {
     assert(!started.get)
     started.set(true)
-    scheduler.schedule_new_message(blockedActors) match {
+    println("start_dispatch. Dispatching!")
+    scheduler.schedule_new_message(blockedActors.keySet) match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name
         if (blockedActors contains dst) {
@@ -738,38 +905,52 @@ class Instrumenter {
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
-                          rcv: ActorRef, msg: Any) {
-    val receiver = rcv.path.name
-    registeredCancellableTasks += c
-    if (ongoingTimer) {
-      ongoingCancellableTasks += c
+                          receiver: String, msg: Any) {
+    var _msg = msg
+
+    timerToCancellable.synchronized {
+      registeredCancellableTasks += c
+      if (ongoingTimer) {
+        ongoingCancellableTasks += c
+      }
+      if (receiver == "ScheduleFunction") {
+        // Create a fake ActorCell and Envelope to give to scheduler.
+        val cell = new FakeCell(scheduleFunctionRef)
+        _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]], cell)
+      }
+      cancellableToTimer(c) = ((receiver, _msg))
+      // TODO(cs): for now, assume that msg's are unique. Don't assume that.
+      if (timerToCancellable contains (receiver, _msg)) {
+        throw new RuntimeException("Non-unique timer: "+ receiver + " " + _msg)
+      }
+      timerToCancellable((receiver, _msg)) = c
     }
-    cancellableToTimer(c) = ((receiver, msg))
-    // TODO(cs): for now, assume that msg's are unique. Don't assume that.
-    if (timerToCancellable contains (receiver, msg)) {
-      throw new RuntimeException("Non-unique timer: "+ receiver + " " + msg)
-    }
-    timerToCancellable((receiver, msg)) = c
     // Schedule it immediately!
-    handleTick(rcv, msg, c)
+    handleTick(receiver, _msg, c)
   }
 
   def removeCancellable(c: Cancellable) {
-    registeredCancellableTasks -= c
-    val (receiver, msg) = cancellableToTimer(c)
-    timerToCancellable -= ((receiver, msg))
-    cancellableToTimer -= c
+    timerToCancellable.synchronized {
+      registeredCancellableTasks -= c
+      val (receiver, msg) = cancellableToTimer(c)
+      timerToCancellable -= ((receiver, msg))
+      cancellableToTimer -= c
+    }
   }
 
-  // When akka.actor.schedulerOnce decides to schedule a message to be sent,
-  // we intercept it here.
-  def handleTick(receiver: ActorRef, msg: Any, c: Cancellable) {
+  // Invoked when a timer is sent
+  def handleTick(receiver: String, msg: Any, c: Cancellable) {
     // println("handleTick " + receiver + " " + msg)
     if (!(registeredCancellableTasks contains c)) {
-      throw new IllegalArgumentException("Cancellable " + (receiver.path.name, msg) +
-                                         "is already cancelled...")
+      throw new IllegalArgumentException("Cancellable " + (receiver, msg) +
+                                         " is already cancelled...")
     }
-    scheduler.enqueue_timer(receiver.path.name, msg)
+    if (receiver == "ScheduleFunction") {
+      val m = msg.asInstanceOf[ScheduleBlock]
+      scheduler.enqueue_code_block(m.cell, m.envelope)
+    } else {
+      scheduler.enqueue_timer(receiver, msg)
+    }
     if (!(ongoingCancellableTasks contains c)) {
       removeCancellable(c)
     }
@@ -799,26 +980,29 @@ class Instrumenter {
     // reinitialize_system, due to shutdownCallback. This is problematic,
     // unless the application properly uses CheckpointSink's protocol for
     // checking invariants
-    val checkpoint = new InstrumenterCheckpoint(
-      new HashMap[String, ActorRef] ++ actorMappings,
-      new HashSet[(ActorSystem, Any)] ++ seenActors,
-      new HashSet[(ActorCell, Envelope)] ++ allowedEvents,
-      new HashMap[ActorRef, MessageDispatcher] ++ dispatchers,
-      new HashMap[String, VectorClock] ++ Util.logger.actor2vc,
-      _actorSystem,
-      new HashMap[Cancellable, Tuple2[String, Any]] ++ cancellableToTimer,
-      new HashSet[Cancellable] ++ ongoingCancellableTasks,
-      new HashMap[Tuple2[String,Any], Cancellable] ++ timerToCancellable,
-      checkpointCallback()
-    )
+
+    timerToCancellable.synchronized {
+      val checkpoint = new InstrumenterCheckpoint(
+        new HashMap[String, ActorRef] ++ actorMappings,
+        new HashSet[(ActorSystem, Any)] ++ seenActors,
+        new HashSet[(ActorCell, Envelope)] ++ allowedEvents,
+        new HashMap[ActorRef, MessageDispatcher] ++ dispatchers,
+        new HashMap[String, VectorClock] ++ Util.logger.actor2vc,
+        _actorSystem,
+        new HashMap[Cancellable, Tuple2[String, Any]] ++ cancellableToTimer,
+        new HashSet[Cancellable] ++ ongoingCancellableTasks,
+        new HashMap[Tuple2[String,Any], Cancellable] ++ timerToCancellable,
+        checkpointCallback()
+      )
+
+      // Reset all state so that a new actor system can be started.
+      registeredCancellableTasks.clear
+      ongoingCancellableTasks.clear
+      cancellableToTimer.clear
+      timerToCancellable.clear
+    }
 
     Util.logger.reset
-
-    // Reset all state so that a new actor system can be started.
-    registeredCancellableTasks.clear
-    ongoingCancellableTasks.clear
-    cancellableToTimer.clear
-    timerToCancellable.clear
 
     reinitialize_system(null, null)
 
@@ -865,10 +1049,12 @@ object Instrumenter {
   // send events to be treated as if they are coming from an external thread,
   // i.e. have message sends enqueued rather than sent immediately.
   def overrideInternalThreadRule() {
+    assert(!_overrideInternalThreadRule.get)
     _overrideInternalThreadRule.set(true)
   }
 
   def unsetInternalThreadRuleOverride() {
+    assert(_overrideInternalThreadRule.get)
     _overrideInternalThreadRule.set(false)
   }
 
@@ -880,5 +1066,37 @@ object Instrumenter {
     return Thread.currentThread.getName().contains("dispatcher") &&
            !Thread.currentThread().getStackTrace().map(e => e.getMethodName).exists(e => e == "preStart") &&
            !_overrideInternalThreadRule.get()
+  }
+
+  // When a code block is about to be scheduled through
+  // akka.scheduler.schedule, check if it's an akka internal code block.
+  // TODO(cs): would be nice to have a better interface.
+  def akkaInternalCodeBlockSchedule(): Boolean = {
+    val callStack = Thread.currentThread().getStackTrace().map(e => e.getMethodName)
+    // https://github.com/akka/akka/blob/release-2.2/akka-actor/src/main/scala/akka/pattern/AskSupport.scala#L334
+    return callStack.contains("ask$extension")
+  }
+}
+
+// Wraps a scala.function0 scheduled through akka.scheduler.schedule, but its
+// toString tells us where it came from.
+case class ScheduleBlock(f: Function0[Any], cell: Cell) {
+  val callStack = getCallStack
+  val envelope = Envelope.apply(this, null, Instrumenter()._actorSystem)
+
+  def getCallStack(): String = {
+    // TODO(cs): magic number 6 is brittle
+    val callStack = Thread.currentThread.getStackTrace.drop(6)
+    val min3 = math.min(3, callStack.length)
+    var truncated = callStack.take(min3).toList
+    return truncated.map(e => e.getFileName + ":" + e.getLineNumber).mkString("-")
+  }
+
+  override def toString(): String = {
+    "ScheduleBlock-" + callStack
+  }
+
+  def apply(): Any = {
+    return f()
   }
 }

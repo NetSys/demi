@@ -23,7 +23,9 @@ object RunnerUtils {
   def countMsgEvents(trace: Iterable[Event]) : Int = {
     return trace.filter {
       case m: MsgEvent => true
+      case u: UniqueMsgEvent => true
       case t: TimerDelivery => true
+      case u: UniqueTimerDelivery => true
       case _ => false
     } size
   }
@@ -386,12 +388,25 @@ object RunnerUtils {
                        trace: EventTrace,
                        actorNameProps: Seq[Tuple2[Props, String]],
                        violation: ViolationFingerprint,
-                       stats: MinimizationStats)
+                       stats: MinimizationStats,
+                       initializationRoutine: Option[() => Any]=None,
+                       preTest: Option[STSScheduler.PreTestCallback]=None,
+                       postTest: Option[STSScheduler.PostTestCallback]=None)
                      : Option[EventTrace] = {
     val sched = new STSScheduler(schedulerConfig, trace, false)
     Instrumenter().scheduler = sched
     sched.setActorNamePropPairs(actorNameProps)
-    return sched.test(mcs, violation, stats)
+    preTest match {
+      case Some(callback) =>
+        sched.setPreTestCallback(callback)
+      case _ =>
+    }
+    postTest match {
+      case Some(callback) =>
+        sched.setPostTestCallback(callback)
+      case _ =>
+    }
+    return sched.test(mcs, violation, stats, initializationRoutine=initializationRoutine)
   }
 
   // pre: replay(verified_mcs) reproduces the violation.
@@ -399,113 +414,20 @@ object RunnerUtils {
                         mcs: Seq[ExternalEvent],
                         verified_mcs: EventTrace,
                         actorNameProps: Seq[Tuple2[Props, String]],
-                        violation: ViolationFingerprint) :
+                        violation: ViolationFingerprint,
+                        preTest: Option[STSScheduler.PreTestCallback]=None,
+                        postTest: Option[STSScheduler.PostTestCallback]=None,
+                        initializationRoutine: Option[() => Any]=None) :
       Tuple2[MinimizationStats, EventTrace] = {
 
-    // TODO(cs): factor this out to its own file, with nice interfaces.
-    // TODO(cs): this is a bit redundant with OneAtATimeRemoval + STSSched.
     println("Minimizing internals..")
     println("verified_mcs.original_externals: " + verified_mcs.original_externals)
-    val stats = new MinimizationStats("InternalMin", "STSSched")
-
-    // TODO(cs): minor optimization: don't try to prune external messages.
-    // MsgEvents we've tried ignoring so far. MultiSet to account for duplicate MsgEvent's
-    val triedIgnoring = new MultiSet[(String, String, MessageFingerprint)]
-
-    // Filter out the next MsgEvent, and return the resulting EventTrace.
-    // If we've tried filtering out all MsgEvents, return None.
-    def getNextTrace(trace: EventTrace): Option[EventTrace] = {
-      // Track what events we've kept so far in this iteration because we
-      // already tried ignoring them previously. MultiSet to account for
-      // duplicate MsgEvent's. TODO(cs): this may lead to some ambiguous cases.
-      val keysThisIteration = new MultiSet[(String, String, MessageFingerprint)]
-      // Whether we've found the event we're going to try ignoring next.
-      var foundIgnoredEvent = false
-
-      // Return whether we should keep this event
-      def checkDelivery(snd: String, rcv: String, msg: Any): Boolean = {
-        val key = (snd, rcv, schedulerConfig.messageFingerprinter.fingerprint(msg))
-        keysThisIteration += key
-        if (foundIgnoredEvent) {
-          // We already chose our event to ignore. Keep all other events.
-          return true
-        } else {
-          // Check if we should ignore or keep this one.
-          if (keysThisIteration.count(key) > triedIgnoring.count(key)) {
-            // We found something to ignore
-            println("Ignoring next: " + key)
-            foundIgnoredEvent = true
-            triedIgnoring += key
-            return false
-          } else {
-            // Keep this one; we already tried ignoring it, but it was
-            // not prunable.
-            return true
-          }
-        }
-      }
-
-      // We accomplish two tasks as we iterate through trace:
-      //   - Finding the next event we want to ignore
-      //   - Filtering (keeping) everything that we don't want to ignore
-      val modified = trace.events.flatMap {
-        case m @ UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
-          if (checkDelivery(snd, rcv, msg)) {
-            Some(m)
-          } else {
-            None
-          }
-        case t @ UniqueTimerDelivery(TimerDelivery(snd, rcv, msg), id) =>
-          if (checkDelivery(snd, rcv, msg)) {
-            Some(t)
-          } else {
-            None
-          }
-        case e =>
-          Some(e)
-      }
-      if (foundIgnoredEvent) {
-        val queue = new SynchronizedQueue[Event]
-        queue ++= modified
-        return Some(new EventTrace(queue,
-                                   verified_mcs.original_externals))
-      }
-      // We didn't find anything else to ignore, so we're done
-      return None
-    }
-
-    val origTrace = verified_mcs.filterCheckpointMessages.filterFailureDetectorMessages
-    var lastFailingTrace = origTrace
-    // TODO(cs): make this more efficient? Currently O(n^2) overall.
-    var nextTrace = getNextTrace(lastFailingTrace)
-
-    while (!nextTrace.isEmpty) {
-      testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
-                       violation, stats) match {
-        case Some(trace) =>
-          // Some other events may have been pruned by virtue of being absent. So
-          // we reassign lastFailingTrace, then pick then next trace based on
-          // it.
-          val filteredTrace = trace.filterCheckpointMessages.filterFailureDetectorMessages
-          val origSize = countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
-          val newSize = countMsgEvents(filteredTrace)
-          val diff = origSize - newSize
-          println("Ignoring worked! Pruned " + diff + "/" + origSize + " deliveries")
-          lastFailingTrace = filteredTrace
-          lastFailingTrace.setOriginalExternalEvents(mcs)
-        case None =>
-          // We didn't trigger the violation.
-          println("Ignoring didn't work. Trying next")
-          None
-      }
-      nextTrace = getNextTrace(lastFailingTrace)
-    }
-    val origSize = countMsgEvents(origTrace)
-    val newSize = countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
-    val diff = origSize - newSize
-    println("Pruned " + diff + "/" + origSize + " deliveries in " +
-            stats.total_replays + " replays")
-    return (stats, lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
+    val removalStrategy = new LeftToRightOneAtATime(verified_mcs, schedulerConfig.messageFingerprinter)
+    val minimizer = new STSSchedMinimizer(mcs, verified_mcs, violation,
+      removalStrategy, schedulerConfig, actorNameProps,
+      initializationRoutine=initializationRoutine,
+      preTest=preTest, postTest=postTest)
+    return minimizer.minimize()
   }
 
   // Returns a new MCS, with Send contents shrinked as much as possible.
@@ -610,6 +532,26 @@ object RunnerUtils {
     Instrumenter().scheduler = dummy_sched
     dummy_sched.populateActorSystem(deserializer.get_actors)
 
+    val origTrace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val provenanceTrace = deserializer.get_filtered_initial_trace()
+
+    deserializer = new ExperimentDeserializer(mcs_dir)
+
+    val mcsTrace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val intMinTrace = deserializer.get_events(
+          messageDeserializer, Instrumenter().actorSystem,
+          traceFile=ExperimentSerializer.minimizedInternalTrace)
+
+    printMinimizationStats(origTrace, provenanceTrace, mcsTrace, intMinTrace,
+      schedulerConfig.messageFingerprinter)
+
+    dummy_sched.shutdown
+  }
+
+  def printMinimizationStats(
+    origTrace: EventTrace, provenanceTrace: Option[Queue[Unique]],
+    mcsTrace: EventTrace, intMinTrace: EventTrace, messageFingerprinter: FingerprintFactory) {
+
     def get_deliveries(trace: EventTrace) : Seq[MsgEvent] = {
       // Make sure not to count checkpoint and failure detector messages.
       // Also filter out Timers from other messages, by ensuring that the
@@ -617,7 +559,7 @@ object RunnerUtils {
       trace.filterFailureDetectorMessages.
             filterCheckpointMessages.flatMap {
         case m @ MsgEvent(s, r, msg) =>
-          val fingerprint = schedulerConfig.messageFingerprinter.fingerprint(msg)
+          val fingerprint = messageFingerprinter.fingerprint(msg)
           if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
             Some(MsgEvent("Timer", r, fingerprint))
           } else {
@@ -629,7 +571,12 @@ object RunnerUtils {
     }
     def count_externals(msgEvents: Seq[MsgEvent]): Int = {
       msgEvents flatMap {
-        case m @ MsgEvent("deadLetters", _, _) => Some(m)
+        case m @ MsgEvent(_, _, _) =>
+          if (EventTypes.isExternal(m)) {
+            Some(m)
+          } else {
+            None
+          }
         case _ => None
       } length
     }
@@ -640,55 +587,63 @@ object RunnerUtils {
       } length
     }
 
-    val orig_deliveries = get_deliveries(deserializer.get_events(messageDeserializer, Instrumenter().actorSystem))
+    val orig_deliveries = get_deliveries(origTrace)
     val orig_externals = count_externals(orig_deliveries)
     val orig_timers = count_timers(orig_deliveries)
 
     // Assumes get_filtered_initial_trace only contains Unique(MsgEvent)s
-    val provenance_deliveries = deserializer.get_filtered_initial_trace().get.flatMap {
-      case Unique(m @ MsgEvent(s,r,msg), id) =>
-        if (MessageTypes.fromFailureDetector(msg) ||
-            MessageTypes.fromCheckpointCollector(msg)) {
-          None
-        } else if (id == 0) {
-          // Filter out root event
-          None
-        } else {
-          val fingerprint = schedulerConfig.messageFingerprinter.fingerprint(msg)
-          if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
-            Some(MsgEvent("Timer", r, fingerprint))
-          } else {
-            Some(MsgEvent(s, r, fingerprint))
-          }
+    val provenance_deliveries = provenanceTrace match {
+      case Some(trace) =>
+        trace.flatMap {
+          case Unique(m @ MsgEvent(s,r,msg), id) =>
+            if (MessageTypes.fromFailureDetector(msg) ||
+                MessageTypes.fromCheckpointCollector(msg)) {
+              None
+            } else if (id == 0) {
+              // Filter out root event
+              None
+            } else {
+              val fingerprint = messageFingerprinter.fingerprint(msg)
+              if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
+                Some(MsgEvent("Timer", r, fingerprint))
+              } else {
+                Some(MsgEvent(s, r, fingerprint))
+              }
+            }
+          case e => throw new UnsupportedOperationException("Non-MsgEvent:" + e)
         }
-      case e => throw new UnsupportedOperationException("Non-MsgEvent:" + e)
+      case None =>
+        Seq.empty
     }
     val provenance_externals = count_externals(provenance_deliveries)
     val provenance_timers = count_timers(provenance_deliveries)
 
-    deserializer = new ExperimentDeserializer(mcs_dir)
-
     // Should be same actors, so no need to populateActorSystem
-    val mcs_deliveries = get_deliveries(deserializer.get_events(messageDeserializer, Instrumenter().actorSystem))
+    val mcs_deliveries = get_deliveries(mcsTrace)
     val mcs_externals = count_externals(mcs_deliveries)
     val mcs_timers = count_timers(mcs_deliveries)
 
-    val intmin_deliveries = get_deliveries(deserializer.get_events(
-          messageDeserializer, Instrumenter().actorSystem,
-          traceFile=ExperimentSerializer.minimizedInternalTrace))
+    val intmin_deliveries = get_deliveries(intMinTrace)
     val intmin_externals = count_externals(intmin_deliveries)
     val intmin_timers = count_timers(intmin_deliveries)
 
-    dummy_sched.shutdown
-
     println("Original message deliveries: " + orig_deliveries.size +
             " ("+orig_externals+" externals, "+orig_timers+" timers)")
-    println("Removed by provenance: " + (orig_deliveries.size - provenance_deliveries.size) +
-            " ("+(orig_externals - provenance_externals)+" externals, "+
-            (orig_timers - provenance_timers)+" timers)")
-    println("Removed by DDMin: " + (provenance_deliveries.size - mcs_deliveries.size) +
-            " ("+(provenance_externals - mcs_externals)+" externals, "+
-            (provenance_timers - mcs_timers)+" timers)")
+    if (!provenance_deliveries.isEmpty) {
+      println("Removed by provenance: " + (orig_deliveries.size - provenance_deliveries.size) +
+              " ("+(orig_externals - provenance_externals)+" externals, "+
+              (orig_timers - provenance_timers)+" timers)")
+    }
+    val ddminPriorDeliveries = if (!provenance_deliveries.isEmpty) provenance_deliveries
+                               else orig_deliveries
+    val ddminPriorExternals = if (!provenance_deliveries.isEmpty) provenance_externals
+                              else orig_externals
+    val ddminPriorTimers = if (!provenance_deliveries.isEmpty) provenance_timers
+                              else orig_timers
+
+    println("Removed by DDMin: " + (ddminPriorDeliveries.size - mcs_deliveries.size) +
+            " ("+(ddminPriorExternals - mcs_externals)+" externals, "+
+            (ddminPriorTimers - mcs_timers)+" timers)")
     println("Removed by internal minimization: " + (mcs_deliveries.size - intmin_deliveries.size) +
             " ("+(mcs_externals - intmin_externals)+" externals, "+
             (mcs_timers - intmin_timers)+" timers)")
@@ -696,9 +651,8 @@ object RunnerUtils {
             " ("+intmin_externals + " externals, "+
             intmin_timers + " timers)")
     println("Final messages delivered:") // w/o fingerints
-    deserializer.get_events(
-          messageDeserializer, Instrumenter().actorSystem,
-          traceFile=ExperimentSerializer.minimizedInternalTrace) foreach {
+    // TODO(cs): annotate which events are unignorable.
+    intMinTrace foreach {
       case m: MsgEvent => println(m)
       case t: TimerDelivery => println(t)
       case _ =>

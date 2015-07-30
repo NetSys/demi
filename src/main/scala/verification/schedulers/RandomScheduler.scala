@@ -11,12 +11,12 @@ import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Set
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.HashSet
-import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
 import scala.collection.generic.Growable
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.ArrayList
 import java.util.Random
 
 import org.slf4j.LoggerFactory,
@@ -111,6 +111,10 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   // if a timer was retriggered while it was also contained in
   // justScheduledTimers, put it here rather than pendingEvents.
   val timersToResend = new SynchronizedQueue[(String, Any)]
+
+  // if a code block was retriggered while it was also contained in
+  // justScheduledTimers, put it here rather than pendingEvents.
+  val codeBlocksToResend = new SynchronizedQueue[(Cell, Envelope)]
 
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
@@ -399,6 +403,9 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         // TODO(cs): I don't know if this screws up depGraph...
         timersToResend foreach { case (rcv, timer) => handle_timer(rcv, timer) }
         timersToResend.clear
+        codeBlocksToResend foreach { case (cell, env) =>
+          handle_enqueue_code_block(cell, env) }
+        codeBlocksToResend.clear
         justScheduledTimers.clear
       }
     }
@@ -490,13 +497,13 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     test_invariant = invariant
   }
 
-  def notify_timer_cancel(rcv: ActorRef, msg: Any): Unit = {
+  def notify_timer_cancel(rcv: String, msg: Any): Unit = {
     if (handle_timer_cancel(rcv, msg)) {
       return
     }
     // Awkward, we need to walk through the entire hashset to find what we're
     // looking for.
-    pendingEvents.remove("deadLetters",rcv.path.name, msg)
+    pendingEvents.remove("deadLetters",rcv, msg)
   }
 
   override def actorTerminated(name: String): Seq[(String, Any)] = {
@@ -526,6 +533,16 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     advanceTrace
   }
 
+  override def enqueue_code_block(cell: Cell, envelope: Envelope) {
+    if (justScheduledTimers contains ((cell.self.path.name, envelope.message))) {
+      // We just scheduled this code block, don't yet put it in pendingEvents!
+      // This is to avoid an infinite loop of scheduling timers.
+      codeBlocksToResend += ((cell, envelope))
+      return
+    }
+    handle_enqueue_code_block(cell, envelope)
+  }
+
   override def reset_all_state () {
     // TODO(cs): also reset Instrumenter()'s state?
     reset_state(true)
@@ -534,6 +551,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     super.reset_all_state
     justScheduledTimers.clear()
     timersToResend.clear()
+    codeBlocksToResend.clear()
     pendingEvents.clear()
     pendingSystemMessages = new Queue[Uniq[(Cell, Envelope)]]
     lookingFor = None
@@ -627,22 +645,16 @@ class FullyRandom extends RandomizationStrategy {
   }
 }
 
-// For each <src, dst> pair, maintain FIFO order. Other than that, fully
-// random.
-// TODO(cs): very strange behavior sometimes: NullPointerExceptions in
-// removeAll, becuase srcDsts apparently contains null tuples. I am baffled as
-// to why it happens, not even synchronized methods everywhere helps it. For
-// now, keep the synchronized methods in...
 class SrcDstFIFO extends RandomizationStrategy {
-  private var srcDsts = new ArrayBuffer[(String, String)]
+  private var srcDsts = new ArrayList[(String, String)]
   private val rand = new Random(System.currentTimeMillis())
   private val srcDstToMessages = new HashMap[(String, String),
                                              Queue[(Uniq[(Cell,Envelope)],Unique)]]
   private val allMessages = new MultiSet[(Uniq[(Cell,Envelope)],Unique)]
 
   def getRandomSrcDst(): ((String, String), Int) = synchronized {
-    val idx = rand.nextInt(srcDsts.length)
-    return (srcDsts(idx), idx)
+    val idx = rand.nextInt(srcDsts.size)
+    return (srcDsts.get(idx), idx)
   }
 
   def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] = synchronized {
@@ -657,7 +669,7 @@ class SrcDstFIFO extends RandomizationStrategy {
     if (!(srcDstToMessages contains ((src, dst)))) {
       // If there is no queue, create one
       assert(((src, dst)) != null)
-      srcDsts += ((src, dst))
+      srcDsts.add((src, dst))
       srcDstToMessages((src, dst)) = new Queue[(Uniq[(Cell,Envelope)],Unique)]
     }
 
@@ -709,20 +721,18 @@ class SrcDstFIFO extends RandomizationStrategy {
 
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = synchronized {
     val result = new ListBuffer[(Uniq[(Cell,Envelope)],Unique)]
-    srcDsts.toSeq.foreach {
-      case (src, dst) =>
-        if (dst == rcv) {
-          val queue = srcDstToMessages((src, dst))
-          for (e <- queue) {
-            allMessages -= e
-            result += e
-          }
-          srcDstToMessages -= ((src,rcv))
-          srcDsts.remove(srcDsts.indexOf(((src,rcv))))
+    val itr = srcDsts.iterator
+    while (itr.hasNext) {
+      val (src, dst) = itr.next
+      if (dst == rcv) {
+        val queue = srcDstToMessages((src, dst))
+        for (e <- queue) {
+          allMessages -= e
+          result += e
         }
-      case null =>
-        // WTF... How did we even get here...
-        assert(!(srcDstToMessages contains null))
+        srcDstToMessages -= ((src,rcv))
+        itr.remove
+      }
     }
     return result
   }

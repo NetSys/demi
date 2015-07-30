@@ -43,6 +43,11 @@ import akka.cluster.VectorClock
 import scala.util.parsing.json.JSONObject
 import java.util.Random
 
+import java.io.StringWriter
+import java.io.PrintWriter
+
+
+
 // Provides O(1) lookup, but allows multiple distinct elements
 class MultiSet[E] extends Set[E] {
   var m = new HashMap[E, List[E]]
@@ -192,6 +197,12 @@ class VCLogger () {
 
   def reset() {
     actor2vc = new HashMap[String, VectorClock]
+  }
+}
+
+class ScheduleFunctionReceiver extends Actor {
+  def receive = {
+    case e => throw new UnsupportedOperationException("")
   }
 }
 
@@ -398,6 +409,13 @@ object Util {
   
   // Global logger instance.
   val logger = new VCLogger()
+
+  def getStackTrace (t: Throwable): String = {
+      val sw = new StringWriter()
+      t.printStackTrace(new PrintWriter(sw));
+      return sw.toString()
+  }
+
 
   /**
    * Find a pending message (of type E) that isn't destined for a

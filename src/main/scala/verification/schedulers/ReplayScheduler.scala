@@ -141,9 +141,8 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
             event_orchestrator.trigger_unpartition(a,b)
-          case MsgSend (sender, receiver, message) =>
-            // sender == "deadLetters" means the message is external.
-            if (sender == "deadLetters") {
+          case m @ MsgSend (sender, receiver, message) =>
+            if (EventTypes.isExternal(m)) {
               enqueue_message(None, receiver, message)
             }
           case t: TimerDelivery =>
@@ -345,11 +344,10 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
     }
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any): Unit = {
-    if (handle_timer_cancel(receiver, msg)) {
+  def notify_timer_cancel(rcv: String, msg: Any): Unit = {
+    if (handle_timer_cancel(rcv, msg)) {
       return
     }
-    val rcv = receiver.path.name
     val key = ("deadLetters", rcv, messageFingerprinter.fingerprint(msg))
     pendingEvents.get(key) match {
       case Some(queue) =>

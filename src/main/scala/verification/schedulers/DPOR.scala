@@ -344,7 +344,7 @@ class DPOR extends Scheduler {
     
     instrumenter().tellEnqueue.await()
     
-    schedule_new_message(instrumenter().blockedActors) match {
+    schedule_new_message(instrumenter().blockedActors.keySet) match {
       case Some((cell, env)) =>
         instrumenter().dispatch_new_message(cell, env)
       case None => 
@@ -699,7 +699,7 @@ class DPOR extends Scheduler {
     messagesToSend += ((actor, msg))
   }
 
-  def notify_timer_cancel(receiver: ActorRef, msg: Any) {
+  def notify_timer_cancel(receiver: String, msg: Any) {
     throw new RuntimeException("NYI!") // TODO(cs): do what DPORwHeuristics does..
   }
 

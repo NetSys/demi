@@ -65,13 +65,20 @@ trait Scheduler {
   // Used to feed messages from the external world into actor systems.
 
    // Called when timer is cancelled
-  def notify_timer_cancel(receiver: ActorRef, msg: Any)
+  def notify_timer_cancel(receiver: String, msg: Any)
   
   // Interface for (safely) sending external messages
   def enqueue_message(sender: Option[ActorRef], receiver: String, msg: Any)
 
   // Interface for (safely) sending timers (akka.scheduler messages)
   def enqueue_timer(receiver: String, msg: Any) = enqueue_message(None, receiver, msg)
+
+  // Interface for notifying the scheduler about a code block that has just
+  // been scheduled by the application, through akka.scheduler.schedule().
+  // cell and envelope are fake, used as placeholders.
+  def enqueue_code_block(cell: Cell, envelope: Envelope) {
+    event_produced(cell, envelope)
+  }
 
   // Shut down the actor system.
   def shutdown()
