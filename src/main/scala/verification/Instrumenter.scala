@@ -514,6 +514,14 @@ class Instrumenter {
         cell.sender.path.name, 
         cell.self.path.name,
         msg)) return
+
+    if (cell.system != _actorSystem) {
+      // Somehow, bizzarely, afterMessageReceive can be invoked for actors
+      // from prior actor systems, after they have been shutdown. This obviously throws a
+      // huge wrench into our current dispatching loop.
+      println("cell.system != _actorSystem")
+      return
+    }
    
     scheduler.before_receive(cell, msg)
     currentActor = cell.self.path.name
@@ -826,6 +834,14 @@ class Instrumenter {
     // If this is a system message just let it through.
     if (scheduler.isSystemMessage(snd, rcv, envelope.message)) {
       return true
+    }
+
+    if (cell.system != _actorSystem) {
+      // Somehow, bizzarely, afterMessageReceive can be invoked for actors
+      // from prior actor systems, after they have been shutdown. This obviously throws a
+      // huge wrench into our current dispatching loop.
+      println("cell.system != _actorSystem")
+      return false
     }
 
     // At this point, this should only ever be an internal thread.
