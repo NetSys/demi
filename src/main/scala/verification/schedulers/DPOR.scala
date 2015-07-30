@@ -344,7 +344,7 @@ class DPOR extends Scheduler {
     
     instrumenter().tellEnqueue.await()
     
-    schedule_new_message(instrumenter().blockedActors) match {
+    schedule_new_message(instrumenter().blockedActors.keySet) match {
       case Some((cell, env)) =>
         instrumenter().dispatch_new_message(cell, env)
       case None => 

@@ -17,6 +17,7 @@ import scala.collection.JavaConversions._
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
+
 import scala.util.control.Breaks._
 
 import org.slf4j.LoggerFactory,
@@ -222,7 +223,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // Wait until the initialization thread is done. Assumes that it
     // terminates!
     if (initThread != null) {
-      println("Joining on initialization thread")
+      println("Joining on initialization thread " + Thread.currentThread.getName)
       initThread.join
     }
     reset_all_state
@@ -660,7 +661,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       advanceReplay()
       return
     }
-    assert(started.get)
+    assert(started.get, "!started.get: " + Thread.currentThread.getName)
     started.set(false)
 
     if (blockedOnCheckpoint.get) {

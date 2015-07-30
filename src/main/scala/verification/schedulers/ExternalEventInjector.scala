@@ -169,11 +169,19 @@ trait ExternalEventInjector[E] {
    * to show up.
    */
   def beginExternalAtomicBlock(taskId: Long) {
+    if (Instrumenter()._passThrough.get()) {
+      return
+    }
+
     // Place the marker into the current place in messagesToSend; any messages
     // already enqueued before this are not part of the
     // beginExternalAtomicBlock
     beganExternalAtomicBlocks.synchronized {
-      beganExternalAtomicBlocks += taskId
+      endedExternalAtomicBlocks.synchronized {
+        assert(!(beganExternalAtomicBlocks contains taskId) ||
+                (endedExternalAtomicBlocks contains taskId))
+        beganExternalAtomicBlocks += taskId
+      }
     }
     messagesToSend.synchronized {
       messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
@@ -189,14 +197,21 @@ trait ExternalEventInjector[E] {
    * Called by external threads.
    */
   def endExternalAtomicBlock(taskId: Long) {
+    if (Instrumenter()._passThrough.get()) {
+      return
+    }
+
     // Place the marker into the current place in messagesToSend; any messages
     // already enqueued before this are part of the atomic block.
     messagesToSend.synchronized {
       messagesToSend += ((None, null, EndExternalAtomicBlock(taskId)))
     }
     // Signal that the main thread should invoke send_external_messages
-    endedExternalAtomicBlocks.synchronized {
-      endedExternalAtomicBlocks.notifyAll()
+    beganExternalAtomicBlocks.synchronized {
+      endedExternalAtomicBlocks.synchronized {
+        assert(beganExternalAtomicBlocks contains taskId)
+        endedExternalAtomicBlocks.notifyAll()
+      }
     }
     if (pendingExternalAtomicBlocks.decrementAndGet() == 0) {
       var restartDispatch = false
@@ -277,7 +292,7 @@ trait ExternalEventInjector[E] {
     }
 
     try {
-      assert(started.get)
+      assert(started.get, "!started.get:" + Thread.currentThread.getName)
 
       // Send all pending fd responses
       if (fd != null) {

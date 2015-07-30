@@ -18,6 +18,7 @@ import akka.dispatch.Mailbox
 import akka.cluster.VectorClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.Semaphore
 import java.io.Closeable
 
@@ -95,7 +96,7 @@ class Instrumenter {
   // Track the executing context (i.e., source of events)
   var currentActor = ""
   var previousActor = ""
-  var inActor = false
+  var inActor = new AtomicBoolean(false)
   var counter = 0   
   // Whether we're currently dispatching.
   var started = new AtomicBoolean(false)
@@ -109,7 +110,8 @@ class Instrumenter {
   // tracks which actors are currently blocked.
   // For a detailed design doc see:
   // https://docs.google.com/document/d/1RnCDOQFLa2prliF5y5VDNcdGDmEeOlgUcXSNk7abpSo
-  var blockedActors = Set[String]()
+  // { parent -> value of currentPendingDispatch at the time the parent became blocked }
+  var blockedActors = Map[String,(String,Any)]()
   // Mapping from temp actors (used for `ask`) to the name of the actor that created them.
   // For a detailed design doc see:
   // https://docs.google.com/document/d/1_LUceHvQoamlBtNNbqA4CxBH-zvUKlZhnSjLwTc16q4
@@ -140,6 +142,10 @@ class Instrumenter {
   var scheduleFunctionRef : ActorRef = null
   // Messages sent within a scheduled code block.
   var codeBlockSends = new MultiSet[(String,Any)]
+  // Which threads have been spawned to execute scheduled code blocks
+  val codeBlockThreads = new HashSet[Thread]
+  // For checking asserts
+  var currentPendingDispatch = new AtomicReference[Option[(String,Any)]](None)
 
   val logger = LoggerFactory.getLogger("Instrumenter")
 
@@ -367,7 +373,7 @@ class Instrumenter {
       return
     }
 
-    if (actor.toString.contains("/system/")) {
+    if (actor.toString.contains("/system/") || name == "/") {
       return
     }
    
@@ -410,11 +416,21 @@ class Instrumenter {
     allowedEvents.clear()
     dispatchers.clear()
     Util.logger.reset()
-    blockedActors = Set[String]()
+    blockedActors = Map[String, (String, Any)]()
     tempToParent = new HashMap[ActorPath, String]
     askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
     sendingKnownExternalMessages = new AtomicBoolean(false)
     stopDispatch = new AtomicBoolean(false)
+    interruptAllScheduleBlocks
+  }
+
+  def interruptAllScheduleBlocks() {
+    codeBlockThreads.synchronized {
+      codeBlockThreads.foreach {
+        case t => t.interrupt
+      }
+      codeBlockThreads.clear
+    }
   }
 
   // Restart the system:
@@ -501,7 +517,8 @@ class Instrumenter {
    
     scheduler.before_receive(cell, msg)
     currentActor = cell.self.path.name
-    inActor = true
+    assert(!inActor.get)
+    inActor.set(true)
   }
   
   /**
@@ -522,9 +539,14 @@ class Instrumenter {
     }
 
     // Mark the current actor as blocked.
-    blockedActors = blockedActors + currentActor
+    val oldPendingDispatch = currentPendingDispatch.getAndSet(None)
+    assert(!oldPendingDispatch.isEmpty)
+    blockedActors = blockedActors + (currentActor -> oldPendingDispatch.get)
 
-    scheduler.schedule_new_message(blockedActors) match {
+    assert(inActor.get)
+    inActor.set(false)
+
+    scheduler.schedule_new_message(blockedActors.keySet) match {
       // Note that dispatch_new_message is a non-blocking call; it hands off
       // the message to a new thread and returns immediately.
       case Some((new_cell, envelope)) =>
@@ -550,6 +572,14 @@ class Instrumenter {
       return
     }
 
+    if (cell.system != _actorSystem) {
+      // Somehow, bizzarely, afterMessageReceive can be invoked for actors
+      // from prior actor systems, after they have been shutdown. This obviously throws a
+      // huge wrench into our current dispatching loop.
+      println("cell.system != _actorSystem")
+      return
+    }
+
     if (scheduler.isSystemMessage(
         cell.sender.path.name,
         cell.self.path.name,
@@ -565,7 +595,12 @@ class Instrumenter {
 
     logger.trace("done tellEnqueue.await()")
 
-    inActor = false
+    val oldPendingDispatch = currentPendingDispatch.getAndSet(None)
+    assert(!oldPendingDispatch.isEmpty)
+    assert(oldPendingDispatch.get == (cell.self.path.name, msg),
+      oldPendingDispatch.get + " " + (cell.self.path.name, msg))
+    assert(inActor.get, "!inActor.get: " + Thread.currentThread.getName + " " + currentActor)
+    inActor.set(false)
     previousActor = currentActor
     currentActor = ""
 
@@ -580,7 +615,7 @@ class Instrumenter {
 
     scheduler.after_receive(cell)
 
-    scheduler.schedule_new_message(blockedActors) match {
+    scheduler.schedule_new_message(blockedActors.keySet) match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name
         if (blockedActors contains dst) {
@@ -633,7 +668,13 @@ class Instrumenter {
       // this answer has been delivered.
       dispatchAfterAskAnswer.set(true)
     } else {
+      // We're about to wake up the parent who was previously blocked. Reset
+      // currentPendingDispatch to what was previously pending when the parent
+      // became blocked.
+      val oldPendingDispatch = currentPendingDispatch.getAndSet(
+        Some(blockedActors.get(tempToParent(temp.path)).get))
       blockedActors = blockedActors - tempToParent(temp.path)
+      inActor.set(true)
     }
     currentActor = tempToParent(temp.path)
     tempToParent -= temp.path
@@ -643,8 +684,10 @@ class Instrumenter {
   def afterReceiveAskAnswer(temp: PromiseActorRef, msg: Any, sender: ActorRef) = {
     if (dispatchAfterAskAnswer.get) {
       println("Dispatching after receiveAskAnswer")
+      inActor.set(false)
+      currentPendingDispatch.set(None)
       dispatchAfterAskAnswer.set(false)
-      scheduler.schedule_new_message(blockedActors) match {
+      scheduler.schedule_new_message(blockedActors.keySet) match {
         case Some((new_cell, envelope)) =>
           val dst = new_cell.self.path.name
           if (blockedActors contains dst) {
@@ -682,7 +725,7 @@ class Instrumenter {
       // `Await.result`
       // TODO(cs): shutdown this thread if it hasn't terminated, and the actor
       // system is also shutting down.
-      new Thread(new Runnable {
+      val t = new Thread(new Runnable {
         def run() = {
           // If the timer is repeating, wait until the block is completed until
           // we retrigger it.
@@ -698,11 +741,17 @@ class Instrumenter {
             }
           }
         }
-      }, msg.asInstanceOf[ScheduleBlock].toString).start()
+      }, msg.asInstanceOf[ScheduleBlock].toString)
+
+      codeBlockThreads.synchronized {
+        codeBlockThreads += t
+      }
+      t.start()
 
       // Keep the scheduling loop going -- need to explicitly call
       // schedule_new_message, since afterMessageReceive will not be invoked.
-      scheduler.schedule_new_message(blockedActors) match {
+      println("Dispatching after kicking off schedule block!")
+      scheduler.schedule_new_message(blockedActors.keySet) match {
         case Some((new_cell, envelope)) =>
           val dst = new_cell.self.path.name
           if (blockedActors contains dst) {
@@ -719,6 +768,8 @@ class Instrumenter {
     }
 
     Util.logger.mergeVectorClocks(snd, rcv)
+
+    currentPendingDispatch.set(Some((rcv, msg)))
 
     // We now know that cell is a real ActorCell, not a FakeCell.
     val cell = _cell.asInstanceOf[ActorCell]
@@ -819,7 +870,8 @@ class Instrumenter {
   def start_dispatch() {
     assert(!started.get)
     started.set(true)
-    scheduler.schedule_new_message(blockedActors) match {
+    println("start_dispatch. Dispatching!")
+    scheduler.schedule_new_message(blockedActors.keySet) match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name
         if (blockedActors contains dst) {
