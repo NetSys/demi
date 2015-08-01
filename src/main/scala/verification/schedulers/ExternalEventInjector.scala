@@ -512,7 +512,7 @@ trait ExternalEventInjector[E] {
       enqueuedExternalMessages -= msg
     }
     assert(started.get)
-    event_orchestrator.events += ChangeContext(rcv)
+    //event_orchestrator.events += ChangeContext(rcv)
   }
 
   def handle_quiescence(): Unit = {
@@ -567,11 +567,11 @@ trait ExternalEventInjector[E] {
   }
 
   def handle_before_receive (cell: Cell) : Unit = {
-    event_orchestrator.events += ChangeContext(cell.self.path.name)
+    //event_orchestrator.events += ChangeContext(cell.self.path.name)
   }
 
   def handle_after_receive (cell: Cell) : Unit = {
-    event_orchestrator.events += ChangeContext("scheduler")
+    //event_orchestrator.events += ChangeContext("scheduler")
   }
 
   // Return true if we found the timer in our messagesToSend
