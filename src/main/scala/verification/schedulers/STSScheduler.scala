@@ -171,6 +171,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // We use the original trace as our reference point as we step through the
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
+                                  filterCheckpointMessages.
                                   subsequenceIntersection(subseq, filterKnownAbsents=filterKnownAbsents)
     val updatedEvents = filtered.recomputeExternalMsgSends(subseq)
     event_orchestrator.set_trace(updatedEvents)
