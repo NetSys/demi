@@ -121,6 +121,7 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
         println("Violation?: " + violation)
       case None =>
     }
+    event_orchestrator.events.setOriginalExternalEvents(_trace.original_externals)
     return event_orchestrator.events
   }
 

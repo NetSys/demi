@@ -143,7 +143,22 @@ object RunnerUtils {
                                         messageDeserializer, replayer,
                                         traceFile=traceFile)
 
+    return RunnerUtils.replayExperiment(trace, schedulerConfig,
+      Seq.empty, _replayer=Some(replayer))
+  }
+
+  def replayExperiment(trace: EventTrace,
+                       schedulerConfig: SchedulerConfig,
+                       actorNamePropPairs:Seq[Tuple2[Props, String]],
+                       _replayer:Option[ReplayScheduler]) : EventTrace = {
+    val replayer = _replayer match {
+      case Some(replayer) => replayer
+      case None =>
+        new ReplayScheduler(schedulerConfig, false)
+    }
+    replayer.setActorNamePropPairs(actorNamePropPairs)
     println("Trying replay:")
+    Instrumenter().scheduler = replayer
     val events = replayer.replay(trace)
     println("Done with replay")
     replayer.shutdown
