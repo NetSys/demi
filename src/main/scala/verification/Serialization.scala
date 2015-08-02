@@ -67,6 +67,8 @@ object ExperimentSerializer {
   val filteredTrace = "/filteredTrace.bin"
   // trace that have had internal deliveries minimized.
   val minimizedInternalTrace = "/minimizedInternalTrace.bin"
+  // trace that was manipulated by hand
+  val manualTrace = "/manualTrace.bin"
 
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
@@ -251,6 +253,14 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     val asArray : Array[Event] = sanitized.toArray
     val sanitizedBuf = JavaSerialization.serialize(asArray)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.minimizedInternalTrace,
+                                  sanitizedBuf)
+  }
+
+  def recordHandCraftedTrace(output_dir: String, minimized: EventTrace) {
+    val sanitized = sanitize_trace(minimized.events)
+    val asArray : Array[Event] = sanitized.toArray
+    val sanitizedBuf = JavaSerialization.serialize(asArray)
+    JavaSerialization.writeToFile(output_dir + ExperimentSerializer.manualTrace,
                                   sanitizedBuf)
   }
 }
