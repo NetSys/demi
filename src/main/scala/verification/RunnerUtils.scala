@@ -3,6 +3,7 @@ package akka.dispatch.verification
 import scala.collection.mutable.Queue
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.HashMap
 
 import akka.actor.Props
 
@@ -666,11 +667,81 @@ object RunnerUtils {
             " ("+intmin_externals + " externals, "+
             intmin_timers + " timers)")
     println("Final messages delivered:") // w/o fingerints
+
     // TODO(cs): annotate which events are unignorable.
-    intMinTrace foreach {
+    RunnerUtils.printDeliveries(intMinTrace)
+  }
+
+  def printDeliveries(trace: EventTrace) {
+    trace foreach {
       case m: MsgEvent => println(m)
       case t: TimerDelivery => println(t)
       case _ =>
     }
+  }
+
+  /**
+   * Make it easier to construct specifically delivery orders manually.
+   *
+   * Given:
+   *  - An event trace to be twiddled with
+   *  - A sequence of UniqueMsgSends.ids (the id value from the UniqueMsgSends
+   *     contained in event trace).
+   *
+   * Return: a new event trace that has UniqueMsgEvents and
+   * UniqueTimerDeliveries arranged in the order
+   * specified by the given sequences of ids
+   */
+  // TODO(cs): allow caller to specify locations of external events. For now
+  // just put them all at the front.
+  // TODO(cs): use DepGraph ids rather than Unique ids, which are more finiky
+  def reorderDeliveries(trace: EventTrace, ids: Seq[Int]): EventTrace = {
+    val result = new SynchronizedQueue[Event]
+
+    val id2send = new HashMap[Int, UniqueMsgSend]
+    trace.events.foreach {
+      case u @ UniqueMsgSend(MsgSend(snd, rcv, msg), id) =>
+        if (snd == "Timer") {
+          id2send(id) = UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id)
+        } else {
+          id2send(id) = u
+        }
+      case _ =>
+    }
+
+    val id2delivery = new HashMap[Int, Event]
+    trace.events.foreach {
+      case u @ UniqueMsgEvent(m, id) =>
+        id2delivery(id) = u
+      case u @ UniqueTimerDelivery(t, id) =>
+        id2delivery(id) = u
+      case _ =>
+    }
+
+    // Put all SpawnEvents, external events at the beginning of the trace
+    trace.events.foreach {
+      case u @ UniqueMsgSend(m, id) =>
+        if (EventTypes.isExternal(u)) {
+          result += u
+        }
+      case u @ UniqueMsgEvent(m, id) =>
+      case u @ UniqueTimerDelivery(t, id) =>
+      case e => result += e
+    }
+
+    // Now append all the specified deliveries
+    ids.foreach {
+      case id =>
+        if (id2delivery contains id) {
+          result += id2delivery(id)
+        } else {
+          // fabricate a UniqueMsgEvent
+          val msgSend = id2send(id).m
+          result += UniqueMsgEvent(MsgEvent(
+            msgSend.sender, msgSend.receiver, msgSend.msg), id)
+        }
+    }
+
+    return new EventTrace(result, trace.original_externals)
   }
 }
