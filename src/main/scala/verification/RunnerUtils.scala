@@ -705,7 +705,7 @@ object RunnerUtils {
         }
       case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
         if (snd == "deadLetters") {
-          logger.log(rcv, "Received timer: " + msg)
+          logger.log(rcv, "Received external message: " + msg)
         } else {
           logger.mergeVectorClocks(snd,rcv)
           logger.log(rcv, "Received message from " + snd + ": " + msg)
