@@ -11,6 +11,10 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
+import java.io.PrintWriter
+import java.io.File
+
+
 // Example minimization pipeline:
 //     fuzz()
 //  -> minimizeSendContents
@@ -678,6 +682,40 @@ object RunnerUtils {
       case t: TimerDelivery => println(t)
       case _ =>
     }
+  }
+
+  // Generate a log that can be fed into ShiViz!
+  def visualizeDeliveries(trace: EventTrace, outputFile: String) {
+    val writer = new PrintWriter(new File(outputFile))
+    val logger = new VCLogger(writer)
+
+    val id2delivery = new HashMap[Int, Event]
+    trace.events.foreach {
+      case u @ UniqueMsgEvent(m, id) =>
+        id2delivery(id) = u
+      case _ =>
+    }
+
+    writer.println("(?<clock>.*\\}) (?<host>[^:]*): (?<event>.*)")
+    writer.println("")
+    trace.events.foreach {
+      case UniqueMsgSend(MsgSend(snd,rcv,msg), id) =>
+        if ((id2delivery contains id) && snd != "deadLetters" && snd != "Timer") {
+          logger.log(snd, "Sending to " + rcv + ": " + msg)
+        }
+      case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
+        if (snd == "deadLetters") {
+          logger.log(rcv, "Received timer: " + msg)
+        } else {
+          logger.mergeVectorClocks(snd,rcv)
+          logger.log(rcv, "Received message from " + snd + ": " + msg)
+        }
+      case UniqueTimerDelivery(TimerDelivery(snd,rcv,fingerprint), id) =>
+        logger.log(rcv, "Received timer: " + fingerprint)
+      case _ =>
+    }
+    writer.close
+    println("ShiViz input at: " + outputFile)
   }
 
   /**

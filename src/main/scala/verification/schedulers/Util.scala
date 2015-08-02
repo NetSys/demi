@@ -168,7 +168,7 @@ class RandomizedHashSet[E] extends Set[E] {
 
 // Used by applications to log messages to the console. Transparently attaches vector
 // clocks to log messages.
-class VCLogger () {
+class VCLogger (writer: PrintWriter=new PrintWriter(System.out)) {
   var actor2vc = new HashMap[String, VectorClock]
 
   // TODO(cs): is there a way to specify default values for Maps in scala?
@@ -184,7 +184,8 @@ class VCLogger () {
     // Increment the clock.
     vc = vc :+ src
     // Then print it, along with the message.
-    println(JSONObject(vc.versions).toString() + " " + src + ": " + msg)
+    writer.println(JSONObject(vc.versions).toString() + " " + src + ": " + msg)
+    writer.flush
     actor2vc(src) = vc
   }
 
