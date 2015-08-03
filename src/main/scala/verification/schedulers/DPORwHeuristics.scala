@@ -37,6 +37,9 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
+// TODO(cs): remove FailureDetector support. Not used.
+// TODO(cs): don't assume enqueue_message is just for timers.
+
 object DPORwHeuristics {
   // Tuple is:
   // (depth where race occurs, (racingEvent1, racingEvent2), postfix beyond
@@ -67,12 +70,13 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   val logger = LoggerFactory.getLogger("DPOR")
 
-  val messageFingerprinter = schedulerConfig.messageFingerprinter
+  def getName: String = "DPORwHeuristics"
 
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
   type Trace = Queue[Unique]
 
+  // N.B. this need to be near the top of the class definition.
   private[this] var _root = Unique(MsgEvent("null", "null", null), 0)
   def getRootEvent() : Unique = {
     require(_root != null)
@@ -128,6 +132,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   val backTrack = new PriorityQueue[DPORwHeuristics.BacktrackKey]()
   var exploredTracker = ExploredTacker()
 
+  private[this] var currentRoot = getRootEvent
+
   val currentTrace = new Trace
   val nextTrace = new Trace
   // Shortest trace that has ended in an invariant violation.
@@ -150,8 +156,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   var post: (Trace) => Unit = nullFunPost
   var done: (Graph[Unique, DiEdge]) => Unit = nullFunDone
 
-  private[this] var currentRoot = getRootEvent
-
   var currentQuiescentPeriod = 0
   var awaitingQuiescence = false
   var nextQuiescentPeriod = 0
@@ -165,7 +169,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   // Whether we are currently awaiting checkpoint responses from actors.
   var blockedOnCheckpoint = new AtomicBoolean(false)
   var stats: MinimizationStats = null
-  def getName: String = "DPORwHeuristics"
   var currentSubsequence : Seq[ExternalEvent] = null
   var lookingFor : ViolationFingerprint = null
   var foundLookingFor = false
@@ -236,7 +239,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
     parentEvent = event
     currentDepth = pathLength + 1
-
   }
 
   private[this] def addGraphNode (event: Unique) = {
@@ -360,7 +362,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   // Global invariant.
   def checkInvariant() {
     println("Checking invariant")
-    val violation = test_invariant(currentSubsequence, checkpointer.checkpoints)
+    val checkpoint = if (checkpointer != null) checkpointer.checkpoints
+                      else new HashMap[String, Option[CheckpointReply]]
+    val violation = test_invariant(currentSubsequence, checkpoint)
     violation match {
       case Some(v) =>
         if (lookingFor.matches(v)) {
@@ -486,9 +490,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         (messagesScheduledSoFar % invariant_check_interval) == 0 &&
         lastCheckpoint != messagesScheduledSoFar) {
       lastCheckpoint = messagesScheduledSoFar
-      prepareCheckpoint()
+      if (checkpointer == null) {
+        // If checkpointing not enabled, test the invariant now
+        checkInvariant()
+      } else {
+        prepareCheckpoint()
+      }
     }
-    //
+
     // Are there any prioritized events that need to be dispatched.
     pendingEvents.get(PRIORITY) match {
       case Some(queue) if !queue.isEmpty => {
@@ -770,7 +779,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   def getMessage(cell: Cell, envelope: Envelope) : Unique = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msg = new MsgEvent(snd, rcv, messageFingerprinter.fingerprint(envelope.message))
+    val msg = new MsgEvent(snd, rcv, schedulerConfig.messageFingerprinter.fingerprint(envelope.message))
     // Who cares if the parentEvent is in fact a message, as long as it is a parent.
     val parent = parentEvent
 
@@ -872,7 +881,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
       runExternal()
     } else {
-      if (schedulerConfig.enableCheckpointing && test_invariant != null) {
+      if (test_invariant != null) {
         if (blockedOnCheckpoint.get) {
           // We've finished our checkpoint. Check our invariant. If it fails,
           // stop exploring! Otherwise, continue exploring schedules.
@@ -883,12 +892,19 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             return
           }
           // fall through to next interleaving
-        } else {
+        } else if (checkpointer != null) {
           // Initiate a checkpoint
           blockedOnCheckpoint.set(true)
           prepareCheckpoint()
           Instrumenter().start_dispatch
           return
+        } else {
+          // Checkpointing is not enabled, so just test it now
+          checkInvariant()
+          if (foundLookingFor) {
+            done(depGraph)
+            return
+          }
         }
       }
 
@@ -931,15 +947,19 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   // Assume: only used for timers (which implies that it's always an
   // akka-dispatcher thread calling this method).
-  def enqueue_message(sender: Option[ActorRef], receiver: String,msg: Any): Unit = {
-    // TODO(cs): deal with sender.
+  def enqueue_message(senderOpt: Option[ActorRef], receiver: String,msg: Any): Unit = {
     logger.trace(Console.BLUE + "Enqueuing timer to " + receiver + " with msg " + msg + Console.RESET)
-    instrumenter().actorMappings(receiver) ! msg
+    senderOpt match {
+      case Some(sendRef) =>
+        instrumenter().actorMappings(receiver).!(msg)(sendRef)
+      case None =>
+        instrumenter().actorMappings(receiver) ! msg
+    }
     instrumenter().await_enqueue()
   }
 
   def shutdown(): Unit = {
-    throw new Exception("internal error not a message")
+    throw new Exception("shutdown not supported for DPOR?")
   }
 
   def notify_timer_cancel (receiver: String, msg: Any) = {
@@ -1138,7 +1158,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       // NetworkUnpartition is always co-enabled with any other event.
       case (Unique(p : NetworkUnpartition, _), _) => true
       case (_, Unique(p : NetworkUnpartition, _)) => true
-      //case (_, _) =>
       case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
         if (m1.receiver != m2.receiver)
           return false
