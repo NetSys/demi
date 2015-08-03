@@ -33,7 +33,6 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
-
 import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
@@ -280,11 +279,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     return queue
   }
 
-
-
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef) : Boolean =
     throw new Exception("not implemented")
-
 
   override def isSystemCommunication(sender: ActorRef, receiver: ActorRef, msg: Any): Boolean =
   (receiver, sender) match {
@@ -293,7 +289,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     case _ => isSystemMessage(sender.path.name, receiver.path.name, msg)
   }
 
-
   // Is this message a system message
   def isValidActor(sender: String, receiver: String): Boolean =
   ((actorNames contains sender) || (actorNames contains receiver)) match {
@@ -301,20 +296,16 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     case _ => return false
   }
 
-
   def isSystemMessage(sender: String, receiver: String) : Boolean =
     throw new Exception("not implemented")
-
 
   // Is this message a system message
   override def isSystemMessage(sender: String, receiver: String, msg: Any): Boolean = {
     return !isValidActor(sender, receiver) || receiver == "deadLetters"
   }
 
-
   // Notification that the system has been reset
   def start_trace() : Unit = {
-
     started = false
     actorNames.clear
     externalEventIdx = 0
@@ -328,15 +319,12 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     runExternal()
   }
 
-
   // When executing a trace, find the next trace event.
   def mutableTraceIterator( trace: Trace) : Option[Unique] =
   trace.isEmpty match {
     case true => return None
     case _ => return Some(trace.dequeue)
   }
-
-
 
   // Get next message event from the trace.
   def getNextTraceMessage() : Option[Unique] =
@@ -391,13 +379,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
   }
 
-
-
   // Figure out what is the next message to schedule.
   def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
     // TODO(cs): marked any pending messages destined for blockedActors as
     // (temporarily) not enabled.
-
     // Stop if we found the original invariant violation.
     if (foundLookingFor) {
       return None
@@ -406,18 +391,15 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     // Find equivalent messages to the one we are currently looking for.
     def equivalentTo(u1: Unique, other: (Unique, Cell, Envelope)) :
     Boolean = (u1, other._1) match {
-
       case (Unique(MsgEvent(_, rcv1, _), id1),
             Unique(MsgEvent(_, rcv2, _), id2) ) =>
         // If the ID is zero, this means it's a system message.
         // In that case compare only the receivers.
         if (id1 == 0) rcv1 == rcv2
         else rcv1 == rcv2 && id1 == id2
-
       case (Unique(_, id1), Unique(_, id2) ) => id1 == id2
       case _ => false
     }
-
 
     // Get from the current set of pending events.
     def getPendingEvent(): Option[(Unique, Cell, Envelope)] = {
@@ -448,12 +430,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       }
     }
 
-
     def getMatchingMessage() : Option[(Unique, Cell, Envelope)] = {
       getNextTraceMessage() match {
         // The trace says there is a message event to run.
         case Some(u @ Unique(MsgEvent(snd, rcv, msg), id)) =>
-
           // Look at the pending events to see if such message event exists.
           pendingEvents.get(rcv) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
@@ -461,7 +441,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           }
 
         case Some(u @ Unique(NetworkPartition(_, _), id)) =>
-
           // Look at the pending events to see if such message event exists.
           pendingEvents.get(SCHEDULER) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
@@ -469,7 +448,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           }
 
         case Some(u @ Unique(NetworkUnpartition(_, _), id)) =>
-
           // Look at the pending events to see if such message event exists.
           pendingEvents.get(SCHEDULER) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
@@ -526,14 +504,12 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       return None
     }
 
-
     val result = awaitingQuiescence match {
       case false =>
         (prioritizePendingUponDivergence match {
           case true => getNextMatchingMessage()
           case false => getMatchingMessage()
         }) match {
-
           // There is a pending event that matches a message in our trace.
           // We call this a convergent state.
           case m @ Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
@@ -550,7 +526,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             logger.trace( Console.GREEN + "Replaying the exact message: Unpartition: ("
                 + part1 + " <-> " + part2 + ")" + Console.RESET )
             Some((u, null, null))
-
 
           case Some((u @ Unique(WaitQuiescence(), id), _, _)) =>
             logger.trace( Console.GREEN + "Replaying the exact message: Quiescence: ("
@@ -570,7 +545,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
 
     result match {
-
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
         if ((isolatedActors contains snd) || (isolatedActors contains rcv)) {
           logger.trace(Console.RED + "Discarding event " + nextEvent +
@@ -596,9 +570,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
         return Some((cell, env))
 
-
       case Some((nextEvent @ Unique(par@ NetworkPartition(first, second), nID), _, _)) =>
-
         // FIXME: We cannot send NodesUnreachable messages to FSM: in response to an unexpected message,
         // an FSM cancels and then restart a timer. This means that we cannot actually make this assumption
         // below
@@ -654,28 +626,20 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       case _ =>
         return None
     }
-
   }
-
 
   def next_event() : Event = {
     throw new Exception("not implemented next_event()")
   }
 
-
   // Record that an event was consumed
-  def event_consumed(event: Event) = {
-  }
+  def event_consumed(event: Event) = {}
 
-
-  def event_consumed(cell: Cell, envelope: Envelope) = {
-  }
-
+  def event_consumed(cell: Cell, envelope: Envelope) = {}
 
   def event_produced(event: Event) = event match {
-      case event : SpawnEvent => actorNames += event.name
-      case msg : MsgEvent =>
-
+    case event : SpawnEvent => actorNames += event.name
+    case msg : MsgEvent =>
   }
 
   // Ensure that all possible actors are created, not just those with Start
@@ -729,7 +693,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
             maybeAddGraphNode(uniq)
 
-
           case event @ Unique(WaitQuiescence(), _) =>
             val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
             pendingEvents(SCHEDULER) = msgs += ((event, null, null))
@@ -751,7 +714,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     instrumenter().tellEnqueue.await()
     instrumenter().start_dispatch
   }
-
 
   def run(externalEvents: Seq[ExternalEvent],
           f1: (Trace) => Unit = nullFunPost,
@@ -792,7 +754,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       case _ => nextTrace.clear
     }
 
-
     // In the end, reinitialize_system call start_trace.
     instrumenter().reinitialize_system(null, null)
   }
@@ -819,7 +780,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
     val inNeighs = depGraph.get(parent).inNeighbors
     inNeighs.find { x => matchMessage(x.value.event) } match {
-
       case Some(x) => return x.value
       case None =>
         val newMsg = Unique( MsgEvent(msg.sender, msg.receiver, msg.msg) )
@@ -829,10 +789,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         return newMsg
       case _ => throw new Exception("wrong type")
     }
-
   }
-
-
 
   def event_produced(cell: Cell, envelope: Envelope) : Unit = {
     val snd = envelope.sender.path.name
@@ -849,7 +806,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
 
     envelope.message match {
-
       // CheckpointRequests and failure detector messeages are simply enqueued to the priority queued
       // and dispatched at the earliest convenience.
       case NodesReachable | NodesUnreachable | CheckpointRequest =>
@@ -875,18 +831,13 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         addGraphNode(unique)
         depGraph.addEdge(unique, parentEvent)(DiEdge)
     }
-
   }
-
 
   // Called before we start processing a newly received event
-  def before_receive(cell: Cell) {
-  }
+  def before_receive(cell: Cell) {}
 
   // Called after receive is done being processed
-  def after_receive(cell: Cell) {
-  }
-
+  def after_receive(cell: Cell) {}
 
   def printPath(path : List[depGraph.NodeT]) : String = {
     var pathStr = ""
@@ -898,8 +849,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
     return pathStr
   }
-
-
 
   def notify_quiescence() {
     if (foundLookingFor) {
@@ -952,7 +901,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       for (Unique(ev, id) <- currentTrace)
         logger.debug(Console.BLUE + " " + id + " " + ev + Console.RESET)
 
-
       messagesScheduledSoFar = 0
       nextTrace.clear()
 
@@ -966,15 +914,12 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           logger.debug(Console.BLUE + "Next trace:  " +
               Util.traceStr(nextTrace) + Console.RESET)
 
-
           setParentEvent(getRootEvent)
           currentRoot = getRootEvent
-
 
           pendingEvents.clear()
           currentTrace.clear
           currentQuiescentPeriod = 0
-
 
           instrumenter().await_enqueue()
           instrumenter().restart_system()
@@ -984,7 +929,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
   }
 
-
   // Assume: only used for timers (which implies that it's always an
   // akka-dispatcher thread calling this method).
   def enqueue_message(sender: Option[ActorRef], receiver: String,msg: Any): Unit = {
@@ -993,7 +937,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     instrumenter().actorMappings(receiver) ! msg
     instrumenter().await_enqueue()
   }
-
 
   def shutdown(): Unit = {
     throw new Exception("internal error not a message")
@@ -1024,7 +967,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
     }
   }
-
 
   def getEvent(index: Integer, trace: Trace) : Unique = {
     trace(index) match {
@@ -1060,7 +1002,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   }
 
   def dpor(trace: Trace) : Option[Trace] = {
-
     interleavingCounter += 1
     val root = getEvent(0, currentTrace)
     val rootN = ( depGraph get getRootEvent )
@@ -1079,7 +1020,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
      */
     def analyze_dep(earlierI: Int, laterI: Int, trace: Trace):
     Option[(Int, List[Unique])] = {
-
       // Retrieve the actual events.
       val earlier = getEvent(earlierI, trace)
       val later = getEvent(laterI, trace)
@@ -1115,7 +1055,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           exploredTracker.setExplored(branchI, (earlier, later))
 
           return Some((branchI, needToReplay))
-
 
         // Since the later event is completely independent, we
         // can simply move it in front of the earlier event.
@@ -1167,12 +1106,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           exploredTracker.setExplored(branchI, (earlier, later))
 
           return Some((branchI, needToReplayV))
-
       }
       return None
-
     }
-
 
     /** Figure out if two events are co-enabled.
      *
@@ -1220,7 +1156,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         return coEnabeled
     }
 
-
     /*
      * For every event in the trace (called later),
      * see if there is some earlier event, such that:
@@ -1237,19 +1172,15 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, trace)
 
         if ( isCoEnabeled(earlier, later)) {
-
           analyze_dep(earlierI, laterI, trace) match {
             case Some((branchI, needToReplayV)) =>
               // Since we're exploring an already executed trace, we can
               // safely mark the interleaving of (earlier, later) as
               // already explored.
               backTrack.enqueue((branchI, (later, earlier), needToReplayV))
-
             case None => // Nothing
           }
-
         }
-
       }
     }
 
@@ -1265,21 +1196,16 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       backtrackHeuristic.clearKey(backTrack.head)
       val (maxIndex, (e1, e2), replayThis) = backTrack.dequeue
 
-
       exploredTracker.isExplored((e1, e2)) match {
         case true => return getNext()
         case false => return Some((maxIndex, (e1, e2), replayThis))
       }
-
     }
 
     getNext() match {
       case Some((maxIndex, (e1, e2), replayThis)) =>
-
-
         logger.info(Console.RED + "Exploring a new message interleaving " +
            e1.id + " and " + e2.id  + " at index " + maxIndex + Console.RESET)
-
 
         exploredTracker.setExplored(maxIndex, (e1, e2))
         exploredTracker.trimExplored(maxIndex)
@@ -1293,7 +1219,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         return None
     }
   }
-
 
   def setInvariant(invariant: Invariant) {
     test_invariant = invariant
