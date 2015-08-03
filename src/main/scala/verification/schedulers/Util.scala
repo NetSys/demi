@@ -86,6 +86,22 @@ class MultiSet[E] extends Set[E] {
   def iterator: Iterator[E] = {
     return m.values.flatten.iterator
   }
+
+  // Return values in this set not present in the other set.
+  def setDifference(other: MultiSet[E]) : MultiSet[E] = {
+    val setDiff = new MultiSet[E]
+    m.keys.foreach {
+      case k =>
+        if (!(other.m contains k)) {
+          setDiff ++= m(k)
+        } else {
+          val elt = m(k)(0)
+          val count = m(k).size - other.m(k).size
+          (1 to count) foreach { case _ => setDiff += elt }
+        }
+    }
+    return setDiff
+  }
 }
 
 // Provides O(1) insert and removeRandomElement

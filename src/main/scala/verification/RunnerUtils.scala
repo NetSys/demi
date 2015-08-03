@@ -25,16 +25,6 @@ import java.io.File
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
 
-  def countMsgEvents(trace: Iterable[Event]) : Int = {
-    return trace.filter {
-      case m: MsgEvent => true
-      case u: UniqueMsgEvent => true
-      case t: TimerDelivery => true
-      case u: UniqueTimerDelivery => true
-      case _ => false
-    } size
-  }
-
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            schedulerConfig: SchedulerConfig,
            validate_replay:Option[() => ReplayScheduler]=None,
@@ -676,12 +666,45 @@ object RunnerUtils {
     RunnerUtils.printDeliveries(intMinTrace)
   }
 
+  def getDeliveries(trace: EventTrace): Seq[Event] = {
+    trace flatMap {
+      case m: MsgEvent => Some(m)
+      case t: TimerDelivery => Some(t)
+      case _ => None
+    } toSeq
+  }
+
+  def getRawDeliveries(trace: EventTrace): Seq[Event] = {
+    trace.events flatMap {
+      case m: UniqueMsgEvent => Some(m)
+      case t: UniqueTimerDelivery => Some(t)
+      case _ => None
+    } toSeq
+  }
+
+  def getFingerprintedDeliveries(trace: EventTrace,
+                                 messageFingerprinter: FingerprintFactory):
+                               Seq[(String,String,Any)] = {
+    RunnerUtils.getDeliveries(trace) map {
+      case MsgEvent(snd,rcv,msg) =>
+        ((snd,rcv,messageFingerprinter.fingerprint(msg)))
+      case TimerDelivery(snd,rcv,f) =>
+        ((snd,rcv,f))
+    } toSeq
+  }
+
+  def countMsgEvents(trace: Iterable[Event]) : Int = {
+    return trace.filter {
+      case m: MsgEvent => true
+      case u: UniqueMsgEvent => true
+      case t: TimerDelivery => true
+      case u: UniqueTimerDelivery => true
+      case _ => false
+    } size
+  }
+
   def printDeliveries(trace: EventTrace) {
-    trace foreach {
-      case m: MsgEvent => println(m)
-      case t: TimerDelivery => println(t)
-      case _ =>
-    }
+    getDeliveries(trace) foreach { case e => println(e) }
   }
 
   // Generate a log that can be fed into ShiViz!
