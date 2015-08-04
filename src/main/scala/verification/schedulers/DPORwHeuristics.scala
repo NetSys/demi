@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Logger
 
 // TODO(cs): remove FailureDetector support. Not used.
+// TODO(cs): remove Partition/Unpartition support? Not strictly needed.
 // TODO(cs): don't assume enqueue_message is just for timers.
 
 object DPORwHeuristics {
