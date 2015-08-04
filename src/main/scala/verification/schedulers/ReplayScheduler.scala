@@ -17,6 +17,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 class ReplayException(message:String=null, cause:Throwable=null) extends
       RuntimeException(message, cause)
 
@@ -34,6 +38,8 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
     extends AbstractScheduler with ExternalEventInjector[Event] {
 
   val messageFingerprinter = schedulerConfig.messageFingerprinter
+
+  val logger = LoggerFactory.getLogger("ReplaySched")
 
   // Have we started off the execution yet?
   private[this] var firstMessage = true
@@ -255,6 +261,7 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
     send_external_messages()
 
     if (!pendingSystemMessages.isEmpty) {
+
       return Some(pendingSystemMessages.dequeue)
     }
 
@@ -312,6 +319,16 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
           if (!(event_orchestrator.actorToActorRef.values contains uniq.element._1.self)) {
             throw new IllegalStateException("unknown ActorRef: " + uniq.element._1.self)
           }
+
+          if (logger.isTraceEnabled()) {
+            val cell = uniq.element._1
+            val envelope = uniq.element._2
+            val snd = envelope.sender.path.name
+            val rcv = cell.self.path.name
+            val msg = envelope.message
+            logger.trace("schedule_new_message(): " + snd + " -> " + rcv + " " + msg)
+          }
+
           event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
           schedSemaphore.release
           return Some(uniq.element)
