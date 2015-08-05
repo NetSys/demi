@@ -165,6 +165,10 @@ class Fuzzer(num_events: Integer,
     }
 
     validateFuzzTest(fuzzTest)
+    if (fuzzTest.size > 0 &&
+        fuzzTest.last.getClass != classOf[WaitQuiescence]) {
+      fuzzTest += WaitQuiescence()
+    }
     return fuzzTest
   }
 
