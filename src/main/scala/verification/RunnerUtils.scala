@@ -29,7 +29,8 @@ object RunnerUtils {
            schedulerConfig: SchedulerConfig,
            validate_replay:Option[() => ReplayScheduler]=None,
            invariant_check_interval:Int=30,
-           maxMessages:Option[Int]=None) :
+           maxMessages:Option[Int]=None,
+           computeProvenance:Boolean=true) :
         Tuple5[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -86,16 +87,17 @@ object RunnerUtils {
     }
 
     // Before returning, try to prune events that are concurrent with the violation.
-    // TODO(cs): currently only DPORwHeuristics makes use of this
-    // optimization...
-    println("Pruning events not in provenance of violation. This may take awhile...")
-    val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
-    val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
-    val filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
-    val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
-    // TODO(cs): track this number somewhere. Or reconstruct it from
-    // initialTrace/filtered.
-    println("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
+    var filtered = new Queue[Unique]
+    if (computeProvenance) {
+      println("Pruning events not in provenance of violation. This may take awhile...")
+      val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
+      val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
+      filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
+      val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
+      // TODO(cs): track this number somewhere. Or reconstruct it from
+      // initialTrace/filtered.
+      println("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
+    }
     return (traceFound, violationFound, depGraph, initialTrace, filtered)
   }
 
