@@ -252,10 +252,12 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
       }
 
       val event_trace = execute_trace(_trace)
-      checkIfBugFound(event_trace) match {
-        case Some((event_trace, fingerprint)) =>
-          return Some((event_trace, fingerprint))
-        case None =>
+      if (messagesScheduledSoFar <= maxMessages) {
+        checkIfBugFound(event_trace) match {
+          case Some((event_trace, fingerprint)) =>
+            return Some((event_trace, fingerprint))
+          case None =>
+        }
       }
 
       if (i != max_executions) {
