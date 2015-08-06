@@ -179,13 +179,14 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
                                   violationBuf)
 
     // Serialize the external events.
-    val externalBuf = message_serializer.serialize(trace.original_externals)
+    val externalsAsArray : Array[ExternalEvent] = trace.original_externals.toArray
+    val externalBuf = JavaSerialization.serialize(externalsAsArray)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.original_externals,
                                   externalBuf)
 
     depGraph match {
       case Some(graph) =>
-        val graphBuf = message_serializer.serialize(graph)
+        val graphBuf = JavaSerialization.serialize(graph)
         JavaSerialization.writeToFile(output_dir + ExperimentSerializer.depGraph,
                                       graphBuf)
       case None =>
@@ -197,7 +198,8 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
          (filteredTrace, ExperimentSerializer.filteredTrace))) {
       dporTrace match {
         case Some(t) =>
-          val traceBuf = message_serializer.serialize(t)
+          val tAsArray : Array[Unique] = t.toArray
+          val traceBuf = JavaSerialization.serialize(tAsArray)
           JavaSerialization.writeToFile(output_dir + outputFile, traceBuf)
         case None =>
           None
@@ -303,11 +305,21 @@ class ExperimentDeserializer(results_dir: String) {
   }
 
   def get_initial_trace(): Option[Queue[Unique]] = {
-    return readIfFileExists[Queue[Unique]](results_dir + ExperimentSerializer.initialTrace)
+    val arrayOpt = readIfFileExists[Array[Unique]](results_dir + ExperimentSerializer.initialTrace)
+    arrayOpt match {
+      case Some(array) =>
+        return Some(new Queue[Unique] ++ array)
+      case None => return None
+    }
   }
 
   def get_filtered_initial_trace(): Option[Queue[Unique]] = {
-    return readIfFileExists[Queue[Unique]](results_dir + ExperimentSerializer.filteredTrace)
+    val arrayOpt = readIfFileExists[Array[Unique]](results_dir + ExperimentSerializer.filteredTrace)
+    arrayOpt match {
+      case Some(array) =>
+        return Some(new Queue[Unique] ++ array)
+      case None => return None
+    }
   }
 
   def get_events(message_deserializer: MessageDeserializer,
@@ -334,7 +346,7 @@ class ExperimentDeserializer(results_dir: String) {
     // N.B. sbt does some strange things with the class path, and sometimes
     // fails on this line. One way of fixing this: rather than running
     // `sbt run`, invoke `sbt assembly; java -cp /path/to/assembledjar Main`
-    val originalExternals = JavaSerialization.deserialize[Seq[ExternalEvent]](originalExternalBuf)
+    val originalExternals = JavaSerialization.deserialize[Array[ExternalEvent]](originalExternalBuf)
 
     val queue = new SynchronizedQueue[Event]
     queue ++= events
