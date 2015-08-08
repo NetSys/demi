@@ -30,6 +30,7 @@ object RunnerUtils {
            validate_replay:Option[() => ReplayScheduler]=None,
            invariant_check_interval:Int=30,
            maxMessages:Option[Int]=None,
+           randomizationStrategy:RandomizationStrategy=new FullyRandom,
            computeProvenance:Boolean=true) :
         Tuple5[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
@@ -42,7 +43,8 @@ object RunnerUtils {
 
       // TODO(cs): it's possible for RandomScheduler to never terminate
       // (waiting for a WaitQuiescene)
-      val sched = new RandomScheduler(schedulerConfig, 1, invariant_check_interval)
+      val sched = new RandomScheduler(schedulerConfig, 1,
+        invariant_check_interval, randomizationStrategy=randomizationStrategy)
       sched.setInvariant(invariant)
       maxMessages match {
         case Some(max) => sched.setMaxMessages(max)

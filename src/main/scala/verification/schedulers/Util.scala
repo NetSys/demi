@@ -105,12 +105,12 @@ class MultiSet[E] extends Set[E] {
 }
 
 // Provides O(1) insert and removeRandomElement
-class RandomizedHashSet[E] extends Set[E] {
+class RandomizedHashSet[E](seed:Long=System.currentTimeMillis()) extends Set[E] {
   // We store a counter along with each element E to ensure uniqueness
   var arr = new ArrayBuffer[(E,Int)]
   // Value is index into array
   var hash = new HashMap[(E,Int),Int]
-  val rand = new Random(System.currentTimeMillis());
+  val rand = new Random(seed)
   // This multiset is only used for .contains().. can't use hash's keys since
   // we ensure that they're unique.
   var multiset = new MultiSet[E]

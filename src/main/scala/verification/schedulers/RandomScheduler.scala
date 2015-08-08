@@ -603,14 +603,26 @@ trait RandomizationStrategy extends
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)]
 }
 
-class FullyRandom extends RandomizationStrategy {
-  val pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
+// userDefinedFilter can throw out entries to be delivered, by returning false
+// arguments: src, dst, message
+class FullyRandom(
+    userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) => true,
+    seed:Long=System.currentTimeMillis()) extends RandomizationStrategy {
+
+  val pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]](seed=seed)
 
   def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] =
     pendingEvents.iterator
 
   def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = {
-    pendingEvents += tuple
+    val snd  = tuple._1.element._2.sender.path.name
+    val rcv = tuple._1.element._1.self.path.name
+    val msg = tuple._1.element._2.message
+    if (userDefinedFilter(snd,rcv,msg)) {
+      pendingEvents += tuple
+    } else {
+      println("userDefinedFilter rejected: " + snd + " " + rcv + " " + msg)
+    }
     return this
   }
 
@@ -631,7 +643,7 @@ class FullyRandom extends RandomizationStrategy {
   }
 
   def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = {
-    return pendingEvents.removeRandomElement
+    return pendingEvents.removeRandomElement()
   }
 
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = {
