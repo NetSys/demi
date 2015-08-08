@@ -62,6 +62,8 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
   // exception, so that it can be caught by the caller.
   private[this] var nonDeterministicErrorMsg = ""
 
+  var violationAtEnd : Option[ViolationFingerprint] = None
+
   // Given an event trace, try to replay it exactly. Return the events
   // observed in *this* execution, which should in theory be the same as the
   // original.
@@ -122,9 +124,8 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
     schedulerConfig.invariant_check match {
       case Some(check) =>
         val checkpoint = takeCheckpoint()
-        val violation = check(List.empty, checkpoint)
-        // TODO(cs): actually return this rather than printing it
-        println("Violation?: " + violation)
+        violationAtEnd = check(List.empty, checkpoint)
+        println("Violation?: " + violationAtEnd)
       case None =>
     }
     event_orchestrator.events.setOriginalExternalEvents(_trace.original_externals)

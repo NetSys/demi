@@ -70,6 +70,9 @@ object RunnerUtils {
               var deterministic = true
               try {
                 replayer.replay(trace.filterCheckpointMessages)
+                if (replayer.violationAtEnd.isEmpty) {
+                  deterministic = false
+                }
               } catch {
                 case r: ReplayException =>
                   println("doesn't replay deterministically..." + r)
