@@ -615,14 +615,7 @@ class FullyRandom(
     pendingEvents.iterator
 
   def +=(tuple: Tuple2[Uniq[(Cell,Envelope)],Unique]) : this.type = {
-    val snd  = tuple._1.element._2.sender.path.name
-    val rcv = tuple._1.element._1.self.path.name
-    val msg = tuple._1.element._2.message
-    if (userDefinedFilter(snd,rcv,msg)) {
-      pendingEvents += tuple
-    } else {
-      println("userDefinedFilter rejected: " + snd + " " + rcv + " " + msg)
-    }
+    pendingEvents += tuple
     return this
   }
 
@@ -643,7 +636,23 @@ class FullyRandom(
   }
 
   def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = {
-    return pendingEvents.removeRandomElement()
+    var ret = pendingEvents.removeRandomElement()
+    var snd  = ret._1.element._2.sender.path.name
+    var rcv = ret._1.element._1.self.path.name
+    var msg = ret._1.element._2.message
+
+    val rejected = new Queue[(Uniq[(Cell,Envelope)],Unique)]
+
+    // userDefinedFilter better be well-behaved...
+    while (pendingEvents.size > 1 && !userDefinedFilter(snd,rcv,msg)) {
+      rejected += ret
+      ret = pendingEvents.removeRandomElement()
+      snd  = ret._1.element._2.sender.path.name
+      rcv = ret._1.element._1.self.path.name
+      msg = ret._1.element._2.message
+    }
+    pendingEvents ++= rejected
+    return ret
   }
 
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = {
