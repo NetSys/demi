@@ -61,7 +61,8 @@ case class FuzzerWeights(
 class Fuzzer(num_events: Integer,
              weights: FuzzerWeights,
              message_gen: MessageGenerator,
-             prefix: Seq[ExternalEvent]) {
+             prefix: Seq[ExternalEvent],
+             postfix: Seq[ExternalEvent] = Seq.empty) {
 
   var seed = System.currentTimeMillis
   var rand = new Random(seed)
@@ -165,6 +166,7 @@ class Fuzzer(num_events: Integer,
     }
 
     validateFuzzTest(fuzzTest)
+    fuzzTest ++= postfix
     if (fuzzTest.size > 0 &&
         fuzzTest.last.getClass != classOf[WaitQuiescence]) {
       fuzzTest += WaitQuiescence()
