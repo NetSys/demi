@@ -41,6 +41,8 @@ import scala.util.control.Breaks
 
 import java.nio.charset.StandardCharsets
 
+import com.typesafe.config.ConfigFactory
+
 import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
@@ -159,6 +161,13 @@ class Instrumenter {
     }
   }
 
+  def defaultAkkaConfig : com.typesafe.config.Config = {
+    ConfigFactory.parseString(
+      s"""
+      |akka.actor.guardian-supervisor-strategy = akka.actor.StoppingSupervisorStrategy
+      """.stripMargin)
+  }
+
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
   var _actorSystem : ActorSystem = null
@@ -178,8 +187,9 @@ class Instrumenter {
     _actorSystem
   }
 
+
   def actorSystem () : ActorSystem = {
-    return actorSystem(None)
+    return actorSystem(Some(defaultAkkaConfig))
   }
 
   def actorSystemInitialized: Boolean = _actorSystem != null
@@ -444,7 +454,8 @@ class Instrumenter {
     require(scheduler != null)
 
     shutdownCallback()
-    _actorSystem = ActorSystem("new-system-" + counter)
+
+    _actorSystem = ActorSystem("new-system-" + counter, defaultAkkaConfig)
     _random = new Random(0)
     counter += 1
     
