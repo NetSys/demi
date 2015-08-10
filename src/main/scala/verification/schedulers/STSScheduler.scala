@@ -442,8 +442,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.events += Quiescence
           case BeginWaitQuiescence =>
             event_orchestrator.events += BeginWaitQuiescence
-            event_orchestrator.trace_advanced
-            break
+            // TODO(cs): these were needed for FailureDetector I think, but
+            // they now cause problems. Figure out why:
+            // event_orchestrator.trace_advanced
+            // break
           case c @ CodeBlock(block) =>
             event_orchestrator.events += c // keep the id the same
             // Since the block might send messages, make sure that we treat the
