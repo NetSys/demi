@@ -428,9 +428,9 @@ object Util {
   val logger = new VCLogger()
 
   def getStackTrace (t: Throwable): String = {
-      val sw = new StringWriter()
-      t.printStackTrace(new PrintWriter(sw));
-      return sw.toString()
+    val sw = new StringWriter()
+    t.printStackTrace(new PrintWriter(sw));
+    return sw.toString()
   }
 
 
