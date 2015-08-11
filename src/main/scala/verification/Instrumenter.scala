@@ -148,6 +148,8 @@ class Instrumenter {
   val codeBlockThreads = new HashSet[Thread]
   // For checking asserts
   var currentPendingDispatch = new AtomicReference[Option[(String,Any)]](None)
+  // See: SupervisorStrategy.scala
+  var crashedActors = new HashSet[String]
 
   val logger = LoggerFactory.getLogger("Instrumenter")
 
@@ -168,6 +170,20 @@ class Instrumenter {
       """.stripMargin)
   }
 
+  def actorCrashed(actorName: String, exc: Exception) {
+    actorMappings.synchronized {
+      if (!(actorMappings contains actorName)) {
+        return
+      }
+    }
+
+    crashedActors.synchronized {
+      crashedActors += actorName
+    }
+    blockedActors = blockedActors + (actorName -> ("",""))
+    // N.B. afterMessageReceive should be invoked after this.
+  }
+
   // AspectJ runs into initialization problems if a new ActorSystem is created
   // by the constructor. Instead use a getter to create on demand.
   var _actorSystem : ActorSystem = null
@@ -186,7 +202,6 @@ class Instrumenter {
     }
     _actorSystem
   }
-
 
   def actorSystem () : ActorSystem = {
     return actorSystem(Some(defaultAkkaConfig))
@@ -425,6 +440,7 @@ class Instrumenter {
     seenActors.clear()
     allowedEvents.clear()
     dispatchers.clear()
+    crashedActors.clear()
     Util.logger.reset()
     blockedActors = Map[String, (String, Any)]()
     tempToParent = new HashMap[ActorPath, String]
