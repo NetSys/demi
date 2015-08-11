@@ -7,6 +7,7 @@ import akka.serialization._
 import scala.sys.process._
 import scala.sys.process.BasicIO
 import scala.collection.mutable.Queue
+import scala.collection.mutable.HashMap
 import scala.collection.mutable.SynchronizedQueue
 
 import scalax.collection.mutable.Graph,
@@ -60,7 +61,8 @@ object ExperimentSerializer {
   val stats = "/minimization_stats.json"
   // Stats when minimizing internal events.
   val internal_stats = "/internal_minimization_stats.json"
-  val depGraph = "/depGraph.bin"
+  val depGraphEdges = "/depGraphEdges.bin"
+  val depGraphNodes = "/depGraphNodes.bin"
   // trace of Unique(MsgEvent)s
   val initialTrace = "/initialTrace.bin"
   // initialTrace minus all events that were concurrent with the violation.
@@ -186,9 +188,27 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
 
     depGraph match {
       case Some(graph) =>
-        val graphBuf = JavaSerialization.serialize(graph)
-        JavaSerialization.writeToFile(output_dir + ExperimentSerializer.depGraph,
-                                      graphBuf)
+        // We serialize edges and nodes separately, to avoid StackOverFlow.
+        val nodes = graph.nodes
+        val nodesArray = new Array[Unique](nodes.size)
+        nodes.zipWithIndex.foreach {
+          case (e,i) =>
+            nodesArray(i) = e
+        }
+        val nodesBuf = JavaSerialization.serialize(nodesArray)
+        JavaSerialization.writeToFile(
+          output_dir + ExperimentSerializer.depGraphNodes, nodesBuf)
+
+        val edges = graph.edges
+        // Tuples of (src id, dst id)
+        val edgeArray = new Array[Tuple2[Int,Int]](edges.size)
+        edges.zipWithIndex.foreach {
+          case (e,i) =>
+            edgeArray(i) = ((e._1.id, e._2.id))
+        }
+        val edgesBuf = JavaSerialization.serialize(edgeArray)
+        JavaSerialization.writeToFile(
+          output_dir + ExperimentSerializer.depGraphEdges, edgesBuf)
       case None =>
         None
     }
@@ -301,7 +321,26 @@ class ExperimentDeserializer(results_dir: String) {
   }
 
   def get_dep_graph(): Option[Graph[Unique, DiEdge]] = {
-    return readIfFileExists[Graph[Unique, DiEdge]](results_dir + ExperimentSerializer.depGraph)
+    val nodesOpt = readIfFileExists[Array[Unique]](
+      results_dir + ExperimentSerializer.depGraphNodes)
+    nodesOpt match {
+      case Some(nodes) =>
+        val id2node = new HashMap[Int,Unique]
+        val graph = Graph[Unique,DiEdge]()
+        nodes.foreach {
+          case u =>
+            id2node(u.id) = u
+            graph.add(u)
+        }
+        val edges = readIfFileExists[Array[Tuple2[Int,Int]]](
+          results_dir + ExperimentSerializer.depGraphEdges).get
+        edges.foreach {
+          case (s,d) =>
+            graph.addEdge(id2node(s), id2node(d))(DiEdge)
+        }
+        return Some(graph)
+      case None => return None
+    }
   }
 
   def get_initial_trace(): Option[Queue[Unique]] = {
