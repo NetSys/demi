@@ -3,12 +3,17 @@ package akka.dispatch.verification
 import scala.collection.mutable.Queue
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.HashSet
+import scala.collection.mutable.HashMap
 
 import akka.actor.Props
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
+
+import java.io.PrintWriter
+import java.io.File
+
 
 // Example minimization pipeline:
 //     fuzz()
@@ -20,21 +25,13 @@ import scalax.collection.mutable.Graph,
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
 
-  def countMsgEvents(trace: Iterable[Event]) : Int = {
-    return trace.filter {
-      case m: MsgEvent => true
-      case u: UniqueMsgEvent => true
-      case t: TimerDelivery => true
-      case u: UniqueTimerDelivery => true
-      case _ => false
-    } size
-  }
-
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            schedulerConfig: SchedulerConfig,
            validate_replay:Option[() => ReplayScheduler]=None,
            invariant_check_interval:Int=30,
-           maxMessages:Option[Int]=None) :
+           maxMessages:Option[Int]=None,
+           randomizationStrategyCtor:() => RandomizationStrategy=() => new FullyRandom,
+           computeProvenance:Boolean=true) :
         Tuple5[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -46,7 +43,9 @@ object RunnerUtils {
 
       // TODO(cs): it's possible for RandomScheduler to never terminate
       // (waiting for a WaitQuiescene)
-      val sched = new RandomScheduler(schedulerConfig, 1, invariant_check_interval)
+      val sched = new RandomScheduler(schedulerConfig, 1,
+        invariant_check_interval,
+        randomizationStrategy=randomizationStrategyCtor())
       sched.setInvariant(invariant)
       maxMessages match {
         case Some(max) => sched.setMaxMessages(max)
@@ -71,6 +70,9 @@ object RunnerUtils {
               var deterministic = true
               try {
                 replayer.replay(trace.filterCheckpointMessages)
+                if (replayer.violationAtEnd.isEmpty) {
+                  deterministic = false
+                }
               } catch {
                 case r: ReplayException =>
                   println("doesn't replay deterministically..." + r)
@@ -91,16 +93,17 @@ object RunnerUtils {
     }
 
     // Before returning, try to prune events that are concurrent with the violation.
-    // TODO(cs): currently only DPORwHeuristics makes use of this
-    // optimization...
-    println("Pruning events not in provenance of violation. This may take awhile...")
-    val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
-    val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
-    val filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
-    val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
-    // TODO(cs): track this number somewhere. Or reconstruct it from
-    // initialTrace/filtered.
-    println("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
+    var filtered = new Queue[Unique]
+    if (computeProvenance) {
+      println("Pruning events not in provenance of violation. This may take awhile...")
+      val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
+      val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
+      filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
+      val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
+      // TODO(cs): track this number somewhere. Or reconstruct it from
+      // initialTrace/filtered.
+      println("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
+    }
     return (traceFound, violationFound, depGraph, initialTrace, filtered)
   }
 
@@ -143,7 +146,22 @@ object RunnerUtils {
                                         messageDeserializer, replayer,
                                         traceFile=traceFile)
 
+    return RunnerUtils.replayExperiment(trace, schedulerConfig,
+      Seq.empty, _replayer=Some(replayer))
+  }
+
+  def replayExperiment(trace: EventTrace,
+                       schedulerConfig: SchedulerConfig,
+                       actorNamePropPairs:Seq[Tuple2[Props, String]],
+                       _replayer:Option[ReplayScheduler]) : EventTrace = {
+    val replayer = _replayer match {
+      case Some(replayer) => replayer
+      case None =>
+        new ReplayScheduler(schedulerConfig, false)
+    }
+    replayer.setActorNamePropPairs(actorNamePropPairs)
     println("Trying replay:")
+    Instrumenter().scheduler = replayer
     val events = replayer.replay(trace)
     println("Done with replay")
     replayer.shutdown
@@ -651,11 +669,148 @@ object RunnerUtils {
             " ("+intmin_externals + " externals, "+
             intmin_timers + " timers)")
     println("Final messages delivered:") // w/o fingerints
+
     // TODO(cs): annotate which events are unignorable.
-    intMinTrace foreach {
-      case m: MsgEvent => println(m)
-      case t: TimerDelivery => println(t)
+    RunnerUtils.printDeliveries(intMinTrace)
+  }
+
+  def getDeliveries(trace: EventTrace): Seq[Event] = {
+    trace flatMap {
+      case m: MsgEvent => Some(m)
+      case t: TimerDelivery => Some(t)
+      case _ => None
+    } toSeq
+  }
+
+  def getRawDeliveries(trace: EventTrace): Seq[Event] = {
+    trace.events flatMap {
+      case m: UniqueMsgEvent => Some(m)
+      case t: UniqueTimerDelivery => Some(t)
+      case _ => None
+    } toSeq
+  }
+
+  def getFingerprintedDeliveries(trace: EventTrace,
+                                 messageFingerprinter: FingerprintFactory):
+                               Seq[(String,String,Any)] = {
+    RunnerUtils.getDeliveries(trace) map {
+      case MsgEvent(snd,rcv,msg) =>
+        ((snd,rcv,messageFingerprinter.fingerprint(msg)))
+      case TimerDelivery(snd,rcv,f) =>
+        ((snd,rcv,f))
+    } toSeq
+  }
+
+  def countMsgEvents(trace: Iterable[Event]) : Int = {
+    return trace.filter {
+      case m: MsgEvent => true
+      case u: UniqueMsgEvent => true
+      case t: TimerDelivery => true
+      case u: UniqueTimerDelivery => true
+      case _ => false
+    } size
+  }
+
+  def printDeliveries(trace: EventTrace) {
+    getDeliveries(trace) foreach { case e => println(e) }
+  }
+
+  // Generate a log that can be fed into ShiViz!
+  def visualizeDeliveries(trace: EventTrace, outputFile: String) {
+    val writer = new PrintWriter(new File(outputFile))
+    val logger = new VCLogger(writer)
+
+    val id2delivery = new HashMap[Int, Event]
+    trace.events.foreach {
+      case u @ UniqueMsgEvent(m, id) =>
+        id2delivery(id) = u
       case _ =>
     }
+
+    writer.println("(?<clock>.*\\}) (?<host>[^:]*): (?<event>.*)")
+    writer.println("")
+    trace.events.foreach {
+      case UniqueMsgSend(MsgSend(snd,rcv,msg), id) =>
+        if ((id2delivery contains id) && snd != "deadLetters" && snd != "Timer") {
+          logger.log(snd, "Sending to " + rcv + ": " + msg)
+        }
+      case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
+        if (snd == "deadLetters") {
+          logger.log(rcv, "Received external message: " + msg)
+        } else {
+          logger.mergeVectorClocks(snd,rcv)
+          logger.log(rcv, "Received message from " + snd + ": " + msg)
+        }
+      case UniqueTimerDelivery(TimerDelivery(snd,rcv,fingerprint), id) =>
+        logger.log(rcv, "Received timer: " + fingerprint)
+      case _ =>
+    }
+    writer.close
+    println("ShiViz input at: " + outputFile)
+  }
+
+  /**
+   * Make it easier to construct specifically delivery orders manually.
+   *
+   * Given:
+   *  - An event trace to be twiddled with
+   *  - A sequence of UniqueMsgSends.ids (the id value from the UniqueMsgSends
+   *     contained in event trace).
+   *
+   * Return: a new event trace that has UniqueMsgEvents and
+   * UniqueTimerDeliveries arranged in the order
+   * specified by the given sequences of ids
+   */
+  // TODO(cs): allow caller to specify locations of external events. For now
+  // just put them all at the front.
+  // TODO(cs): use DepGraph ids rather than Unique ids, which are more finiky
+  def reorderDeliveries(trace: EventTrace, ids: Seq[Int]): EventTrace = {
+    val result = new SynchronizedQueue[Event]
+
+    val id2send = new HashMap[Int, UniqueMsgSend]
+    trace.events.foreach {
+      case u @ UniqueMsgSend(MsgSend(snd, rcv, msg), id) =>
+        if (snd == "Timer") {
+          id2send(id) = UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id)
+        } else {
+          id2send(id) = u
+        }
+      case _ =>
+    }
+
+    val id2delivery = new HashMap[Int, Event]
+    trace.events.foreach {
+      case u @ UniqueMsgEvent(m, id) =>
+        id2delivery(id) = u
+      case u @ UniqueTimerDelivery(t, id) =>
+        id2delivery(id) = u
+      case _ =>
+    }
+
+    // Put all SpawnEvents, external events at the beginning of the trace
+    trace.events.foreach {
+      case u @ UniqueMsgSend(m, id) =>
+        if (EventTypes.isExternal(u)) {
+          result += u
+        }
+      case u @ UniqueMsgEvent(m, id) =>
+      case u @ UniqueTimerDelivery(t, id) =>
+      case e => result += e
+    }
+
+    // Now append all the specified deliveries
+    ids.foreach {
+      case id =>
+        if (id2delivery contains id) {
+          result += id2delivery(id)
+        } else {
+          // fabricate a UniqueMsgEvent
+          val msgSend = id2send(id).m
+          result += UniqueMsgEvent(MsgEvent(
+            msgSend.sender, msgSend.receiver, msgSend.msg), id)
+        }
+    }
+
+    return new EventTrace(result, trace.original_externals)
   }
 }

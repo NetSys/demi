@@ -29,8 +29,10 @@ class STSSchedMinimizer(
 
     val origTrace = verified_mcs.filterCheckpointMessages.filterFailureDetectorMessages
     var lastFailingTrace = origTrace
+    // { (snd,rcv,fingerprint) }
+    val prunedOverall = new MultiSet[(String,String,Any)]
     // TODO(cs): make this more efficient? Currently O(n^2) overall.
-    var nextTrace = removalStrategy.getNextTrace(lastFailingTrace)
+    var nextTrace = removalStrategy.getNextTrace(lastFailingTrace, prunedOverall)
 
     while (!nextTrace.isEmpty) {
       RunnerUtils.testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
@@ -45,6 +47,26 @@ class STSSchedMinimizer(
           val newSize = RunnerUtils.countMsgEvents(filteredTrace)
           val diff = origSize - newSize
           println("Ignoring worked! Pruned " + diff + "/" + origSize + " deliveries")
+
+          val priorDeliveries = new MultiSet[(String,String,Any)]
+          priorDeliveries ++= RunnerUtils.getFingerprintedDeliveries(
+            lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages,
+            schedulerConfig.messageFingerprinter
+          )
+
+          val newDeliveries = new MultiSet[(String,String,Any)]
+          newDeliveries ++= RunnerUtils.getFingerprintedDeliveries(
+            filteredTrace,
+            schedulerConfig.messageFingerprinter
+          )
+
+          val prunedThisRun = priorDeliveries.setDifference(newDeliveries)
+          println("Pruned: [ignore TimerDeliveries] ")
+          prunedThisRun.foreach { case e => println(e) }
+          println("---")
+
+          prunedOverall ++= prunedThisRun
+
           lastFailingTrace = filteredTrace
           lastFailingTrace.setOriginalExternalEvents(mcs)
         case None =>
@@ -52,7 +74,7 @@ class STSSchedMinimizer(
           println("Ignoring didn't work. Trying next")
           None
       }
-      nextTrace = removalStrategy.getNextTrace(lastFailingTrace)
+      nextTrace = removalStrategy.getNextTrace(lastFailingTrace, prunedOverall)
     }
     val origSize = RunnerUtils.countMsgEvents(origTrace)
     val newSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
@@ -96,7 +118,8 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
 
   init()
 
-  def getNextTrace(lastFailingTrace: EventTrace) : Option[EventTrace]
+  def getNextTrace(lastFailingTrace: EventTrace,
+                   alreadyPruned: MultiSet[(String,String,Any)]) : Option[EventTrace]
 
   def unignorable: Int = _unignorable
 }
@@ -108,11 +131,15 @@ class LeftToRightOneAtATime(
 
   // Filter out the next MsgEvent, and return the resulting EventTrace.
   // If we've tried filtering out all MsgEvents, return None.
-  def getNextTrace(trace: EventTrace): Option[EventTrace] = {
+  def getNextTrace(trace: EventTrace,
+                   alreadyRemoved: MultiSet[(String,String,Any)]): Option[EventTrace] = {
     // Track what events we've kept so far because we
     // already tried ignoring them previously. MultiSet to account for
     // duplicate MsgEvent's. TODO(cs): this may lead to some ambiguous cases.
-    val keysThisIteration = new MultiSet[(String, String, MessageFingerprint)]
+    val keysThisIteration = new MultiSet[(String, String, Any)]
+    // We already tried 'keeping' prior events that were successfully ignored
+    // but no longer show up in this trace.
+    keysThisIteration ++= alreadyRemoved
     // Whether we've found the event we're going to try ignoring next.
     var foundIgnoredEvent = false
 

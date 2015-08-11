@@ -41,6 +41,8 @@ import scala.util.control.Breaks
 
 import java.nio.charset.StandardCharsets
 
+import com.typesafe.config.ConfigFactory
+
 import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
@@ -146,6 +148,8 @@ class Instrumenter {
   val codeBlockThreads = new HashSet[Thread]
   // For checking asserts
   var currentPendingDispatch = new AtomicReference[Option[(String,Any)]](None)
+  // See: SupervisorStrategy.scala
+  var crashedActors = new HashSet[String]
 
   val logger = LoggerFactory.getLogger("Instrumenter")
 
@@ -157,6 +161,27 @@ class Instrumenter {
     if (scheduler != null) {
       scheduler.notify_timer_cancel(rcv, msg)
     }
+  }
+
+  def defaultAkkaConfig : com.typesafe.config.Config = {
+    ConfigFactory.parseString(
+      s"""
+      |akka.actor.guardian-supervisor-strategy = akka.actor.StoppingSupervisorStrategy
+      """.stripMargin)
+  }
+
+  def actorCrashed(actorName: String, exc: Exception) {
+    actorMappings.synchronized {
+      if (!(actorMappings contains actorName)) {
+        return
+      }
+    }
+
+    crashedActors.synchronized {
+      crashedActors += actorName
+    }
+    blockedActors = blockedActors + (actorName -> ("",""))
+    // N.B. afterMessageReceive should be invoked after this.
   }
 
   // AspectJ runs into initialization problems if a new ActorSystem is created
@@ -179,7 +204,7 @@ class Instrumenter {
   }
 
   def actorSystem () : ActorSystem = {
-    return actorSystem(None)
+    return actorSystem(Some(defaultAkkaConfig))
   }
 
   def actorSystemInitialized: Boolean = _actorSystem != null
@@ -415,6 +440,7 @@ class Instrumenter {
     seenActors.clear()
     allowedEvents.clear()
     dispatchers.clear()
+    crashedActors.clear()
     Util.logger.reset()
     blockedActors = Map[String, (String, Any)]()
     tempToParent = new HashMap[ActorPath, String]
@@ -444,7 +470,8 @@ class Instrumenter {
     require(scheduler != null)
 
     shutdownCallback()
-    _actorSystem = ActorSystem("new-system-" + counter)
+
+    _actorSystem = ActorSystem("new-system-" + counter, defaultAkkaConfig)
     _random = new Random(0)
     counter += 1
     

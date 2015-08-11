@@ -252,10 +252,12 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
       }
 
       val event_trace = execute_trace(_trace)
-      checkIfBugFound(event_trace) match {
-        case Some((event_trace, fingerprint)) =>
-          return Some((event_trace, fingerprint))
-        case None =>
+      if (messagesScheduledSoFar <= maxMessages) {
+        checkIfBugFound(event_trace) match {
+          case Some((event_trace, fingerprint)) =>
+            return Some((event_trace, fingerprint))
+          case None =>
+        }
       }
 
       if (i != max_executions) {
@@ -287,7 +289,9 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         }
         val unique = depTracker.reportNewlyEnabled(snd, rcv, msg)
         if (!crosses_partition(snd, rcv)) {
-          pendingEvents += ((uniq, unique))
+          pendingEvents.synchronized {
+            pendingEvents += ((uniq, unique))
+          }
         }
       }
       case ExternalMessage => {
@@ -296,7 +300,9 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
           pendingSystemMessages += uniq
         } else {
           val unique = depTracker.reportNewlyEnabledExternal(snd, rcv, msg)
-          pendingEvents += ((uniq, unique))
+          pendingEvents.synchronized {
+            pendingEvents += ((uniq, unique))
+          }
         }
       }
       case FailureDetectorQuery => None
@@ -429,11 +435,16 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     }
 
     // Find a non-blocked destination
-    Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
-      blockedActors,
-      pendingEvents,
-      () => pendingEvents.removeRandomElement,
-      (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name) match {
+    var toSchedule: Option[Tuple2[Uniq[(Cell,Envelope)],Unique]] = None
+    pendingEvents.synchronized {
+      toSchedule = Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
+        blockedActors,
+        pendingEvents,
+        () => pendingEvents.removeRandomElement,
+        (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name)
+    }
+
+    toSchedule match {
       case Some((uniq,  unique)) =>
         messagesScheduledSoFar += 1
         if (messagesScheduledSoFar == Int.MaxValue) {
@@ -503,17 +514,21 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     }
     // Awkward, we need to walk through the entire hashset to find what we're
     // looking for.
-    pendingEvents.remove("deadLetters",rcv, msg)
+    pendingEvents.synchronized {
+      pendingEvents.remove("deadLetters",rcv, msg)
+    }
   }
 
   override def actorTerminated(name: String): Seq[(String, Any)] = {
     // TODO(cs): also deal with pendingSystemMessages
-    return randomizationStrategy.removeAll(name).map {
-      case (uniq, unique) =>
-        val envelope = uniq.element._2
-        val snd = envelope.sender.path.name
-        val msg = envelope.message
-        (snd, msg)
+    pendingEvents.synchronized {
+      return pendingEvents.removeAll(name).map {
+        case (uniq, unique) =>
+          val envelope = uniq.element._2
+          val snd = envelope.sender.path.name
+          val msg = envelope.message
+          (snd, msg)
+      }
     }
   }
 
@@ -601,8 +616,13 @@ trait RandomizationStrategy extends
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)]
 }
 
-class FullyRandom extends RandomizationStrategy {
-  val pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]]
+// userDefinedFilter can throw out entries to be delivered, by returning false
+// arguments: src, dst, message
+class FullyRandom(
+    userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) => true,
+    seed:Long=System.currentTimeMillis()) extends RandomizationStrategy {
+
+  val pendingEvents = new RandomizedHashSet[Tuple2[Uniq[(Cell,Envelope)],Unique]](seed=seed)
 
   def iterator: Iterator[Tuple2[Uniq[(Cell,Envelope)],Unique]] =
     pendingEvents.iterator
@@ -629,7 +649,23 @@ class FullyRandom extends RandomizationStrategy {
   }
 
   def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = {
-    return pendingEvents.removeRandomElement
+    var ret = pendingEvents.removeRandomElement()
+    var snd  = ret._1.element._2.sender.path.name
+    var rcv = ret._1.element._1.self.path.name
+    var msg = ret._1.element._2.message
+
+    val rejected = new Queue[(Uniq[(Cell,Envelope)],Unique)]
+
+    // userDefinedFilter better be well-behaved...
+    while (pendingEvents.size > 1 && !userDefinedFilter(snd,rcv,msg)) {
+      rejected += ret
+      ret = pendingEvents.removeRandomElement()
+      snd  = ret._1.element._2.sender.path.name
+      rcv = ret._1.element._1.self.path.name
+      msg = ret._1.element._2.message
+    }
+    pendingEvents ++= rejected
+    return ret
   }
 
   def removeAll(rcv: String): Seq[(Uniq[(Cell,Envelope)],Unique)] = {

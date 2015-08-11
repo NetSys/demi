@@ -171,6 +171,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // We use the original trace as our reference point as we step through the
     // execution.
     val filtered = original_trace.filterFailureDetectorMessages.
+                                  filterCheckpointMessages.
                                   subsequenceIntersection(subseq, filterKnownAbsents=filterKnownAbsents)
     val updatedEvents = filtered.recomputeExternalMsgSends(subseq)
     event_orchestrator.set_trace(updatedEvents)
@@ -441,8 +442,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.events += Quiescence
           case BeginWaitQuiescence =>
             event_orchestrator.events += BeginWaitQuiescence
-            event_orchestrator.trace_advanced
-            break
+            // TODO(cs): these were needed for FailureDetector I think, but
+            // they now cause problems. Figure out why:
+            // event_orchestrator.trace_advanced
+            // break
           case c @ CodeBlock(block) =>
             event_orchestrator.events += c // keep the id the same
             // Since the block might send messages, make sure that we treat the

@@ -44,7 +44,15 @@ privileged public aspect WeaveActor {
   args(msg, ..) && this(me) {
     inst.beforeMessageReceive(me, msg);
   }
-  
+ 
+  // N.B. the order of the next two advice is important: need to catch throws
+  // before after
+  after(ActorCell me, Object msg) throwing (Exception ex):
+  execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
+  args(msg, ..) && this(me) {
+    inst.actorCrashed(me.self().path().name(), ex);
+  }
+ 
   after(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&
   args(msg, ..) && this(me) {

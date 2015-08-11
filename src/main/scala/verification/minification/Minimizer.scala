@@ -79,9 +79,13 @@ class MinimizationStats(val minimization_strategy: String, val test_oracle: Stri
   }
 
   def record_replay_start() {
+    stats("replay_start_epoch") = System.currentTimeMillis()
   }
 
   def record_replay_end() {
+    stats("replay_end_epoch") = System.currentTimeMillis()
+    stats("replay_duration_seconds") =
+      (stats("replay_end_epoch") * 1.0 - stats("replay_start_epoch")) / 1000
   }
 
   def record_prune_start() {

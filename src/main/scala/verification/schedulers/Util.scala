@@ -86,15 +86,31 @@ class MultiSet[E] extends Set[E] {
   def iterator: Iterator[E] = {
     return m.values.flatten.iterator
   }
+
+  // Return values in this set not present in the other set.
+  def setDifference(other: MultiSet[E]) : MultiSet[E] = {
+    val setDiff = new MultiSet[E]
+    m.keys.foreach {
+      case k =>
+        if (!(other.m contains k)) {
+          setDiff ++= m(k)
+        } else {
+          val elt = m(k)(0)
+          val count = m(k).size - other.m(k).size
+          (1 to count) foreach { case _ => setDiff += elt }
+        }
+    }
+    return setDiff
+  }
 }
 
 // Provides O(1) insert and removeRandomElement
-class RandomizedHashSet[E] extends Set[E] {
+class RandomizedHashSet[E](seed:Long=System.currentTimeMillis()) extends Set[E] {
   // We store a counter along with each element E to ensure uniqueness
   var arr = new ArrayBuffer[(E,Int)]
   // Value is index into array
   var hash = new HashMap[(E,Int),Int]
-  val rand = new Random(System.currentTimeMillis());
+  val rand = new Random(seed)
   // This multiset is only used for .contains().. can't use hash's keys since
   // we ensure that they're unique.
   var multiset = new MultiSet[E]
@@ -168,7 +184,7 @@ class RandomizedHashSet[E] extends Set[E] {
 
 // Used by applications to log messages to the console. Transparently attaches vector
 // clocks to log messages.
-class VCLogger () {
+class VCLogger (writer: PrintWriter=new PrintWriter(System.out)) {
   var actor2vc = new HashMap[String, VectorClock]
 
   // TODO(cs): is there a way to specify default values for Maps in scala?
@@ -184,7 +200,8 @@ class VCLogger () {
     // Increment the clock.
     vc = vc :+ src
     // Then print it, along with the message.
-    println(JSONObject(vc.versions).toString() + " " + src + ": " + msg)
+    writer.println(JSONObject(vc.versions).toString() + " " + src + ": " + msg)
+    writer.flush
     actor2vc(src) = vc
   }
 
@@ -411,9 +428,9 @@ object Util {
   val logger = new VCLogger()
 
   def getStackTrace (t: Throwable): String = {
-      val sw = new StringWriter()
-      t.printStackTrace(new PrintWriter(sw));
-      return sw.toString()
+    val sw = new StringWriter()
+    t.printStackTrace(new PrintWriter(sw));
+    return sw.toString()
   }
 
 

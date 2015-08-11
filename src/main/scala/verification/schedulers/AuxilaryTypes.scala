@@ -38,8 +38,7 @@ abstract trait Event
  *    the messages. This is achieved through `getComponents` and
  *    `maskComponents`.
  */
-// TODO(cs): should probably force this to be serializable
-trait ExternalMessageConstructor {
+abstract class ExternalMessageConstructor extends Serializable {
   // Construct the message
   def apply() : Any
   // Optional, for `shrinking`:

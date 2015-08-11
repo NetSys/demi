@@ -38,14 +38,13 @@ class CheckpointCollector {
 
   def prepareRequests(actorRefs: Seq[ActorRef]) : Seq[(String, Any)] = {
     checkpoints.clear()
-    // TODO(cs): I assume that crashed == ref.isTerminated... double check
-    // this!
-    val crashedActors = actorRefs.filter(ref => ref.isTerminated)
+    val crashedActors = Instrumenter().crashedActors ++
+      actorRefs.filter(ref => ref.isTerminated).map(r => r.path.name)
     for (crashed <- crashedActors) {
-      checkpoints(crashed.path.name) = None
+      checkpoints(crashed) = None
     }
-    expectedResponses = actorRefs.length - crashedActors.length
-    return actorRefs.filterNot(ref => ref.isTerminated).
+    expectedResponses = actorRefs.length - crashedActors.size
+    return actorRefs.filterNot(ref => crashedActors contains ref.path.name).
                      map(ref => ((ref.path.name, CheckpointRequest)))
   }
 
