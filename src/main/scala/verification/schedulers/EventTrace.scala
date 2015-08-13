@@ -237,6 +237,13 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
       case u @ UniqueMsgSend(MsgSend(snd, receiver, msg), id) =>
         if (EventTypes.isExternal(u)) {
           if (sendsQueue.isEmpty) {
+            // XXX
+            println("events:---")
+            getEvents.foreach { case e => println(e) }
+            println("---")
+            println("externals:---")
+            externals.foreach { case e => println(e) }
+            println("---")
             throw new IllegalStateException("sendsQueue is empty, yet " + u + " " + externals)
           }
           val send = sendsQueue.dequeue
