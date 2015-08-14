@@ -180,17 +180,6 @@ object RunnerUtils {
     replayer.shutdown
   }
 
-  def printMCS(mcs: Seq[ExternalEvent]) {
-    println("----------")
-    println("MCS: ")
-    mcs foreach {
-      case s @ Send(rcv, msgCtor) =>
-        println(s.label + ":Send("+rcv+","+msgCtor()+")")
-      case e => println(e.label + ":"+e.toString)
-    }
-    println("----------")
-  }
-
   def randomDDMin(experiment_dir: String,
                   schedulerConfig: SchedulerConfig,
                   messageDeserializer: MessageDeserializer) :
@@ -295,7 +284,7 @@ object RunnerUtils {
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
 
     val deserializer = new ExperimentDeserializer(experiment_dir)
-    val actorsNameProps = deserializer.get_actors
+    val actorNameProps = deserializer.get_actors
 
     val depGraphOpt = deserializer.get_dep_graph()
     var depGraph : Graph[Unique, DiEdge] = null
@@ -312,6 +301,29 @@ object RunnerUtils {
       case None => throw new IllegalArgumentException("Need initialTrace to run DPORwHeuristics")
     }
 
+    // Sched is just used as a dummy here to deserialize ActorRefs.
+    val dummy_sched = new ReplayScheduler(schedulerConfig)
+    Instrumenter().scheduler = dummy_sched
+    dummy_sched.populateActorSystem(deserializer.get_actors)
+    val violation = deserializer.get_violation(messageDeserializer)
+    val trace = deserializer.get_events(messageDeserializer,
+      Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
+
+    dummy_sched.shutdown
+
+    return editDistanceDporDDMin(schedulerConfig, trace, actorNameProps,
+      depGraph, initialTrace, violation, ignoreQuiescence)
+  }
+
+  def editDistanceDporDDMin(schedulerConfig: SchedulerConfig,
+                            trace: EventTrace,
+                            actorNameProps: Seq[Tuple2[Props, String]],
+                            depGraph: Graph[Unique, DiEdge],
+                            initialTrace: Queue[Unique],
+                            violation: ViolationFingerprint,
+                            ignoreQuiescence: Boolean) :
+        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
+
     def dporConstructor(): DPORwHeuristics = {
       val heuristic = new ArvindDistanceOrdering
       val dpor = new DPORwHeuristics(schedulerConfig,
@@ -324,14 +336,6 @@ object RunnerUtils {
       heuristic.init(dpor, initialTrace)
       return dpor
     }
-    // Sched is just used as a dummy here to deserialize ActorRefs.
-    val sched = dporConstructor()
-    Instrumenter().scheduler = sched
-    // Start up actors so we can deserialize ActorRefs
-    sched.maybeStartActors()
-    val violation = deserializer.get_violation(messageDeserializer)
-    val trace = deserializer.get_events(messageDeserializer,
-      Instrumenter().actorSystem).filterFailureDetectorMessages.filterCheckpointMessages
 
     // Convert Trace to a format DPOR will understand. Start by getting a list
     // of all actors, to be used for Kill events.
@@ -386,7 +390,7 @@ object RunnerUtils {
         // DPORwHeuristics doesn't have shutdownSemaphore.
         replayer.shutdown()
         try {
-          replayer.populateActorSystem(actorsNameProps)
+          replayer.populateActorSystem(actorNameProps)
           val replayTrace = replayer.replay(toReplay)
           replayTrace.setOriginalExternalEvents(mcs.events)
           verified_mcs = Some(replayTrace)
@@ -713,6 +717,17 @@ object RunnerUtils {
 
   def printDeliveries(trace: EventTrace) {
     getDeliveries(trace) foreach { case e => println(e) }
+  }
+
+  def printMCS(mcs: Seq[ExternalEvent]) {
+    println("----------")
+    println("MCS: ")
+    mcs foreach {
+      case s @ Send(rcv, msgCtor) =>
+        println(s.label + ":Send("+rcv+","+msgCtor()+")")
+      case e => println(e.label + ":"+e.toString)
+    }
+    println("----------")
   }
 
   // Generate a log that can be fed into ShiViz!
