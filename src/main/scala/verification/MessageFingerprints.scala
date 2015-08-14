@@ -22,6 +22,17 @@ trait MessageFingerprinter {
     }
     return None
   }
+
+  // Does this message trigger a logical clock contained in subsequent
+  // messages to be incremented?
+  def causesClockIncrement(msg: Any) : Boolean = false
+
+  // Extract a clock value from the contents of this message
+  def getLogicalClock(msg: Any) : Option[AnyVal] = None
+
+  // Given a logical clock AnyVal [extracted with getLogicalClock], decrement
+  // it on our behalf.
+  def decrementLogicalClock(clock: AnyVal) : AnyVal = clock
 }
 
 // A simple fingerprint template for user-defined fingerprinters. Should
