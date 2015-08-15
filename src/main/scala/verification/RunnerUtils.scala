@@ -333,6 +333,7 @@ object RunnerUtils {
       dpor.setInitialDepGraph(depGraph)
       dpor.setMaxMessagesToSchedule(initialTrace.size)
       dpor.setInitialTrace(new Queue[Unique] ++ initialTrace)
+      dpor.setActorNameProps(actorNameProps)
       heuristic.init(dpor, initialTrace)
       return dpor
     }
