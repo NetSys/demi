@@ -337,37 +337,8 @@ object RunnerUtils {
       return dpor
     }
 
-    // Convert Trace to a format DPOR will understand. Start by getting a list
-    // of all actors, to be used for Kill events.
-    var allActors = trace flatMap {
-      case SpawnEvent(_,_,name,_) => Some(name)
-      case _ => None
-    }
-    // Verify crash-stop, not crash-recovery
-    val allActorsSet = allActors.toSet
-    assert(allActors.size == allActorsSet.size)
-
-    val filtered_externals = trace.original_externals flatMap {
-      // TODO(cs): DPOR ignores Start after we've invoked setActorNameProps... Ignore them here?
-      case s: Start => Some(s)
-      case s: Send => Some(s)
-      // Convert the following externals into Unique's, since DPORwHeuristics
-      // needs ids to match them up correctly.
-      case w: WaitQuiescence =>
-        if (ignoreQuiescence) {
-          None
-        } else {
-          Some(Unique(w, id=w._id))
-        }
-      case k @ Kill(name) =>
-        Some(Unique(NetworkPartition(Set(name), allActorsSet), id=k._id))
-      case p @ Partition(a,b) =>
-        Some(Unique(NetworkPartition(Set(a), Set(b)), id=p._id))
-      case u @ UnPartition(a,b) =>
-        Some(Unique(NetworkUnpartition(Set(a), Set(b)), id=u._id))
-      case _ => None
-    }
-
+    val filtered_externals = DPORwHeuristicsUtil.convertToDPORTrace(trace,
+      ignoreQuiescence=ignoreQuiescence)
     val resumableDPOR = new ResumableDPOR(dporConstructor)
     val ddmin = new IncrementalDDMin(resumableDPOR,
                                      checkUnmodifed=true,
@@ -375,6 +346,7 @@ object RunnerUtils {
     val mcs = ddmin.minimize(filtered_externals, violation)
 
     // Verify the MCS. First, verify that DPOR can reproduce it.
+    // TODO(cs): factor this out.
     println("Validating MCS...")
     var verified_mcs : Option[EventTrace] = None
     val traceOpt = ddmin.verify_mcs(mcs, violation)

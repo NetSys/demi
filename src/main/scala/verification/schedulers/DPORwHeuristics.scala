@@ -1320,4 +1320,39 @@ object DPORwHeuristicsUtil {
     }
     return toReplay
   }
+
+  // Convert externals to a format DPOR will understand
+  def convertToDPORTrace(trace: EventTrace, ignoreQuiescence:Boolean=true): Seq[ExternalEvent] = {
+    // Convert Trace to a format DPOR will understand. Start by getting a list
+    // of all actors, to be used for Kill events.
+    var allActors = trace flatMap {
+      case SpawnEvent(_,_,name,_) => Some(name)
+      case _ => None
+    }
+    // Verify crash-stop, not crash-recovery
+    val allActorsSet = allActors.toSet
+    assert(allActors.size == allActorsSet.size)
+
+    val filtered_externals = trace.original_externals flatMap {
+      // TODO(cs): DPOR ignores Start after we've invoked setActorNameProps... Ignore them here?
+      case s: Start => Some(s)
+      case s: Send => Some(s)
+      // Convert the following externals into Unique's, since DPORwHeuristics
+      // needs ids to match them up correctly.
+      case w: WaitQuiescence =>
+        if (ignoreQuiescence) {
+          None
+        } else {
+          Some(Unique(w, id=w._id))
+        }
+      case k @ Kill(name) =>
+        Some(Unique(NetworkPartition(Set(name), allActorsSet), id=k._id))
+      case p @ Partition(a,b) =>
+        Some(Unique(NetworkPartition(Set(a), Set(b)), id=p._id))
+      case u @ UnPartition(a,b) =>
+        Some(Unique(NetworkUnpartition(Set(a), Set(b)), id=u._id))
+      case _ => None
+    }
+    return filtered_externals
+  }
 }
