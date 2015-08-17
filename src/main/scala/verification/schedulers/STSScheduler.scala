@@ -24,6 +24,12 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
+case class WildCardMatch(
+  snd: String,
+  rcv: String,
+  msgFilter: (Any) => Boolean
+)
+
 // TODO(cs): STSSched ignores external WaitQuiescence events. That's a little
 // weird, since the minimization routines are feeding different combinations
 // of WaitQuiescence events as part of the external event subsequences, yet we
@@ -275,8 +281,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // Make sure to create all actors, not just those with Start events.
     // Prevents tellEnqueue issues.
     val spawns = original_trace.getEvents flatMap {
-       case SpawnEvent(_,props,name,_) => Some((props, name))
-       case _ => None
+      case SpawnEvent(_,props,name,_) => Some((props, name))
+      case _ => None
     }
     assert(spawns.toSet.size == spawns.length)
     peeker.populateActorSystem(spawns)
@@ -301,10 +307,18 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   def messagePending(sender: String, receiver: String, msg: Any) : Boolean = {
     // Make sure to send any external messages that recently got enqueued
     send_external_messages(false)
-    val key = (sender, receiver,
-               messageFingerprinter.fingerprint(msg))
-
-    return pendingEvents.get(key) match {
+    val queueOpt = msg match {
+      case WildCardMatch(snd, rcv, msgFilter) =>
+        // Unfortunately, O(n) operation.
+        pendingEvents.keys.find({ case (s,r,m) =>
+          (s == snd && r == rcv && msgFilter(m)) })
+        .map(k => pendingEvents(k))
+      case _ =>
+        val key = (sender, receiver,
+                   messageFingerprinter.fingerprint(msg))
+        pendingEvents.get(key)
+    }
+    queueOpt match {
       case Some(queue) =>
         // The message is pending, but also double check that the
         // destination isn't currently blocked.
