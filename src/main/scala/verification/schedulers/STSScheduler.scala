@@ -310,8 +310,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       case Some(hash) =>
         msg match {
           case WildCardMatch(msgFilter) =>
-            hash.keys.find(k => msgFilter(k)) match {
-              case Some(key) => Some(hash(key))
+            hash.find({ case (m,q) => msgFilter(q.head.element._2.message) }) match {
+              case Some((m,q)) => Some(q)
               case _ => None
             }
           case _ =>
@@ -610,7 +610,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
         // Pick the most recent pending key
         val outerKey = (snd, rcv)
         val innerKey = pendingEvents(outerKey).filter(
-          { case (m,q) => messageFilter(m) }).toSeq.sortBy(
+          { case (m,q) => messageFilter(q.head.element._2.message) }).toSeq.sortBy(
           { case (m,q) => q.map(uniq => uniq.id).max }).last._1
         (outerKey, innerKey)
       case MsgEvent(snd, rcv, msg) =>
