@@ -2,41 +2,43 @@ package akka.dispatch.verification
 
 import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
+import scala.collection.mutable.HashSet
 import scala.collection.mutable.SynchronizedQueue
 import akka.actor.Props
 
 import scala.util.Sorting
+import scala.reflect.ClassTag
 
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
-
-// Domain-specific strategy:
-//  - Cluster messages according to their clock value
-//  - For each cluster:
-//     - remove the cluster
-//     - decrement the clock values of all subsequent clusters
-//     - see if the violation is still produced
+// Domain-specific strategy. See design doc:
+//   https://docs.google.com/document/d/1_EqOkSehZVC7oE2hjV1FxY8jw4mXAlM5ESigQYt4ojg/edit
 class FungibleClockMinimizer(
   schedulerConfig: SchedulerConfig,
   mcs: Seq[ExternalEvent],
   trace: EventTrace,
   actorNameProps: Seq[Tuple2[Props, String]],
   violation: ViolationFingerprint,
-  stats: MinimizationStats,
   initializationRoutine: Option[() => Any]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
   postTest: Option[STSScheduler.PostTestCallback]=None)
   extends InternalEventMinimizer {
 
+  // N.B. for best results, run RunnerUtils.minimizeInternals on the result if
+  // we managed to remove anything here.
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
     val stats = new MinimizationStats("FungibleClockMinimizer", "STSSched")
     val clockClusterizer = new ClockClusterizer(trace,
       schedulerConfig.messageFingerprinter)
-    var nextTrace = clockClusterizer.getNextTrace()
+
+    var minTrace = trace
+
+    var nextTrace = clockClusterizer.getNextTrace(false)
     while (!nextTrace.isEmpty) {
       stats.increment_replays
+
       val ret = RunnerUtils.testWithStsSched(
         schedulerConfig,
         mcs,
@@ -47,11 +49,14 @@ class FungibleClockMinimizer(
         initializationRoutine=initializationRoutine,
         preTest=preTest,
         postTest=postTest)
-      println("RET WAS: " + ret.size)
-      // TODO(cs): if (!ret.isEmpty)
+
+      if (!ret.isEmpty && ret.get.size < minTrace.size) {
+        minTrace = ret.get
+      }
+      nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty)
     }
 
-    return (stats, null)
+    return (stats, minTrace)
   }
 }
 
@@ -61,60 +66,211 @@ class ClockClusterizer(
 
   // Clustering:
   // - Cluster all message deliveries according to their Term number.
-  // - Find all preceding TimerDeliveries for each cluster, and add them
-  //   to the cluster. Unfortunately, there's a caveat: the `generation`
-  //   field of the Timers probably means that we can't just move them around
-  //   arbitrarily.
-  //   [General strategy: we know that the 0th TimerDelivery for a
-  //   particular Actor belongs to the cluster with clock=1, 1st TimerDelivery to the
-  //   cluster with clock=2 etc. Tell DPOR to deliver N TimerDeliveries of
-  //   unspecified generation before the next cluster.]
+  // - Finding which TimerDeliveries to include is hard [need to reason about
+  //   actor's current clock values], so instead try just removing one at a time
+  //   until a violation is found, for each cluster we're going to try
+  //   removing.
 
   // Iteration:
-  // - Pick a cluster to remove
-  // - Decrement the Term numbers for all subsequent clusters
+  // - Pick a cluster to remove [starting with removing an empty set]
+  // - Wildcard all subsequent clusters
   // - Always include all other events that do not have a Term number
 
-  var clocksToRemove = new Queue[Long] ++ originalTrace.flatMap {
-    case MsgEvent(snd,rcv,msg) =>
-      fingerprinter.getLogicalClock(msg)
-    case _ => None
-  }.toSet.toSeq.sorted
+  // Which UniqueMsgEvent ids (other than TimerDeliveries) to include next
+  val clusterIterator = new ClockClusterIterator(originalTrace, fingerprinter)
+  assert(clusterIterator.hasNext)
+  var currentCluster = clusterIterator.next // Start by not removing any clusters
 
-  // TODO(cs): pass in previous clusters we have successfully removed?
-  def getNextTrace() : Option[EventTrace] = {
-    if (clocksToRemove.isEmpty) {
-      return None
+  // Which ids of ElectionTimers we've already tried adding for the current
+  // cluster. clear()'ed whenever we update the next cluster to remove.
+  // TODO(cs): could optimize this by adding elements that we
+  // know must be included.
+  var timerIterator = OneAtATimeIterator.fromTrace(originalTrace, fingerprinter)
+  var currentTimers = Set[Int]()
+
+  def getNextTrace(violationReproducedLastRun: Boolean) : Option[EventTrace] = {
+    if (violationReproducedLastRun) {
+      timerIterator.producedViolation(currentTimers)
+      clusterIterator.producedViolation(currentCluster)
     }
-    val clockToRemove = clocksToRemove.dequeue
-    val actor2clock = new HashMap[String,Long]
+
+    if (!timerIterator.hasNext) {
+      if (!clusterIterator.hasNext) {
+        return None
+      }
+
+      timerIterator.reset
+      currentCluster = clusterIterator.next
+      println("Trying to remove clock cluster: " +
+        clusterIterator.inverse(currentCluster).toSeq.sorted)
+    }
+
+    assert(timerIterator.hasNext)
+    currentTimers = timerIterator.next
+    println("Trying to remove timers: " + timerIterator.inverse(currentTimers).toSeq.sorted)
+
     val events = new SynchronizedQueue[Event]
-    events ++= originalTrace.flatMap {
-      case m @ MsgEvent(snd,rcv,msg) =>
-        if (fingerprinter.causesClockIncrement(msg)) {
-          val currentClock = actor2clock.getOrElse(rcv, 0.toLong)
-          if (currentClock + 1 == clockToRemove) {
-            None
-          } else {
-            actor2clock(rcv) = currentClock + 1
-            Some(MsgEvent(snd,rcv,WildCardMatch("deadLetters",
-              rcv, fingerprinter.causesClockIncrement)))
+    events ++= originalTrace.events.flatMap {
+      case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
+        if (currentTimers contains id) {
+          Some(UniqueMsgEvent(MsgEvent(snd,rcv,
+            WildCardMatch(fingerprinter.causesClockIncrement)), id))
+        } else if (currentCluster contains id) {
+          val classTag = ClassTag(msg.getClass)
+          def messageFilter(pendingMsg: Any): Boolean = {
+            ClassTag(pendingMsg.getClass) == classTag
           }
+          Some(UniqueMsgEvent(MsgEvent(snd,rcv,
+            WildCardMatch(messageFilter)), id))
         } else {
-          val clock = fingerprinter.getLogicalClock(msg)
-          if (clock.isEmpty) {
-            Some(m)
-          } else if (clock.get == clockToRemove) {
-            None
-          } else if (clock.get > clockToRemove) {
-            Some(MsgEvent(snd,rcv,fingerprinter.decrementLogicalClock(clock.get)))
-          } else {
-            Some(m)
-          }
+          None
         }
+      case t @ UniqueTimerDelivery(_, _) =>
+        throw new IllegalArgumentException("TimerDelivery not supported. Replay first")
       case e => Some(e)
     }
 
     return Some(new EventTrace(events, originalTrace.original_externals))
   }
+}
+
+// First iteration always includes all events
+class ClockClusterIterator(originalTrace: EventTrace, fingerprinter: FingerprintFactory) {
+  var clocks = originalTrace.flatMap {
+    case MsgEvent(snd,rcv,msg) =>
+      fingerprinter.getLogicalClock(msg)
+    case _ => None
+  }.toSet.toSeq.sorted
+
+  val allIds = originalTrace.events.flatMap {
+    case m @ UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
+      if (!fingerprinter.causesClockIncrement(msg) &&
+          !fingerprinter.getLogicalClock(msg).isEmpty) {
+        Some(id)
+      } else {
+        None
+      }
+    case t @ UniqueTimerDelivery(_, _) =>
+      throw new IllegalArgumentException("TimerDelivery not supported. Replay first")
+    case e => None
+  }.toSet
+
+  // Start by not removing any of the clock clusters, only trying to minimize
+  // Timers.
+  var firstClusterRemoval = true
+  // Then: start with the first non-empty cluster
+  var nextClockToRemove : Long = -1
+  // Which clock values are safe to remove, i.e. we know that it's possible to
+  // trigger the violation if they are removed.
+  var blacklist = Set[Int]()
+
+  private def current : Set[Int] = {
+    val currentClockToRemove : Long = if (firstClusterRemoval) -1 else nextClockToRemove
+
+    originalTrace.events.flatMap {
+      case m @ UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
+        if (fingerprinter.causesClockIncrement(msg)) {
+          // Handled by OneAtATimeIterator
+          None
+        } else {
+          val clock = fingerprinter.getLogicalClock(msg)
+          if (clock.isEmpty) {
+            Some(id)
+          } else {
+            val clockVal = clock.get
+            if (clockVal == currentClockToRemove || (blacklist contains id)) {
+              None
+            } else {
+              Some(id)
+            }
+          }
+        }
+      case t @ UniqueTimerDelivery(_, _) =>
+        throw new IllegalArgumentException("TimerDelivery not supported. Replay first")
+      case e => None
+    }.toSet
+  }
+
+  // pre: hasNext
+  def next : Set[Int] = {
+    if (firstClusterRemoval) {
+      val ret = current
+      firstClusterRemoval = false
+      ret
+    } else {
+      nextClockToRemove = clocks.head
+      val ret = current
+      clocks = clocks.tail
+      ret
+    }
+  }
+
+  def hasNext = firstClusterRemoval || !clocks.isEmpty
+
+  def producedViolation(previouslyIncluded: Set[Int]) {
+    blacklist = blacklist ++ inverse(previouslyIncluded)
+  }
+
+  def inverse(toInclude: Set[Int]) = allIds -- toInclude
+}
+
+object OneAtATimeIterator {
+  def fromTrace(originalTrace: EventTrace, fingerprinter: FingerprintFactory): OneAtATimeIterator = {
+    var allTimerIds = Set[Int]() ++ originalTrace.events.flatMap {
+      case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
+        if (fingerprinter.causesClockIncrement(msg)) {
+          Some(id)
+        } else {
+          None
+        }
+      case _ => None
+    }
+    return new OneAtATimeIterator(allTimerIds)
+  }
+}
+
+// First iteration always includes all timers
+// Second iteration includes all timers except the first,
+// etc.
+class OneAtATimeIterator(all: Set[Int]) {
+  var toRemove = all.toSeq.sorted
+  var first = true // if first, don't remove any elements
+  // Timers that allow the violation to be triggered after having been removed
+  var blacklist = Set[Int]()
+
+  private def current = {
+    if (first) {
+      all -- blacklist
+    } else {
+      (all - toRemove.head) -- blacklist
+    }
+  }
+
+  // pre: hasNext
+  def next = {
+    if (first) {
+      val ret = current
+      first = false
+      ret
+    } else {
+      val ret = current
+      toRemove = toRemove.tail
+      ret
+    }
+  }
+
+  def hasNext = {
+    first || !toRemove.isEmpty
+  }
+
+  def producedViolation(previouslyIncluded: Set[Int]) {
+    blacklist = blacklist ++ inverse(previouslyIncluded)
+  }
+
+  def reset {
+    toRemove = (all -- blacklist).toSeq.sorted
+    first = true
+  }
+
+  def inverse(toInclude: Set[Int]) = all -- toInclude
 }
