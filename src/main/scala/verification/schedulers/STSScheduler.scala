@@ -222,7 +222,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       case _ => None
     }
     val ret = violationFound match {
-      case true => Some(event_orchestrator.events)
+      case true =>
+        event_orchestrator.events.
+          setOriginalExternalEvents(original_trace.original_externals)
+        Some(event_orchestrator.events)
       case false => None
     }
     postTestCallback()
