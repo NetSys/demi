@@ -22,6 +22,13 @@ trait MessageFingerprinter {
     }
     return None
   }
+
+  // Does this message trigger a logical clock contained in subsequent
+  // messages to be incremented?
+  def causesClockIncrement(msg: Any) : Boolean = false
+
+  // Extract a clock value from the contents of this message
+  def getLogicalClock(msg: Any) : Option[Long] = None
 }
 
 // A simple fingerprint template for user-defined fingerprinters. Should
@@ -91,5 +98,27 @@ class FingerprintFactory {
       }
     }
     throw new IllegalStateException("Should have matched")
+  }
+
+  // Does this message trigger a logical clock contained in subsequent
+  // messages to be incremented?
+  def causesClockIncrement(msg: Any) : Boolean = {
+    for (fingerprinter <- fingerprinters) {
+      if (fingerprinter.causesClockIncrement(msg)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  // Extract a clock value from the contents of this message
+  def getLogicalClock(msg: Any) : Option[Long] = {
+    for (fingerprinter <- fingerprinters) {
+      val opt = fingerprinter.getLogicalClock(msg)
+      if (!opt.isEmpty) {
+        return opt
+      }
+    }
+    return None
   }
 }

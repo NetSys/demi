@@ -67,6 +67,18 @@ class DefaultBacktrackOrdering extends BacktrackOrdering {
   }
 }
 
+// Combine with: DPORwHeuristics.setMaxDistance(0)
+class StopImmediatelyOrdering extends BacktrackOrdering {
+  // Default: order by depth. Longer depth is given higher priority.
+  def getOrdered(tuple: DPORwHeuristics.BacktrackKey) = new Ordered[DPORwHeuristics.BacktrackKey] {
+    def compare(other: DPORwHeuristics.BacktrackKey) = tuple._1.compare(other._1)
+  }
+
+  def getDistance(tuple: DPORwHeuristics.BacktrackKey) : Int = {
+    return Int.MaxValue
+  }
+}
+
 // Unlike traditional edit distance:
 //  - do not consider any changes to word1, i.e. keep word1 fixed.
 //  - do not penalize deletions.

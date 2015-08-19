@@ -39,6 +39,29 @@ object IntervalPeekScheduler {
   }
 
   // Flatten all enabled events into a sorted list of (raw, non-fingerprinted) MsgEvents
+  def flattenedEnabledNested(pendingEvents:
+    HashMap[(String, String), HashMap[MessageFingerprint,
+                                      Queue[Uniq[(Cell, Envelope)]]]])
+                                        : Seq[MsgEvent] = {
+    // Last element of queue's tuple is the unique id, which is assumed to be
+    // monotonically increasing by time of arrival.
+    val unsorted = new Queue[(String, String, Any, Int)]
+    pendingEvents.foreach {
+      case (key, hash) =>
+        hash.foreach {
+          case (msg, queue) =>
+            for (uniq <- queue) {
+              if (key._2 != FailureDetector.fdName) {
+                unsorted += ((key._1, key._2, uniq.element._2.message, uniq.id))
+              }
+            }
+        }
+    }
+    return unsorted.sortBy[Int](tuple => tuple._4).
+                    map(tuple => MsgEvent(tuple._1, tuple._2, tuple._3))
+  }
+
+  // Flatten all enabled events into a sorted list of (raw, non-fingerprinted) MsgEvents
   def flattenedEnabled(pendingEvents: HashMap[
       (String, String, MessageFingerprint), Queue[Uniq[(Cell, Envelope)]]]) : Seq[MsgEvent] = {
     // Last element of queue's tuple is the unique id, which is assumed to be

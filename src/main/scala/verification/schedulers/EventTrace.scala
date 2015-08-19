@@ -220,10 +220,30 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
       return getEvents
     }
     val sendsQueue = Queue(sends: _*)
+
+    // ---- Check an assertion: ----
+    val sendsSet = new HashSet[UniqueMsgSend]
+    events.foreach {
+      case u @ UniqueMsgSend(MsgSend(snd, receiver, msg), id) =>
+        if (sendsSet contains u) {
+          throw new AssertionError("Duplicate UniqueMsgSend " + u + " " + events.mkString("\n"))
+        }
+        sendsSet += u
+      case _ =>
+    }
+    // ----------------------
+
     return getEvents(events map {
       case u @ UniqueMsgSend(MsgSend(snd, receiver, msg), id) =>
         if (EventTypes.isExternal(u)) {
           if (sendsQueue.isEmpty) {
+            // XXX
+            println("events:---")
+            getEvents.foreach { case e => println(e) }
+            println("---")
+            println("externals:---")
+            externals.foreach { case e => println(e) }
+            println("---")
             throw new IllegalStateException("sendsQueue is empty, yet " + u + " " + externals)
           }
           val send = sendsQueue.dequeue
