@@ -29,10 +29,6 @@ trait MessageFingerprinter {
 
   // Extract a clock value from the contents of this message
   def getLogicalClock(msg: Any) : Option[Long] = None
-
-  // Given a logical clock AnyVal [extracted with getLogicalClock], decrement
-  // it on our behalf.
-  def decrementLogicalClock(msg: Any) : Any = msg
 }
 
 // A simple fingerprint template for user-defined fingerprinters. Should
@@ -124,18 +120,5 @@ class FingerprintFactory {
       }
     }
     return None
-  }
-
-  // Given a logical clock AnyVal [extracted with getLogicalClock], decrement
-  // it on our behalf.
-  def decrementLogicalClock(msg: Any) : Any = {
-    for (fingerprinter <- fingerprinters) {
-      val dec = fingerprinter.decrementLogicalClock(msg)
-      if (dec != msg) {
-        return dec
-      }
-    }
-    throw new IllegalStateException(
-      "fingerprinters do not know how to decrementLogicalClock")
   }
 }
