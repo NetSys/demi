@@ -25,7 +25,9 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Logger
 
 case class WildCardMatch(
-  msgFilter: (Any) => Boolean
+  // Given a list of pending messages, sorted from least recently to most
+  // recently sent, return one or None of them
+  msgSelector: (Seq[Any]) => Option[Any]
 )
 
 // TODO(cs): STSSched ignores external WaitQuiescence events. That's a little
@@ -312,11 +314,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     val queueOpt = pendingEvents.get((sender, receiver)) match {
       case Some(hash) =>
         msg match {
-          case WildCardMatch(msgFilter) =>
-            hash.find({ case (m,q) => msgFilter(q.head.element._2.message) }) match {
-              case Some((m,q)) => Some(q)
-              case _ => None
-            }
+          case WildCardMatch(msgSelector) =>
+            msgSelector(hash.values.flatten.toSeq.sortBy(uniq => uniq.id).
+               map(uniq => uniq.element._2.message))
           case _ =>
             hash.get(messageFingerprinter.fingerprint(msg))
         }
@@ -326,7 +326,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       case Some(queue) =>
         // The message is pending, but also double check that the
         // destination isn't currently blocked.
-        !queue.isEmpty && !(Instrumenter().blockedActors contains receiver)
+        !(Instrumenter().blockedActors contains receiver)
       case None =>
         false
     }
@@ -609,12 +609,11 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
     // Pick next message based on trace.
     val (outerKey, innerKey) = event_orchestrator.current_event match {
-      case MsgEvent(snd, rcv, WildCardMatch(messageFilter)) =>
-        // Pick the most recent pending key
+      case MsgEvent(snd, rcv, WildCardMatch(messageSelector)) =>
         val outerKey = (snd, rcv)
-        val innerKey = pendingEvents(outerKey).filter(
-          { case (m,q) => messageFilter(q.head.element._2.message) }).toSeq.sortBy(
-          { case (m,q) => q.map(uniq => uniq.id).max }).last._1
+        val selectedMsg = messageSelector(pendingEvents(outerKey).values.flatten.
+          toSeq.sortBy(uniq => uniq.id).map(uniq => uniq.element._2.message)).get
+        val innerKey = messageFingerprinter.fingerprint(selectedMsg)
         (outerKey, innerKey)
       case MsgEvent(snd, rcv, msg) =>
         ((snd, rcv), messageFingerprinter.fingerprint(msg))

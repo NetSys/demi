@@ -114,14 +114,18 @@ class ClockClusterizer(
       case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
         if (currentTimers contains id) {
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
-            WildCardMatch(fingerprinter.causesClockIncrement)), id))
+            WildCardMatch((lst) =>
+              lst.find(fingerprinter.causesClockIncrement))),
+            id))
         } else if (currentCluster contains id) {
           val classTag = ClassTag(msg.getClass)
           def messageFilter(pendingMsg: Any): Boolean = {
             ClassTag(pendingMsg.getClass) == classTag
           }
+          // Choose the least recently sent message for now.
+          // TODO(cs): make this configurable.
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
-            WildCardMatch(messageFilter)), id))
+            WildCardMatch((lst) => lst.find(messageFilter))), id))
         } else {
           None
         }
