@@ -681,6 +681,9 @@ class FullyRandom(
   }
 }
 
+// TODO(cs): simulate TCP connection resets, i.e. allow us to randomly drop
+// all pending messages for a src,dst pair. Probably trigger them via external
+// events, e.g. Kills or HardKills or something else.
 class SrcDstFIFO extends RandomizationStrategy {
   private var srcDsts = new ArrayList[(String, String)]
   private val rand = new Random(System.currentTimeMillis())
