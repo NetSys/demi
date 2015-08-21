@@ -2,6 +2,9 @@ package akka.dispatch.verification
 
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Queue
+import scala.collection.mutable.HashMap
+import scala.collection.mutable.HashSet
+import scala.collection.mutable.ArrayBuffer
 import akka.actor.Props
 
 // Minimizes internal events. One-time-use -- you shouldn't invoke minimize() more
@@ -30,9 +33,11 @@ class STSSchedMinimizer(
     val origTrace = verified_mcs.filterCheckpointMessages.filterFailureDetectorMessages
     var lastFailingTrace = origTrace
     // { (snd,rcv,fingerprint) }
-    val prunedOverall = new MultiSet[(String,String,Any)]
+    val prunedOverall = new MultiSet[(String,String,MessageFingerprint)]
     // TODO(cs): make this more efficient? Currently O(n^2) overall.
-    var nextTrace = removalStrategy.getNextTrace(lastFailingTrace, prunedOverall)
+    var violationTriggered = false
+    var nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
+      prunedOverall, violationTriggered)
 
     while (!nextTrace.isEmpty) {
       RunnerUtils.testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
@@ -42,19 +47,20 @@ class STSSchedMinimizer(
           // Some other events may have been pruned by virtue of being absent. So
           // we reassign lastFailingTrace, then pick then next trace based on
           // it.
+          violationTriggered = true
           val filteredTrace = trace.filterCheckpointMessages.filterFailureDetectorMessages
           val origSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
           val newSize = RunnerUtils.countMsgEvents(filteredTrace)
           val diff = origSize - newSize
           println("Ignoring worked! Pruned " + diff + "/" + origSize + " deliveries")
 
-          val priorDeliveries = new MultiSet[(String,String,Any)]
+          val priorDeliveries = new MultiSet[(String,String,MessageFingerprint)]
           priorDeliveries ++= RunnerUtils.getFingerprintedDeliveries(
             lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages,
             schedulerConfig.messageFingerprinter
           )
 
-          val newDeliveries = new MultiSet[(String,String,Any)]
+          val newDeliveries = new MultiSet[(String,String,MessageFingerprint)]
           newDeliveries ++= RunnerUtils.getFingerprintedDeliveries(
             filteredTrace,
             schedulerConfig.messageFingerprinter
@@ -71,10 +77,12 @@ class STSSchedMinimizer(
           lastFailingTrace.setOriginalExternalEvents(mcs)
         case None =>
           // We didn't trigger the violation.
-          println("Ignoring didn't work. Trying next")
+          violationTriggered = false
+          println("Ignoring didn't work.")
           None
       }
-      nextTrace = removalStrategy.getNextTrace(lastFailingTrace, prunedOverall)
+      nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
+        prunedOverall, violationTriggered)
     }
     val origSize = RunnerUtils.countMsgEvents(origTrace)
     val newSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
@@ -86,7 +94,7 @@ class STSSchedMinimizer(
 }
 
 // An "Iterator" for deciding which subsequence of events we should try next.
-// Inheritors must implement the "getNextTrace" method.
+// Inheritors must implement the "choiceFilter" method.
 abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: FingerprintFactory) {
   // MsgEvents we've tried ignoring so far. MultiSet to account for duplicate MsgEvent's
   val triedIgnoring = new MultiSet[(String, String, MessageFingerprint)]
@@ -118,25 +126,18 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
 
   init()
 
-  def getNextTrace(lastFailingTrace: EventTrace,
-                   alreadyPruned: MultiSet[(String,String,Any)]) : Option[EventTrace]
-
   def unignorable: Int = _unignorable
-}
-
-// TODO(cs): this is a bit redundant with OneAtATimeRemoval + STSSched.
-class LeftToRightOneAtATime(
-  verified_mcs: EventTrace, messageFingerprinter:  FingerprintFactory)
-  extends RemovalStrategy(verified_mcs, messageFingerprinter) {
 
   // Filter out the next MsgEvent, and return the resulting EventTrace.
   // If we've tried filtering out all MsgEvents, return None.
   def getNextTrace(trace: EventTrace,
-                   alreadyRemoved: MultiSet[(String,String,Any)]): Option[EventTrace] = {
+                   alreadyRemoved: MultiSet[(String,String,MessageFingerprint)],
+                   violationTriggered: Boolean)
+                 : Option[EventTrace] = {
     // Track what events we've kept so far because we
     // already tried ignoring them previously. MultiSet to account for
     // duplicate MsgEvent's. TODO(cs): this may lead to some ambiguous cases.
-    val keysThisIteration = new MultiSet[(String, String, Any)]
+    val keysThisIteration = new MultiSet[(String, String, MessageFingerprint)]
     // We already tried 'keeping' prior events that were successfully ignored
     // but no longer show up in this trace.
     keysThisIteration ++= alreadyRemoved
@@ -152,7 +153,8 @@ class LeftToRightOneAtATime(
         return true
       } else {
         // Check if we should ignore or keep this one.
-        if (keysThisIteration.count(key) > triedIgnoring.count(key)) {
+        if (keysThisIteration.count(key) > triedIgnoring.count(key) &&
+            choiceFilter(key._1, key._2, key._3)) {
           // We found something to ignore
           println("Ignoring next: " + key)
           foundIgnoredEvent = true
@@ -194,48 +196,128 @@ class LeftToRightOneAtATime(
     // We didn't find anything else to ignore, so we're done
     return None
   }
+
+  // choiceFilter: if the given (snd,rcv,fingerprint,UniqueMsgEvent.id) is eligible to be
+  // picked next, return true or false if it should be picked.
+  // Guarenteed to be invoked in left-to-right order
+  def choiceFilter(snd: String, rcv: String,
+    fingerprint: MessageFingerprint) : Boolean
 }
 
-/*
+class LeftToRightOneAtATime(
+  verified_mcs: EventTrace, messageFingerprinter:  FingerprintFactory)
+  extends RemovalStrategy(verified_mcs, messageFingerprinter) {
+
+  override def choiceFilter(s: String, r: String, f: MessageFingerprint) = true
+}
+
 // For any <src, dst> pair, maintains FIFO delivery (i.e. assumes TCP as the
 // underlying transport medium), and only tries removing the last message
 // (iteratively) from each FIFO queue.
+//
+// Assumes that the original trace was generated using a src,dst FIFO delivery
+// discipline.
 class SrcDstFIFORemoval(
   verified_mcs: EventTrace, messageFingerprinter:  FingerprintFactory)
   extends RemovalStrategy(verified_mcs, messageFingerprinter) {
 
-  // N.B. the queue is actually reversed: last message is at the head.
   // N.B. doesn't actually contain TimerDeliveries; only real messages. Timers
   // are harder to reason about, and this is just an optimization anyway, so
   // just try removing them in random order.
-  val srcDstToMessages = new HashMap[(String, String), Queue[UniqueMsgEvent]]
-  // Set of <src, dst> pairs that still have a message that we can try
-  // ignoring.
-  val remainingSrcDsts = new HashSet[(String, String)]
+  // Queue is: ids of UniqueMsgEvents.
+  val srcDstToMessages = new HashMap[(String, String), Vector[MessageFingerprint]]
 
-  verified_mcs.events.reverse.foreach {
+  verified_mcs.events.foreach {
+    case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
     case m @ UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
-      srcDstToMessages.getOrElse((snd,rcv), new Queue[UniqueMsgEvent]) += m
-    case e =>
+      val vec = srcDstToMessages.getOrElse((snd,rcv), Vector[MessageFingerprint]())
+      val newVec = vec :+ messageFingerprinter.fingerprint(msg)
+      srcDstToMessages((snd,rcv)) = newVec
+    case _ =>
   }
 
-  srcDstToMessages.keys.foreach {
-    case (src, dst) =>
-      if (srcDstToMessages((src,dst)).head) {
+  // The src,dst pair we chose last time getNextTrace was invoked.
+  var previouslyChosenSrcDst : Option[(String,String)] = None
+  // To deal with the possibility of multiple indistinguishable pending
+  // messages at different points in the execution:
+  // As choiceFilter is invoked, mark off where we are in the ArrayList for a
+  // given src,dst pair. Only return true if we're at the end of the
+  // ArrayList.
+  val srcDstToCurrentIdx = new HashMap[(String, String), Int]
+  def resetSrcDstToCurrentIdx() {
+    srcDstToMessages.keys.foreach {
+      case (src,dst) =>
+        srcDstToCurrentIdx((src,dst)) = -1
+    }
+  }
+  resetSrcDstToCurrentIdx()
+
+  def choiceFilter(snd: String, rcv: String,
+                   fingerprint: MessageFingerprint) : Boolean = {
+    if (srcDstToMessages contains ((snd,rcv))) {
+      srcDstToCurrentIdx((snd,rcv)) += 1
+      val idx = srcDstToCurrentIdx((snd,rcv))
+      val lst = srcDstToMessages((snd,rcv))
+      if (idx == lst.length - 1) {
+        assert(lst(idx) == fingerprint)
+        srcDstToMessages((snd,rcv)) = srcDstToMessages((snd,rcv)).dropRight(1)
+        if (srcDstToMessages((snd,rcv)).isEmpty) {
+          println("src,dst is done!: " + ((snd,rcv)))
+          srcDstToMessages -= ((snd,rcv))
+        }
+        previouslyChosenSrcDst = Some((snd,rcv))
+        return true
       }
-    remainingSrcDsts
+    }
+
+    previouslyChosenSrcDst = None
+
+    if (snd == "deadLetters") { // Timer
+      return true
+    }
+
+    return false
   }
 
-  def getNextEventToIgnore(): Option[Event] = {
-    // First check if there are any remainingSrcDsts.
-
-    // Finally, try to find an arbitrary UniqueTimerDelivery we haven't tried
-    // ignoring yet.
-  }
-
-  // TODO(cs): account for HardKills, which should reset the FIFO queues
+  // Filter out the next MsgEvent, and return the resulting EventTrace.
+  // If we've tried filtering out all MsgEvents, return None.
+  // TODO(cs): account for Kills & HardKills, which would reset the FIFO queues
   // involving that node.
-  def getNextTrace(lastFailingTrace: EventTrace) : Option[EventTrace] = {
+  override def getNextTrace(trace: EventTrace,
+                   alreadyRemoved: MultiSet[(String,String,MessageFingerprint)],
+                   violationTriggeredLastRun: Boolean): Option[EventTrace] = {
+    if (!violationTriggeredLastRun && !previouslyChosenSrcDst.isEmpty) {
+      // Ignoring didn't work, so this src,dst is done.
+      println("src,dst is done: " + previouslyChosenSrcDst.get)
+      srcDstToMessages -= previouslyChosenSrcDst.get
+    }
+
+    if (violationTriggeredLastRun) {
+      // Some of the messages in srcDstToMessages may have been pruned as
+      // "freebies" -- i.e. they may have been absent --  in the last run.
+      // -> Recompute srcDstToMessages (in reverse order, in case there are
+      // multiple indistinguishable events)
+      srcDstToMessages.clear
+      val alreadyRemovedCopy = new MultiSet[(String,String,MessageFingerprint)]
+      alreadyRemovedCopy ++= alreadyRemoved
+      verified_mcs.events.reverse.foreach {
+        case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
+        case m @ UniqueMsgEvent(MsgEvent(snd, rcv, msg), id) =>
+          val tuple = ((snd,rcv,messageFingerprinter.fingerprint(msg)))
+          if (alreadyRemovedCopy contains tuple) {
+            alreadyRemovedCopy -= tuple
+          } else {
+            val vec = srcDstToMessages.getOrElse((snd,rcv), Vector[MessageFingerprint]())
+            // N.B. prepend, not append, so that it comes out in the same order
+            // as the original trace
+            val newVec = vec.+:(messageFingerprinter.fingerprint(msg))
+            srcDstToMessages((snd,rcv)) = newVec
+          }
+        case _ =>
+      }
+    }
+    resetSrcDstToCurrentIdx()
+
+    return super.getNextTrace(trace, alreadyRemoved, violationTriggeredLastRun)
   }
 }
-*/

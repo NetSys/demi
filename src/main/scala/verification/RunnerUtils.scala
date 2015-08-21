@@ -410,16 +410,20 @@ object RunnerUtils {
                         verified_mcs: EventTrace,
                         actorNameProps: Seq[Tuple2[Props, String]],
                         violation: ViolationFingerprint,
+                        removalStrategy:RemovalStrategy=null, // If null, use LeftToRightRemoval
                         preTest: Option[STSScheduler.PreTestCallback]=None,
                         postTest: Option[STSScheduler.PostTestCallback]=None,
                         initializationRoutine: Option[() => Any]=None) :
       Tuple2[MinimizationStats, EventTrace] = {
 
+    var _removalStrategy = if (removalStrategy == null)
+      new LeftToRightOneAtATime(verified_mcs, schedulerConfig.messageFingerprinter)
+      else removalStrategy
+
     println("Minimizing internals..")
     println("verified_mcs.original_externals: " + verified_mcs.original_externals)
-    val removalStrategy = new LeftToRightOneAtATime(verified_mcs, schedulerConfig.messageFingerprinter)
     val minimizer = new STSSchedMinimizer(mcs, verified_mcs, violation,
-      removalStrategy, schedulerConfig, actorNameProps,
+      _removalStrategy, schedulerConfig, actorNameProps,
       initializationRoutine=initializationRoutine,
       preTest=preTest, postTest=postTest)
     return minimizer.minimize()
@@ -669,7 +673,7 @@ object RunnerUtils {
 
   def getFingerprintedDeliveries(trace: EventTrace,
                                  messageFingerprinter: FingerprintFactory):
-                               Seq[(String,String,Any)] = {
+                               Seq[(String,String,MessageFingerprint)] = {
     RunnerUtils.getDeliveries(trace) map {
       case MsgEvent(snd,rcv,msg) =>
         ((snd,rcv,messageFingerprinter.fingerprint(msg)))
