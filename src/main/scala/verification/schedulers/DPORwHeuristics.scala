@@ -122,7 +122,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   var currentTime = 0
   var interleavingCounter = 0
 
-  val pendingEvents = new HashMap[String, Queue[(Unique, Cell, Envelope)]]
+  // { (snd,rcv) => pending messages }
+  val pendingEvents = new HashMap[(String,String), Queue[(Unique, Cell, Envelope)]]
   val actorNames = new HashSet[String]
 
   val depGraph = Graph[Unique, DiEdge]()
@@ -440,27 +441,27 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         // The trace says there is a message event to run.
         case Some(u @ Unique(MsgEvent(snd, rcv, msg), id)) =>
           // Look at the pending events to see if such message event exists.
-          pendingEvents.get(rcv) match {
+          pendingEvents.get((snd,rcv)) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
             case None =>  None
           }
 
         case Some(u @ Unique(NetworkPartition(_, _), id)) =>
           // Look at the pending events to see if such message event exists.
-          pendingEvents.get(SCHEDULER) match {
+          pendingEvents.get((SCHEDULER,SCHEDULER)) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
             case None =>  None
           }
 
         case Some(u @ Unique(NetworkUnpartition(_, _), id)) =>
           // Look at the pending events to see if such message event exists.
-          pendingEvents.get(SCHEDULER) match {
+          pendingEvents.get((SCHEDULER,SCHEDULER)) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
             case None =>  None
           }
 
         case Some(u @ Unique(WaitQuiescence(), _)) => // Look at the pending events to see if such message event exists.
-          pendingEvents.get(SCHEDULER) match {
+          pendingEvents.get((SCHEDULER,SCHEDULER)) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
             case None =>  None
           }
@@ -500,7 +501,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
 
     // Are there any prioritized events that need to be dispatched.
-    pendingEvents.get(PRIORITY) match {
+    pendingEvents.get((PRIORITY,PRIORITY)) match {
       case Some(queue) if !queue.isEmpty => {
         val (_, cell, env) = queue.dequeue()
         return Some((cell, env))
@@ -694,18 +695,18 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             instrumenter().actorMappings(rcv) ! msgCtor()
 
           case uniq @ Unique(par : NetworkPartition, id) =>
-            val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
-            pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
+            val msgs = pendingEvents.getOrElse((SCHEDULER,SCHEDULER), new Queue[(Unique, Cell, Envelope)])
+            pendingEvents((SCHEDULER,SCHEDULER)) = msgs += ((uniq, null, null))
             maybeAddGraphNode(uniq)
 
           case uniq @ Unique(par : NetworkUnpartition, id) =>
-            val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
-            pendingEvents(SCHEDULER) = msgs += ((uniq, null, null))
+            val msgs = pendingEvents.getOrElse((SCHEDULER,SCHEDULER), new Queue[(Unique, Cell, Envelope)])
+            pendingEvents((SCHEDULER,SCHEDULER)) = msgs += ((uniq, null, null))
             maybeAddGraphNode(uniq)
 
           case event @ Unique(WaitQuiescence(), _) =>
-            val msgs = pendingEvents.getOrElse(SCHEDULER, new Queue[(Unique, Cell, Envelope)])
-            pendingEvents(SCHEDULER) = msgs += ((event, null, null))
+            val msgs = pendingEvents.getOrElse((SCHEDULER,SCHEDULER), new Queue[(Unique, Cell, Envelope)])
+            pendingEvents((SCHEDULER,SCHEDULER)) = msgs += ((event, null, null))
             maybeAddGraphNode(event)
             await = true
 
@@ -819,17 +820,17 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       // CheckpointRequests and failure detector messeages are simply enqueued to the priority queued
       // and dispatched at the earliest convenience.
       case NodesReachable | NodesUnreachable | CheckpointRequest =>
-        val msgs = pendingEvents.getOrElse(PRIORITY, new Queue[(Unique, Cell, Envelope)])
-        pendingEvents(PRIORITY) = msgs += ((null, cell, envelope))
+        val msgs = pendingEvents.getOrElse((PRIORITY,PRIORITY), new Queue[(Unique, Cell, Envelope)])
+        pendingEvents((PRIORITY,PRIORITY)) = msgs += ((null, cell, envelope))
 
       case _ =>
         val unique @ Unique(msg : MsgEvent, id) = getMessage(cell, envelope)
-        val msgs = pendingEvents.getOrElse(msg.receiver, new Queue[(Unique, Cell, Envelope)])
+        val msgs = pendingEvents.getOrElse((msg.sender,msg.receiver), new Queue[(Unique, Cell, Envelope)])
         // Do not enqueue if bound hit
         if (!should_bound || currentDepth < stop_at_depth) {
           logger.trace(Console.BLUE + "Enqueuing event " + cell + " " + envelope + " " + unique +
                        " (" + parentEvent + ") " + Console.RESET)
-          pendingEvents(msg.receiver) = msgs += ((unique, cell, envelope))
+          pendingEvents((msg.sender,msg.receiver)) = msgs += ((unique, cell, envelope))
         } else {
           logger.debug(Console.RED + "Not adding message because we hit depth bound " + Console.RESET)
         }
@@ -972,7 +973,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       }
     }
 
-    pendingEvents.get(receiver) match {
+    pendingEvents.get(("deadLetters",receiver)) match {
       case Some(q) =>
         q.dequeueFirst(equivalentTo(_)) match {
           case Some(u) => logger.trace(Console.RED + " Removing pending event (" +
