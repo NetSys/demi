@@ -24,12 +24,6 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-case class WildCardMatch(
-  // Given a list of pending messages, sorted from least recently to most
-  // recently sent, return one or None of them
-  msgSelector: (Seq[Any]) => Option[Any]
-)
-
 // TODO(cs): STSSched ignores external WaitQuiescence events. That's a little
 // weird, since the minimization routines are feeding different combinations
 // of WaitQuiescence events as part of the external event subsequences, yet we
@@ -610,10 +604,14 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // Pick next message based on trace.
     val (outerKey, innerKey) = event_orchestrator.current_event match {
       case MsgEvent(snd, rcv, WildCardMatch(messageSelector)) =>
-        val outerKey = (snd, rcv)
-        val selectedMsg = messageSelector(pendingEvents(outerKey).values.flatten.
-          toSeq.sortBy(uniq => uniq.id).map(uniq => uniq.element._2.message)).get
-        val innerKey = messageFingerprinter.fingerprint(selectedMsg)
+        val outerKey = ((snd, rcv))
+        val pendingKeyValues = pendingEvents(outerKey).
+          toIndexedSeq.sortBy(keyValue => keyValue._2.head.id)
+        // Assume that all messages within the same Queue are
+        // indistinguishable from the perspect of messageSelector.
+        val pendingValues = pendingKeyValues.map(pair => pair._2.head.element._2.message)
+        val selectedMsgIdx = messageSelector(pendingValues).get
+        val innerKey = pendingKeyValues(selectedMsgIdx)._1
         (outerKey, innerKey)
       case MsgEvent(snd, rcv, msg) =>
         ((snd, rcv), messageFingerprinter.fingerprint(msg))

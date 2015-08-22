@@ -18,16 +18,20 @@ import scalax.collection.mutable.Graph,
 // pending messages.
 trait AmbiguityResolutionStrategy {
   type MessageSelector = (Any) => Boolean
-  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Any]
+
+  // Return the index of the selected message, if any.
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Int]
 }
 
+// N.B. should only be used with STSSched. DPORwHeuristics doesn't guarentee
+// that pending messages are presented in order of delivery time.
 class SrcDstFIFOOnly extends AmbiguityResolutionStrategy {
   // If the first pending message doesn't match, give up.
-  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Any] = {
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Int] = {
     pending.headOption match {
       case Some(msg) =>
         if (msgSelector(msg))
-          Some(msg)
+          Some(0)
         else
           None
       case None =>
