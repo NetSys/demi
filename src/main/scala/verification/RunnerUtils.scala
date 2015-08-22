@@ -610,20 +610,17 @@ object RunnerUtils {
         while (!traceStats.isEmpty) {
           val current = traceStats.head
           traceStats = traceStats.tail
+
           if (prev == null) {
-            println(s"{} message deliveries: {} ({} externals, {} timers)",
-                    current._1, current._2.size, current._3, current._4)
+            println(s"${current._1} message deliveries: ${current._2.size} (${current._3} externals, ${current._4} timers)")
           } else {
-            println(s"Removed by {}: {} ({} externals, {} timers)",
-              current._1, (current._2.size - prev._2.size),
-              (current._3 - prev._3), (current._4 - prev._4))
+            println(s"Removed by ${current._1}: ${(prev._2.size - current._2.size)} (${(prev._3 - current._3)} externals, ${(prev._4 - current._4)} timers)")
           }
 
           prev = current
 
           if (traceStats.isEmpty) {
-            println(s"Final deliveries: {} ({} externals, {} timers)",
-              current._1, current._2.size, current._3, current._4)
+            println(s"Final deliveries: ${current._2.size} (${current._3} externals, ${current._4} timers)")
             // TODO(cs): annotate which events are unignorable.
             println("Final messages delivered:") // w/o fingerints
             current._2 foreach { case e => println(e) }
