@@ -13,6 +13,29 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
+// When there are multiple pending messages between a given src,dst pair,
+// choose how the WildCardMatch's message selector should be applied to the
+// pending messages.
+trait AmbiguityResolutionStrategy {
+  type MessageSelector = (Any) => Boolean
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Any]
+}
+
+class SrcDstFIFOOnly extends AmbiguityResolutionStrategy {
+  // If the first pending message doesn't match, give up.
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Any] = {
+    pending.headOption match {
+      case Some(msg) =>
+        if (msgSelector(msg))
+          Some(msg)
+        else
+          None
+      case None =>
+        None
+    }
+  }
+}
+
 // Domain-specific strategy. See design doc:
 //   https://docs.google.com/document/d/1_EqOkSehZVC7oE2hjV1FxY8jw4mXAlM5ESigQYt4ojg/edit
 class FungibleClockMinimizer(
@@ -21,6 +44,7 @@ class FungibleClockMinimizer(
   trace: EventTrace,
   actorNameProps: Seq[Tuple2[Props, String]],
   violation: ViolationFingerprint,
+  resolutionStrategy:AmbiguityResolutionStrategy=new SrcDstFIFOOnly,
   initializationRoutine: Option[() => Any]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
   postTest: Option[STSScheduler.PostTestCallback]=None)
@@ -31,7 +55,7 @@ class FungibleClockMinimizer(
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
     val stats = new MinimizationStats("FungibleClockMinimizer", "STSSched")
     val clockClusterizer = new ClockClusterizer(trace,
-      schedulerConfig.messageFingerprinter)
+      schedulerConfig.messageFingerprinter, resolutionStrategy)
 
     var minTrace = trace
 
@@ -62,7 +86,8 @@ class FungibleClockMinimizer(
 
 class ClockClusterizer(
     originalTrace: EventTrace,
-    fingerprinter: FingerprintFactory) {
+    fingerprinter: FingerprintFactory,
+    resolutionStrategy: AmbiguityResolutionStrategy) {
 
   // Clustering:
   // - Cluster all message deliveries according to their Term number.
@@ -115,7 +140,7 @@ class ClockClusterizer(
         if (currentTimers contains id) {
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
             WildCardMatch((lst) =>
-              lst.find(fingerprinter.causesClockIncrement))),
+              resolutionStrategy.resolve(fingerprinter.causesClockIncrement, lst))),
             id))
         } else if (currentCluster contains id) {
           val classTag = ClassTag(msg.getClass)
@@ -123,9 +148,9 @@ class ClockClusterizer(
             ClassTag(pendingMsg.getClass) == classTag
           }
           // Choose the least recently sent message for now.
-          // TODO(cs): make this configurable.
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
-            WildCardMatch((lst) => lst.find(messageFilter))), id))
+            WildCardMatch((lst) =>
+             resolutionStrategy.resolve(messageFilter, lst))), id))
         } else {
           None
         }
