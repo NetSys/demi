@@ -109,17 +109,23 @@ object RunnerUtils {
 
   def deserializeExperiment(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
-      scheduler: ExternalEventInjector[_] with Scheduler,
+      scheduler: ExternalEventInjector[_] with Scheduler=null, // if null, use dummy
       traceFile:String=ExperimentSerializer.event_trace):
                   Tuple3[EventTrace, ViolationFingerprint, Option[Graph[Unique, DiEdge]]] = {
     val deserializer = new ExperimentDeserializer(experiment_dir)
-    Instrumenter().scheduler = scheduler
-    scheduler.populateActorSystem(deserializer.get_actors)
-    scheduler.setActorNamePropPairs(deserializer.get_actors)
+    val _scheduler = if (scheduler == null)
+      new ReplayScheduler(SchedulerConfig())
+      else scheduler
+    Instrumenter().scheduler = _scheduler
+    _scheduler.populateActorSystem(deserializer.get_actors)
+    _scheduler.setActorNamePropPairs(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer,
                   Instrumenter().actorSystem, traceFile=traceFile)
     val dep_graph = deserializer.get_dep_graph()
+    if (scheduler == null) {
+      _scheduler.shutdown
+    }
     return (trace, violation, dep_graph)
   }
 
