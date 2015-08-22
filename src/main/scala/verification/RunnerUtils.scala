@@ -416,21 +416,21 @@ object RunnerUtils {
                         verified_mcs: EventTrace,
                         actorNameProps: Seq[Tuple2[Props, String]],
                         violation: ViolationFingerprint,
-                        removalStrategy:RemovalStrategy=null, // If null, use LeftToRightRemoval
+                        removalStrategyCtor:()=>RemovalStrategy=null, // If null, use LeftToRightOneAtATime
                         preTest: Option[STSScheduler.PreTestCallback]=None,
                         postTest: Option[STSScheduler.PostTestCallback]=None,
                         initializationRoutine: Option[() => Any]=None) :
       Tuple2[MinimizationStats, EventTrace] = {
 
-    var _removalStrategy = if (removalStrategy == null)
-      new LeftToRightOneAtATime(verified_mcs, schedulerConfig.messageFingerprinter)
-      else removalStrategy
+    val removalStrategy = if (removalStrategyCtor == null)
+        new LeftToRightOneAtATime(verified_mcs, schedulerConfig.messageFingerprinter)
+        else removalStrategyCtor()
 
     println("Minimizing internals..")
     println("verified_mcs.original_externals: " + verified_mcs.original_externals)
     val minimizer = new STSSchedMinimizer(mcs, verified_mcs, violation,
-      _removalStrategy, schedulerConfig, actorNameProps,
-      initializationRoutine=initializationRoutine,
+      removalStrategy, schedulerConfig,
+      actorNameProps, initializationRoutine=initializationRoutine,
       preTest=preTest, postTest=postTest)
     return minimizer.minimize()
   }
