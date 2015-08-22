@@ -1046,12 +1046,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       val earlier = getEvent(earlierI, trace)
       val later = getEvent(laterI, trace)
 
-      // See if this interleaving has been explored.
-      //val explored = exploredTracker.isExplored((later, earlier))
-      //if (explored) return None
-
       (earlier.event, later.event) match {
-
         // Since the later event is completely independent, we
         // can simply move it in front of the earlier event.
         // This might cause the earlier event to become disabled,
@@ -1061,7 +1056,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           val needToReplay = List(later, earlier)
 
           exploredTracker.setExplored(branchI, (earlier, later))
-
           return Some((branchI, needToReplay))
 
         // Similarly, we move an earlier independent event
@@ -1075,7 +1069,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             .toList :+ earlier
 
           exploredTracker.setExplored(branchI, (earlier, later))
-
           return Some((branchI, needToReplay))
 
         // Since the later event is completely independent, we
@@ -1087,7 +1080,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           val needToReplay = List(later, earlier)
 
           exploredTracker.setExplored(branchI, (earlier, later))
-
           return Some((branchI, needToReplay))
 
         // Similarly, we move an earlier independent event
@@ -1101,7 +1093,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             .toList :+ earlier
 
           exploredTracker.setExplored(branchI, (earlier, later))
-
           return Some((branchI, needToReplay))
 
         case (_: MsgEvent, _: MsgEvent) =>
@@ -1126,7 +1117,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           val needToReplayV = needToReplay.toList
 
           exploredTracker.setExplored(branchI, (earlier, later))
-
           return Some((branchI, needToReplayV))
       }
       return None
@@ -1192,7 +1182,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       for(earlierI <- 0 to laterI - 1) {
         val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, trace)
 
-        if ( isCoEnabeled(earlier, later)) {
+        if (isCoEnabeled(earlier, later)) {
           analyze_dep(earlierI, laterI, trace) match {
             case Some((branchI, needToReplayV)) =>
               // Since we're exploring an already executed trace, we can
