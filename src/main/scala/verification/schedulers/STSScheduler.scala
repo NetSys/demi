@@ -308,7 +308,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     val queueOpt = pendingEvents.get((sender, receiver)) match {
       case Some(hash) =>
         msg match {
-          case WildCardMatch(msgSelector) =>
+          case WildCardMatch(msgSelector,_) =>
             msgSelector(hash.values.flatten.toSeq.sortBy(uniq => uniq.id).
                map(uniq => uniq.element._2.message))
           case _ =>
@@ -603,7 +603,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
     // Pick next message based on trace.
     val (outerKey, innerKey) = event_orchestrator.current_event match {
-      case MsgEvent(snd, rcv, WildCardMatch(messageSelector)) =>
+      case MsgEvent(snd, rcv, WildCardMatch(messageSelector,_)) =>
         val outerKey = ((snd, rcv))
         val pendingKeyValues = pendingEvents(outerKey).
           toIndexedSeq.sortBy(keyValue => keyValue._2.head.id)

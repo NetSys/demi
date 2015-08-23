@@ -154,7 +154,8 @@ class ClockClusterizer(
           // Choose the least recently sent message for now.
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
             WildCardMatch((lst) =>
-             resolutionStrategy.resolve(messageFilter, lst))), id))
+             resolutionStrategy.resolve(messageFilter, lst),
+             name=classTag.toString)), id))
         } else {
           None
         }
@@ -162,7 +163,6 @@ class ClockClusterizer(
         throw new IllegalArgumentException("TimerDelivery not supported. Replay first")
       case e => Some(e)
     }
-
     return Some(new EventTrace(events, originalTrace.original_externals))
   }
 }

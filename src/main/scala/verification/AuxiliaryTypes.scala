@@ -56,16 +56,11 @@ case class NetworkUnpartition(
 case object RootEvent extends Event
 
 case class WildCardMatch(
-  // Given a list of pending messages, return this index of the chosen one, or None
-  // [Implementation note: STSSched guarentees that the pending events will
-  //  be sorted from least recently to most recently sent. DPORwHeuristics
-  //  does not]
-  msgSelector: (Seq[Any]) => Option[Int]
+  // Given a list of pending messages, sorted from least recently to most
+  // recently sent, return this index of the chosen one, or None
+  msgSelector: (Seq[Any]) => Option[Int],
+  name:String=""
 )
-
-//case object DporQuiescence extends Event with ExternalEvent
-
-
 
 // Base class for failure detector messages
 abstract class FDMessage
