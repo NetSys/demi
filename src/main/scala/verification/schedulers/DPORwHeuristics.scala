@@ -881,17 +881,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   // Called after receive is done being processed
   def after_receive(cell: Cell) {}
 
-  def printPath(path : List[depGraph.NodeT]) : String = {
-    var pathStr = ""
-    for(node <- path) {
-      node.value match {
-        case Unique(m : MsgEvent, id) => pathStr += id + " "
-        case _ => throw new Exception("internal error not a message")
-      }
-    }
-    return pathStr
-  }
-
   def notify_quiescence() {
     if (foundLookingFor) {
       // We're done.

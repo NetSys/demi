@@ -608,7 +608,6 @@ object Util {
     }
   
   
-  
   def urlses(cl: ClassLoader): Array[java.net.URL] = cl match {
     case null => Array()
     case u: java.net.URLClassLoader => u.getURLs() ++ urlses(cl.getParent)
