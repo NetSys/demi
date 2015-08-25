@@ -310,7 +310,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
         msg match {
           case WildCardMatch(msgSelector,_) =>
             msgSelector(hash.values.flatten.toSeq.sortBy(uniq => uniq.id).
-               map(uniq => uniq.element._2.message))
+              map(uniq => uniq.element._2.message), (i: Int) => None)
           case _ =>
             hash.get(messageFingerprinter.fingerprint(msg))
         }
@@ -610,7 +610,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
         // Assume that all messages within the same Queue are
         // indistinguishable from the perspect of messageSelector.
         val pendingValues = pendingKeyValues.map(pair => pair._2.head.element._2.message)
-        val selectedMsgIdx = messageSelector(pendingValues).get
+        val selectedMsgIdx = messageSelector(pendingValues, (i: Int) => None).get
         val innerKey = pendingKeyValues(selectedMsgIdx)._1
         (outerKey, innerKey)
       case MsgEvent(snd, rcv, msg) =>

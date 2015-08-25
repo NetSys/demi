@@ -56,9 +56,13 @@ case class NetworkUnpartition(
 case object RootEvent extends Event
 
 case class WildCardMatch(
-  // Given a list of pending messages, sorted from least recently to most
-  // recently sent, return this index of the chosen one, or None
-  msgSelector: (Seq[Any]) => Option[Int],
+  // Given:
+  //   - a list of pending messages, sorted from least recently to most recently sent
+  //   - a "backtrack setter" function: given an index of the pending
+  //     messages, sets a backtrack point for that pending message, to be
+  //     replayed in the future.
+  // return the index of the chosen one, or None
+  msgSelector: (Seq[Any], (Int) => Unit) => Option[Int],
   name:String=""
 )
 

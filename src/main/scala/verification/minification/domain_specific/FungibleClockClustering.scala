@@ -26,13 +26,15 @@ trait AmbiguityResolutionStrategy {
   type MessageSelector = (Any) => Boolean
 
   // Return the index of the selected message, if any.
-  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Int]
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any],
+              backtrackSetter: (Int) => Unit) : Option[Int]
 }
 
 class SrcDstFIFOOnly extends AmbiguityResolutionStrategy {
   // If the first pending message doesn't match, give up.
   // For Timers though, allow any of them to matched.
-  def resolve(msgSelector: MessageSelector, pending: Seq[Any]) : Option[Int] = {
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any],
+              backtrackSetter: (Int) => Unit) : Option[Int] = {
     pending.headOption match {
       case Some(msg) =>
         if (msgSelector(msg))
@@ -51,12 +53,43 @@ class SrcDstFIFOOnly extends AmbiguityResolutionStrategy {
 // Key constraint: need to make sure that we're always making progress, i.e.
 // what we're exploring would be shorter if it pans out.
 
-// TODO(cs): For UDP bugs: adds a backtrack point to try a
-// different match if there are multiple ambiguous pending matches.
+// For UDP bugs: set a backtrack point every time there are multiple pending
+// messages of the same type, and have DPORwHeuristics go back and explore
+// those.
+class BackTrackStrategy extends AmbiguityResolutionStrategy {
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any],
+              backtrackSetter: (Int) => Unit) : Option[Int] = {
+    val matching = pending.zipWithIndex.filter({ case (msg,i) =>
+      msgSelector(msg) })
+
+    if (!matching.isEmpty) {
+      // Set backtrack points, if any, for any messages that are of the same
+      // type, but not exactly the same as eachother.
+      val alreadyTried = new HashSet[Any]
+      alreadyTried += matching.head._1
+      matching.tail.filter {
+        case (msg,i) =>
+          if (!(alreadyTried contains msg)) {
+            alreadyTried += msg
+            true
+          } else {
+            false
+          }
+      }.foreach {
+        case (msg,i) => backtrackSetter(i)
+      }
+
+      return matching.headOption.map(t => t._2)
+    }
+
+    return None
+  }
+}
 
 object TestScheduler extends Enumeration {
   type TestScheduler = Value
-  val STSSched, DPORwHeuristics = Value
+  val STSSched = Value // Implies SrcDstFIFOOnly AmbiguityResolutionStrategy
+  val DPORwHeuristics = Value // Implies BackTrackStrategy AmbiguityResolutionStrategy
 }
 
 // Domain-specific strategy. See design doc:
@@ -69,7 +102,6 @@ class FungibleClockMinimizer(
   violation: ViolationFingerprint,
   testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
   depGraph: Option[Graph[Unique,DiEdge]]=None,
-  resolutionStrategy:AmbiguityResolutionStrategy=new SrcDstFIFOOnly,
   initializationRoutine: Option[() => Any]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
   postTest: Option[STSScheduler.PostTestCallback]=None)
@@ -87,10 +119,10 @@ class FungibleClockMinimizer(
       // TODO(cs): deal with Partitions, etc.
     }
 
-    // TODO(cs): keep the same dpor instance across runs.
+    // TODO(cs): keep the same dpor instance across runs, so that we don't
+    // explore reduant executions.
     val dpor = new DPORwHeuristics(schedulerConfig,
                         prioritizePendingUponDivergence=true,
-                        backtrackHeuristic=new StopImmediatelyOrdering,
                         stopIfViolationFound=false,
                         startFromBackTrackPoints=false,
                         skipBacktrackComputation=true,
@@ -99,7 +131,7 @@ class FungibleClockMinimizer(
       case Some(g) => dpor.setInitialDepGraph(g)
       case None =>
     }
-    dpor.setMaxDistance(0)
+    // dpor.setMaxDistance(0) x backtrack points are only set explicitly by us
     dpor.setMaxMessagesToSchedule(uniques.size)
     dpor.setActorNameProps(actorNameProps)
     val filtered_externals = DPORwHeuristicsUtil.convertToDPORTrace(mcs,
@@ -128,6 +160,9 @@ class FungibleClockMinimizer(
   // we managed to remove anything here.
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
     val stats = new MinimizationStats("FungibleClockMinimizer", "STSSched")
+    val resolutionStrategy = if (testScheduler == TestScheduler.DPORwHeuristics)
+      new BackTrackStrategy
+      else new SrcDstFIFOOnly
     val clockClusterizer = new ClockClusterizer(trace,
       schedulerConfig.messageFingerprinter, resolutionStrategy)
 
@@ -216,7 +251,7 @@ class ClockClusterizer(
       case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
         if (currentTimers contains id) {
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
-            WildCardMatch((lst) => {
+            WildCardMatch((lst, backtrackSetter) => {
                 // Timers get to bypass the resolutionStrategy: allow any match
                 val idx = lst.indexWhere(fingerprinter.causesClockIncrement)
                 if (idx == -1) None else Some(idx)
@@ -230,8 +265,8 @@ class ClockClusterizer(
           }
           // Choose the least recently sent message for now.
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
-            WildCardMatch((lst) =>
-             resolutionStrategy.resolve(messageFilter, lst),
+            WildCardMatch((lst, backtrackSetter) =>
+             resolutionStrategy.resolve(messageFilter, lst, backtrackSetter),
              name=classTag.toString)), id))
         } else {
           None

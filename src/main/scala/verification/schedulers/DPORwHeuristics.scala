@@ -37,15 +37,17 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
+
+// TODO(cs): mark any pending messages destined for blockedActors as
+// (temporarily) not enabled.
 // TODO(cs): remove FailureDetector support. Not used.
 // TODO(cs): remove Partition/Unpartition support? Not strictly needed.
 // TODO(cs): don't assume enqueue_message is just for timers.
 
 object DPORwHeuristics {
   // Tuple is:
-  // (depth where race occurs, (racingEvent1, racingEvent2), postfix beyond
-  //  the common prefix of the racing events that needs to be played to
-  //  co-enable the racing events.)
+  // (depth where race occurs, (racingEvent1, racingEvent2), events to replay
+  //  including the racing events)
   type BacktrackKey = (Int, (Unique, Unique), List[Unique])
 }
 
@@ -451,10 +453,25 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             case Some(queue) =>
               // queue should already be ordered by send order
               val pending = queue.toIndexedSeq
+              def backtrackSetter(idx: Int) {
+                val priorEvent = currentTrace.last
+                val branchI = currentTrace.length - 1
+                val toPlayNext = pending(idx)._1
+                logger.trace("Setting backtrack point: " + priorEvent + " " + toPlayNext)
+                // TODO(cs): too specific to FungibleClockClustering.. we abuse
+                // the last tuple item to include our remaining WildCards [nextTrace.clone]
+                backTrack.enqueue((branchI, (priorEvent, toPlayNext),
+                     currentTrace.clone.toList ++ List(toPlayNext) ++ nextTrace.clone.toList))
+              }
               val pendingMessages = pending.map { case t => t._3.message }
-              msgSelector(pendingMessages) match {
+              msgSelector(pendingMessages, backtrackSetter) match {
                 case Some(idx) =>
                   val found = pending(idx)
+                  // Mark this as done ordering done. // TODO(cs): possibly
+                  // not necessary
+                  val priorEvent = currentTrace.last
+                  val branchI = currentTrace.length - 1
+                  exploredTracker.setExplored(branchI, (priorEvent, found._1))
                   queue.dequeueFirst(e => e == found)
                 case None => None
               }
@@ -1230,7 +1247,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       val (maxIndex, (e1, e2), replayThis) = backTrack.dequeue
 
       exploredTracker.isExplored((e1, e2)) match {
-        case true => return getNext()
+        case true =>
+          println("Skipping backTrack point: " + e1 + " " + e2)
+          return getNext()
         case false => return Some((maxIndex, (e1, e2), replayThis))
       }
     }
@@ -1238,7 +1257,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     getNext() match {
       case Some((maxIndex, (e1, e2), replayThis)) =>
         logger.info(Console.RED + "Exploring a new message interleaving " +
-           e1.id + " and " + e2.id  + " at index " + maxIndex + Console.RESET)
+           e1 + " and " + e2  + " at index " + maxIndex + Console.RESET)
 
         exploredTracker.setExplored(maxIndex, (e1, e2))
         exploredTracker.trimExplored(maxIndex)
