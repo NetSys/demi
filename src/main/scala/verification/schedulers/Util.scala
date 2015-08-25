@@ -501,11 +501,11 @@ object Util {
   def dequeueOne[T1, T2](outer : HashMap[T1, Queue[T2]]) : Option[T2] =
     
     outer.headOption match {
-        case Some((receiver, queue)) =>
+        case Some((outerKey, queue)) =>
 
           if (queue.isEmpty == true) {
             
-            outer.remove(receiver) match {
+            outer.remove(outerKey) match {
               case Some(key) => dequeueOne(outer)
               case None => throw new Exception("internal error")
             }
@@ -606,7 +606,6 @@ object Util {
       case Unique(m :MsgEvent, id) => println("\t " + id + " " + m.sender + " -> " + m.receiver + " " + m.msg)
       case Unique(s: SpawnEvent, id) => println("\t " + id + " " + s.name)
     }
-  
   
   
   def urlses(cl: ClassLoader): Array[java.net.URL] = cl match {

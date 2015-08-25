@@ -475,6 +475,7 @@ class Instrumenter {
     _random = new Random(0)
     counter += 1
     
+    reset_cancellables
     reset_per_system_state
     
     println("Started a new actor system.")
