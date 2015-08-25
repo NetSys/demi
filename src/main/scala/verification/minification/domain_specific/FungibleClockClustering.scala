@@ -13,8 +13,9 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
-// TODO(cs): major optimization: if some of the WildCardMatches are absent, i.e.
-// skipped over, yet the violation is triggered, we should remove those.
+// TODO(cs): could optimize a bit by not trying to remove all timers for all
+// clusters. At some point [after the first cluster], just stop as soon as the
+// first violation is removed.
 
 // TODO(cs): SrcDstFIFOOnly technically isn't enough to ensure FIFO removal --
 // currently ClockClusterizer can violate the FIFO scheduling discipline.
@@ -107,7 +108,8 @@ class FungibleClockMinimizer(
   postTest: Option[STSScheduler.PostTestCallback]=None)
   extends InternalEventMinimizer {
 
-  def testWithDpor(nextTrace: EventTrace, stats: MinimizationStats): Option[EventTrace] = {
+  def testWithDpor(nextTrace: EventTrace, stats: MinimizationStats,
+                   absentIgnored: STSScheduler.IgnoreAbsentCallback): Option[EventTrace] = {
     val uniques = new Queue[Unique] ++ nextTrace.events.flatMap {
       case UniqueMsgEvent(m @ MsgEvent(snd,rcv,wildcard), id) =>
         Some(Unique(m,id=(-1)))
@@ -127,11 +129,13 @@ class FungibleClockMinimizer(
                         startFromBackTrackPoints=false,
                         skipBacktrackComputation=true,
                         stopAfterNextTrace=true)
+    dpor.setIgnoreAbsentCallback(absentIgnored)
     depGraph match {
       case Some(g) => dpor.setInitialDepGraph(g)
       case None =>
     }
     // dpor.setMaxDistance(0) x backtrack points are only set explicitly by us
+
     dpor.setMaxMessagesToSchedule(uniques.size)
     dpor.setActorNameProps(actorNameProps)
     val filtered_externals = DPORwHeuristicsUtil.convertToDPORTrace(mcs,
@@ -141,7 +145,8 @@ class FungibleClockMinimizer(
     return dpor.test(filtered_externals, violation, stats)
   }
 
-  def testWithSTSSched(nextTrace: EventTrace, stats: MinimizationStats): Option[EventTrace] = {
+  def testWithSTSSched(nextTrace: EventTrace, stats: MinimizationStats,
+                       absentIgnored: STSScheduler.IgnoreAbsentCallback): Option[EventTrace] = {
     return RunnerUtils.testWithStsSched(
       schedulerConfig,
       mcs,
@@ -151,7 +156,8 @@ class FungibleClockMinimizer(
       stats,
       initializationRoutine=initializationRoutine,
       preTest=preTest,
-      postTest=postTest)
+      postTest=postTest,
+      absentIgnored=Some(absentIgnored))
   }
 
   // N.B. for best results, run RunnerUtils.minimizeInternals on the result if
@@ -166,20 +172,30 @@ class FungibleClockMinimizer(
 
     var minTrace = trace
 
-    var nextTrace = clockClusterizer.getNextTrace(false)
+    var nextTrace = clockClusterizer.getNextTrace(false, Set[Int]())
     stats.record_prune_start
     while (!nextTrace.isEmpty) {
+      val ignoredAbsentIndices = new HashSet[Int]
+      def ignoreAbsentCallback(idx: Int) {
+        ignoredAbsentIndices += idx
+      }
       val ret = if (testScheduler == TestScheduler.DPORwHeuristics)
-        testWithDpor(nextTrace.get, stats)
-        else testWithSTSSched(nextTrace.get, stats)
+        testWithDpor(nextTrace.get, stats, ignoreAbsentCallback)
+        else testWithSTSSched(nextTrace.get, stats, ignoreAbsentCallback)
 
+      var ignoredAbsentIds = Set[Int]()
       if (!ret.isEmpty) {
         println("Pruning was successful.")
         if (ret.get.size < minTrace.size) {
           minTrace = ret.get
         }
+        ignoredAbsentIndices.foreach {
+          case i =>
+            ignoredAbsentIds = ignoredAbsentIds +
+              nextTrace.get.events.get(i).get.asInstanceOf[UniqueMsgEvent].id
+        }
       }
-      nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty)
+      nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
     }
     stats.record_prune_end
 
@@ -216,6 +232,7 @@ class ClockClusterizer(
   // Which UniqueMsgEvent ids (other than TimerDeliveries) to include next
   val clusterIterator = new ClockClusterIterator(originalTrace, fingerprinter)
   assert(clusterIterator.hasNext)
+  // current set of messages we're *including*
   var currentCluster = clusterIterator.next // Start by not removing any clusters
 
   // Which ids of ElectionTimers we've already tried adding for the current
@@ -223,12 +240,14 @@ class ClockClusterizer(
   // TODO(cs): could optimize this by adding elements that we
   // know must be included.
   var timerIterator = OneAtATimeIterator.fromTrace(originalTrace, fingerprinter)
+  // current set of timer ids we're *including*
   var currentTimers = Set[Int]()
 
-  def getNextTrace(violationReproducedLastRun: Boolean) : Option[EventTrace] = {
+  def getNextTrace(violationReproducedLastRun: Boolean, ignoredAbsentIds: Set[Int])
+        : Option[EventTrace] = {
     if (violationReproducedLastRun) {
-      timerIterator.producedViolation(currentTimers)
-      clusterIterator.producedViolation(currentCluster)
+      timerIterator.producedViolation(currentTimers, ignoredAbsentIds)
+      clusterIterator.producedViolation(currentCluster, ignoredAbsentIds)
     }
 
     if (!timerIterator.hasNext) {
@@ -281,12 +300,6 @@ class ClockClusterizer(
 
 // First iteration always includes all events
 class ClockClusterIterator(originalTrace: EventTrace, fingerprinter: FingerprintFactory) {
-  var clocks = originalTrace.flatMap {
-    case MsgEvent(snd,rcv,msg) =>
-      fingerprinter.getLogicalClock(msg)
-    case _ => None
-  }.toSet.toSeq.sorted
-
   val allIds = originalTrace.events.flatMap {
     case m @ UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
       if (!fingerprinter.causesClockIncrement(msg) &&
@@ -308,6 +321,21 @@ class ClockClusterIterator(originalTrace: EventTrace, fingerprinter: Fingerprint
   // Which clock values are safe to remove, i.e. we know that it's possible to
   // trigger the violation if they are removed.
   var blacklist = Set[Int]()
+
+  var clocks : Seq[Long] = Seq.empty
+  def computeRemainingClocks(): Seq[Long] = {
+    val lowest = clocks.headOption.getOrElse(0:Long)
+    return originalTrace.events.flatMap {
+      case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
+        if (!(blacklist contains id)) {
+          fingerprinter.getLogicalClock(msg)
+        } else {
+          None
+        }
+      case _ => None
+    }.toSet.toSeq.sorted.dropWhile(c => c < lowest)
+  }
+  clocks = computeRemainingClocks
 
   private def current : Set[Int] = {
     val currentClockToRemove : Long = if (firstClusterRemoval) -1 else nextClockToRemove
@@ -352,8 +380,12 @@ class ClockClusterIterator(originalTrace: EventTrace, fingerprinter: Fingerprint
 
   def hasNext = firstClusterRemoval || !clocks.isEmpty
 
-  def producedViolation(previouslyIncluded: Set[Int]) {
+  def producedViolation(previouslyIncluded: Set[Int], ignoredAbsents: Set[Int]) {
     blacklist = blacklist ++ inverse(previouslyIncluded)
+    if (!ignoredAbsents.isEmpty) {
+      blacklist = blacklist ++ allIds.intersect(ignoredAbsents)
+      clocks = computeRemainingClocks
+    }
   }
 
   def inverse(toInclude: Set[Int]) = allIds -- toInclude
@@ -408,8 +440,9 @@ class OneAtATimeIterator(all: Set[Int]) {
     first || !toRemove.isEmpty
   }
 
-  def producedViolation(previouslyIncluded: Set[Int]) {
-    blacklist = blacklist ++ inverse(previouslyIncluded)
+  def producedViolation(previouslyIncluded: Set[Int], ignoredAbsents: Set[Int]) {
+    blacklist = blacklist ++ inverse(previouslyIncluded) ++
+                all.intersect(ignoredAbsents)
   }
 
   def reset {

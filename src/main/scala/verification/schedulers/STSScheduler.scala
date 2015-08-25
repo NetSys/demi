@@ -37,6 +37,9 @@ import org.slf4j.LoggerFactory,
 object STSScheduler {
   type PreTestCallback = () => Unit
   type PostTestCallback = () => Unit
+  // When we ignore an absent expected message, we'll signal to this
+  // callback that we just ignored the event at the given index.
+  type IgnoreAbsentCallback = (Int) => Unit
 
   // The maximum number of unexpected messages to try in a Peek() run before
   // giving up.
@@ -130,6 +133,13 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // An optional callback that will be invoked after we execute the trace.
   var postTestCallback : STSScheduler.PostTestCallback = () => None
   def setPostTestCallback(c: STSScheduler.PostTestCallback) { postTestCallback = c }
+
+  // When we ignore an absent expected message, we'll signal to this
+  // callback that we just ignored the event at the given index.
+  var ignoreAbsentCallback : STSScheduler.IgnoreAbsentCallback = (i: Int) => None
+  def setIgnoreAbsentCallback(c: STSScheduler.IgnoreAbsentCallback) {
+    ignoreAbsentCallback = c
+  }
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
@@ -450,6 +460,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             }
 
             println("Ignoring message " + m)
+            ignoreAbsentCallback(event_orchestrator.traceIdx)
           case Quiescence =>
             // This is just a nop. Do nothing
             event_orchestrator.events += Quiescence

@@ -392,7 +392,8 @@ object RunnerUtils {
                        stats: MinimizationStats,
                        initializationRoutine: Option[() => Any]=None,
                        preTest: Option[STSScheduler.PreTestCallback]=None,
-                       postTest: Option[STSScheduler.PostTestCallback]=None)
+                       postTest: Option[STSScheduler.PostTestCallback]=None,
+                       absentIgnored: Option[STSScheduler.IgnoreAbsentCallback]=None)
                      : Option[EventTrace] = {
     val sched = new STSScheduler(schedulerConfig, trace, false)
     Instrumenter().scheduler = sched
@@ -405,6 +406,11 @@ object RunnerUtils {
     postTest match {
       case Some(callback) =>
         sched.setPostTestCallback(callback)
+      case _ =>
+    }
+    absentIgnored match {
+      case Some(callback) =>
+        sched.setIgnoreAbsentCallback(callback)
       case _ =>
     }
     return sched.test(mcs, violation, stats, initializationRoutine=initializationRoutine)

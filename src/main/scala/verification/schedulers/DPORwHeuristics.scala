@@ -119,6 +119,13 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     actorNameProps = Some(actorNamePropPairs)
   }
 
+  // When we ignore a message we expected as part of nextTrace, we'll signal to this
+  // callback that we just ignored the event at the given index.
+  var ignoreAbsentCallback : STSScheduler.IgnoreAbsentCallback = (i: Int) => None
+  def setIgnoreAbsentCallback(c: STSScheduler.IgnoreAbsentCallback) {
+    ignoreAbsentCallback = c
+  }
+
   var instrumenter = Instrumenter
   var externalEventList : Seq[ExternalEvent] = Vector()
   var externalEventIdx = 0
@@ -143,6 +150,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   val currentTrace = new Trace
   val nextTrace = new Trace
+  var nextTraceSize = 0
   // Shortest trace that has ended in an invariant violation.
   var shortestTraceSoFar : Trace = null
   var parentEvent = getRootEvent
@@ -206,6 +214,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     currentDepth = 0
     currentTrace.clear
     nextTrace.clear
+    nextTraceSize = 0
     partitionMap.clear
     awaitingQuiescence = false
     nextQuiescentPeriod = 0
@@ -519,9 +528,12 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       var foundMatching : Option[(Unique, Cell, Envelope)] = None
       while (!nextTrace.isEmpty && foundMatching == None) {
         val expecting = nextTrace.head
+        // idx from the original nextTrace
+        val idx = nextTraceSize - nextTrace.size
         foundMatching = getMatchingMessage()
         if (foundMatching.isEmpty) {
           println("Ignoring " + expecting)
+          ignoreAbsentCallback(idx)
         }
       }
       return foundMatching
@@ -806,11 +818,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     initialTrace match {
       case Some(tr) =>
         nextTrace ++= tr
+        nextTraceSize = nextTrace.size
         initialGraph match {
           case Some(gr) => depGraph ++= gr
           case _ => throw new Exception("Must supply a dependency graph with a trace")
         }
-      case _ => nextTrace.clear
+      case _ =>
+        nextTrace.clear
+        nextTraceSize = 0
     }
 
     // In the end, reinitialize_system call start_trace.
@@ -958,6 +973,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
       messagesScheduledSoFar = 0
       nextTrace.clear()
+      nextTraceSize = 0
 
       // Unconditionally post the current trace
       post(currentTrace)
@@ -965,6 +981,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       dpor(currentTrace) match {
         case Some(trace) =>
           nextTrace ++= trace
+          nextTraceSize = nextTrace.size
 
           logger.debug(Console.BLUE + "Next trace:  " +
               Util.traceStr(nextTrace) + Console.RESET)
