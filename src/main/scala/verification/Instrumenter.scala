@@ -398,7 +398,7 @@ class Instrumenter {
       return
     }
 
-    if (actor.toString.contains("/system/") || name == "/") {
+    if (actor.toString.contains("/system") || name == "/" || actor.path.name == "user") {
       return
     }
    
