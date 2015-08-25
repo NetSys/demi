@@ -142,8 +142,6 @@ class FungibleClockMinimizer(
   }
 
   def testWithSTSSched(nextTrace: EventTrace, stats: MinimizationStats): Option[EventTrace] = {
-    stats.increment_replays
-
     return RunnerUtils.testWithStsSched(
       schedulerConfig,
       mcs,
@@ -169,6 +167,7 @@ class FungibleClockMinimizer(
     var minTrace = trace
 
     var nextTrace = clockClusterizer.getNextTrace(false)
+    stats.record_prune_start
     while (!nextTrace.isEmpty) {
       val ret = if (testScheduler == TestScheduler.DPORwHeuristics)
         testWithDpor(nextTrace.get, stats)
@@ -182,6 +181,7 @@ class FungibleClockMinimizer(
       }
       nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty)
     }
+    stats.record_prune_end
 
     if (testScheduler == TestScheduler.DPORwHeuristics) {
       // DPORwHeuristics doesn't play nicely with other schedulers, so we need

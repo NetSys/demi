@@ -39,6 +39,7 @@ class STSSchedMinimizer(
     var nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
       prunedOverall, violationTriggered)
 
+    stats.record_prune_start
     while (!nextTrace.isEmpty) {
       RunnerUtils.testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
                        violation, stats, initializationRoutine=initializationRoutine,
@@ -84,6 +85,7 @@ class STSSchedMinimizer(
       nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
         prunedOverall, violationTriggered)
     }
+    stats.record_prune_end
     val origSize = RunnerUtils.countMsgEvents(origTrace)
     val newSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
     val diff = origSize - newSize
