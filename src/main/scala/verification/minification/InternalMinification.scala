@@ -259,7 +259,10 @@ class SrcDstFIFORemoval(
       val idx = srcDstToCurrentIdx((snd,rcv))
       val lst = srcDstToMessages((snd,rcv))
       if (idx == lst.length - 1) {
-        assert(lst(idx) == fingerprint)
+        // assert(lst(idx) == fingerprint)
+        if (lst(idx) != fingerprint) {
+          println(s"WARNING: lst(idx) ${lst(idx)} != fingerprint ${fingerprint}")
+        }
         srcDstToMessages((snd,rcv)) = srcDstToMessages((snd,rcv)).dropRight(1)
         if (srcDstToMessages((snd,rcv)).isEmpty) {
           println("src,dst is done!: " + ((snd,rcv)))
