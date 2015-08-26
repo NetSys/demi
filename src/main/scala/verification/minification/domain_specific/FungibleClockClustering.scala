@@ -13,10 +13,6 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
-// TODO(cs): could optimize a bit by not trying to remove all timers for all
-// clusters. At some point [after the first cluster], just stop as soon as the
-// first violation is removed.
-
 // TODO(cs): SrcDstFIFOOnly technically isn't enough to ensure FIFO removal --
 // currently ClockClusterizer can violate the FIFO scheduling discipline.
 
@@ -210,10 +206,13 @@ class FungibleClockMinimizer(
   }
 }
 
+// - aggressive: whether to stop trying to remove timers as soon as we've
+//   found at least one failing violation for the current cluster.
 class ClockClusterizer(
     originalTrace: EventTrace,
     fingerprinter: FingerprintFactory,
-    resolutionStrategy: AmbiguityResolutionStrategy) {
+    resolutionStrategy: AmbiguityResolutionStrategy,
+    aggressive: Boolean=true) {
 
   // Clustering:
   // - Cluster all message deliveries according to their Term number.
@@ -232,6 +231,7 @@ class ClockClusterizer(
   assert(clusterIterator.hasNext)
   // current set of messages we're *including*
   var currentCluster = clusterIterator.next // Start by not removing any clusters
+  var tryingFirstCluster = true
 
   // Which ids of ElectionTimers we've already tried adding for the current
   // cluster. clear()'ed whenever we update the next cluster to remove.
@@ -248,7 +248,9 @@ class ClockClusterizer(
       clusterIterator.producedViolation(currentCluster, ignoredAbsentIds)
     }
 
-    if (!timerIterator.hasNext) {
+    if (!timerIterator.hasNext ||
+        (aggressive && violationReproducedLastRun && !tryingFirstCluster)) {
+      tryingFirstCluster = false
       if (!clusterIterator.hasNext) {
         return None
       }
