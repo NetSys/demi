@@ -89,8 +89,8 @@ class BackTrackStrategy extends AmbiguityResolutionStrategy {
 
 object TestScheduler extends Enumeration {
   type TestScheduler = Value
-  val STSSched = Value // Implies SrcDstFIFOOnly AmbiguityResolutionStrategy
-  val DPORwHeuristics = Value // Implies BackTrackStrategy AmbiguityResolutionStrategy
+  val STSSched = Value
+  val DPORwHeuristics = Value
 }
 
 // Domain-specific strategy. See design doc:
@@ -101,6 +101,7 @@ class FungibleClockMinimizer(
   trace: EventTrace,
   actorNameProps: Seq[Tuple2[Props, String]],
   violation: ViolationFingerprint,
+  resolutionStrategy: AmbiguityResolutionStrategy=new BackTrackStrategy,
   testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
   depGraph: Option[Graph[Unique,DiEdge]]=None,
   initializationRoutine: Option[() => Any]=None,
@@ -164,9 +165,6 @@ class FungibleClockMinimizer(
   // we managed to remove anything here.
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
     val stats = new MinimizationStats("FungibleClockMinimizer", "STSSched")
-    val resolutionStrategy = if (testScheduler == TestScheduler.DPORwHeuristics)
-      new BackTrackStrategy
-      else new SrcDstFIFOOnly
     val clockClusterizer = new ClockClusterizer(trace,
       schedulerConfig.messageFingerprinter, resolutionStrategy)
 
