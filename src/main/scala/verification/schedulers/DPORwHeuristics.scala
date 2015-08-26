@@ -150,7 +150,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   val currentTrace = new Trace
   val nextTrace = new Trace
-  var nextTraceSize = 0
+  var origNextTraceSize = 0
   // Shortest trace that has ended in an invariant violation.
   var shortestTraceSoFar : Trace = null
   var parentEvent = getRootEvent
@@ -214,7 +214,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     currentDepth = 0
     currentTrace.clear
     nextTrace.clear
-    nextTraceSize = 0
+    origNextTraceSize = 0
     partitionMap.clear
     awaitingQuiescence = false
     nextQuiescentPeriod = 0
@@ -342,7 +342,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   }
 
   // When executing a trace, find the next trace event.
-  def mutableTraceIterator( trace: Trace) : Option[Unique] =
+  def mutableTraceIterator(trace: Trace) : Option[Unique] =
   trace.isEmpty match {
     case true => return None
     case _ => return Some(trace.dequeue)
@@ -529,7 +529,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       while (!nextTrace.isEmpty && foundMatching == None) {
         val expecting = nextTrace.head
         // idx from the original nextTrace
-        val idx = nextTraceSize - nextTrace.size
+        val idx = origNextTraceSize - nextTrace.size
         foundMatching = getMatchingMessage()
         if (foundMatching.isEmpty) {
           println("Ignoring " + expecting)
@@ -817,15 +817,17 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
     initialTrace match {
       case Some(tr) =>
+        nextTrace.clear()
+        println("SETTING NEXTTRACE")
         nextTrace ++= tr
-        nextTraceSize = nextTrace.size
+        origNextTraceSize = nextTrace.size
         initialGraph match {
           case Some(gr) => depGraph ++= gr
           case _ => throw new Exception("Must supply a dependency graph with a trace")
         }
       case _ =>
         nextTrace.clear
-        nextTraceSize = 0
+        origNextTraceSize = 0
     }
 
     // In the end, reinitialize_system call start_trace.
@@ -973,15 +975,16 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
       messagesScheduledSoFar = 0
       nextTrace.clear()
-      nextTraceSize = 0
+      origNextTraceSize = 0
 
       // Unconditionally post the current trace
       post(currentTrace)
 
       dpor(currentTrace) match {
         case Some(trace) =>
+          println("SETTING DPOR NEXTTRACE")
           nextTrace ++= trace
-          nextTraceSize = nextTrace.size
+          origNextTraceSize = nextTrace.size
 
           logger.debug(Console.BLUE + "Next trace:  " +
               Util.traceStr(nextTrace) + Console.RESET)
