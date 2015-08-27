@@ -132,8 +132,7 @@ class FungibleClockMinimizer(
                         stopIfViolationFound=false,
                         startFromBackTrackPoints=false,
                         skipBacktrackComputation=true,
-                        stopAfterNextTrace=true,
-                        injectedBacktracks=true)
+                        stopAfterNextTrace=true)
     dpor.setIgnoreAbsentCallback(absentIgnored)
     dpor.setResetCallback(resetCallback)
     depGraph match {

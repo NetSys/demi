@@ -75,8 +75,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   stopIfViolationFound:Boolean=true,
   startFromBackTrackPoints:Boolean=true,
   skipBacktrackComputation:Boolean=false,
-  stopAfterNextTrace:Boolean=false,
-  injectedBacktracks:Boolean=false) extends Scheduler with TestOracle {
+  stopAfterNextTrace:Boolean=false) extends Scheduler with TestOracle {
 
   val log = LoggerFactory.getLogger("DPOR")
 
@@ -1292,7 +1291,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         exploredTracker.trimExplored(maxIndex)
         //exploredTracker.printExplored()
 
-        if (injectedBacktracks) {
+        if (skipBacktrackComputation) {
           return Some(new Queue[Unique] ++ replayThis)
         } else {
           return Some(trace.take(maxIndex + 1) ++ replayThis)
