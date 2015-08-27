@@ -3,6 +3,10 @@ package akka.dispatch.verification
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.Queue
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 /**
  * Invoke DDMin with maxDistance=0, then again with maxDistance=2, ... up to
  * given maxMaxDistance.
@@ -16,6 +20,7 @@ import scala.collection.mutable.Queue
 class IncrementalDDMin (oracle: ResumableDPOR, maxMaxDistance:Int=256,
                         stopAtSize:Int=1, checkUnmodifed:Boolean=true) extends Minimizer {
 
+  val logger = LoggerFactory.getLogger("IncrementalDDMin")
   var ddmin = new DDMin(oracle, checkUnmodifed=false)
   val stats = new MinimizationStats("IncDDMin", oracle.getName)
 
@@ -38,7 +43,7 @@ class IncrementalDDMin (oracle: ResumableDPOR, maxMaxDistance:Int=256,
 
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
-      println("Checking if unmodified trace triggers violation...")
+      logger.info("Checking if unmodified trace triggers violation...")
       if (oracle.test(dag.events, violation_fingerprint, stats) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
       }
@@ -50,7 +55,7 @@ class IncrementalDDMin (oracle: ResumableDPOR, maxMaxDistance:Int=256,
     stats.record_prune_start()
 
     while (currentDistance < maxMaxDistance && currentMCS.events.size > stopAtSize) {
-      println("Trying currentDistance="+currentDistance)
+      logger.info("Trying currentDistance="+currentDistance)
       ddmin = new DDMin(oracle, checkUnmodifed=false)
       currentMCS = ddmin.minimize(currentMCS, violation_fingerprint, initializationRoutine)
       RunnerUtils.printMCS(currentMCS.events)

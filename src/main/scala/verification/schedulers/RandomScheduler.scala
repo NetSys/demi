@@ -47,7 +47,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
 
   val messageFingerprinter = schedulerConfig.messageFingerprinter
 
-  val logger = LoggerFactory.getLogger("RandomScheduler")
+  override val logger = LoggerFactory.getLogger("RandomScheduler")
 
   // Allow the user to place a bound on how many messages are delivered.
   // Useful for dealing with non-terminating systems.
@@ -245,7 +245,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     }
 
     for (i <- 1 to max_executions) {
-      println("Trying random interleaving " + i)
+      logger.info("Trying random interleaving " + i)
       event_orchestrator.events.setOriginalExternalEvents(_trace)
       if (stats != null) {
         stats.increment_replays()
@@ -364,7 +364,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
 
     // Also check if we've exceeded our message limit
     if (messagesScheduledSoFar > maxMessages) {
-      println("Exceeded maxMessages")
+      logger.info("Exceeded maxMessages")
       event_orchestrator.finish_early
       return None
     }
@@ -374,7 +374,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         (messagesScheduledSoFar % invariant_check_interval) == 0 &&
         !blockedOnCheckpoint.get() &&
         lastCheckpoint != messagesScheduledSoFar) {
-      println("Checking invariant")
+      logger.debug("Checking invariant")
 
       if (!schedulerConfig.enableCheckpointing) {
         // If no checkpointing, go ahead and check the invariant now
@@ -476,7 +476,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
       case Some(fingerprint) =>
         // Wake up the main thread early; no need to continue with the rest of
         // the trace.
-        println("Violation found early. Halting")
+        logger.info("Violation found early. Halting")
         started.set(false)
         terminationCallback match {
           case None => traceSem.release

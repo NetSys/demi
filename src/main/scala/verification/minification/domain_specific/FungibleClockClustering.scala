@@ -13,6 +13,10 @@ import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 // TODO(cs): SrcDstFIFOOnly technically isn't enough to ensure FIFO removal --
 // currently ClockClusterizer can violate the FIFO scheduling discipline.
 
@@ -105,6 +109,8 @@ class FungibleClockMinimizer(
   postTest: Option[STSScheduler.PostTestCallback]=None)
   extends InternalEventMinimizer {
 
+  val log = LoggerFactory.getLogger("WildCardMin")
+
   def testWithDpor(nextTrace: EventTrace, stats: MinimizationStats,
                    absentIgnored: STSScheduler.IgnoreAbsentCallback,
                    resetCallback: DPORwHeuristics.ResetCallback): Option[EventTrace] = {
@@ -185,7 +191,7 @@ class FungibleClockMinimizer(
 
       var ignoredAbsentIds = Set[Int]()
       if (!ret.isEmpty) {
-        println("Pruning was successful.")
+        log.info("Pruning was successful.")
         if (ret.get.size < minTrace.size) {
           minTrace = ret.get
         }
@@ -225,6 +231,8 @@ class ClockClusterizer(
     fingerprinter: FingerprintFactory,
     resolutionStrategy: AmbiguityResolutionStrategy,
     aggressive: Boolean=true) {
+
+  val log = LoggerFactory.getLogger("ClockClusterizer")
 
   // Clustering:
   // - Cluster all message deliveries according to their Term number.
@@ -269,13 +277,13 @@ class ClockClusterizer(
 
       timerIterator.reset
       currentCluster = clusterIterator.next
-      println("Trying to remove clock cluster: " +
+      log.info("Trying to remove clock cluster: " +
         clusterIterator.inverse(currentCluster).toSeq.sorted)
     }
 
     assert(timerIterator.hasNext)
     currentTimers = timerIterator.next
-    println("Trying to remove timers: " + timerIterator.inverse(currentTimers).toSeq.sorted)
+    log.info("Trying to remove timers: " + timerIterator.inverse(currentTimers).toSeq.sorted)
 
     val events = new SynchronizedQueue[Event]
     events ++= originalTrace.events.flatMap {

@@ -36,7 +36,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
 
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
-      println("Checking if unmodified trace triggers violation...")
+      logger.info("Checking if unmodified trace triggers violation...")
       if (oracle.test(dag.events, violation_fingerprint, stats,
                       initializationRoutine=initializationRoutine) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
@@ -67,7 +67,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
 
   def ddmin2(dag: EventDag, remainder: EventDag): EventDag = {
     if (dag.get_atomic_events.length <= 1) {
-      println("base case")
+      logger.info("base case")
       return dag
     }
 
@@ -82,7 +82,7 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
     // First, check both halves.
     for ((split, i) <- splits.zipWithIndex) {
       val union = split.union(remainder)
-      println("Checking split " + union.get_all_events.map(e => e.label).mkString(","))
+      logger.info("Checking split " + union.get_all_events.map(e => e.label).mkString(","))
       val passes = oracle.test(union.get_all_events, violation_fingerprint,
         stats, initializationRoutine=initializationRoutine) == None
       // There may have been many replays since the last time we recorded
@@ -91,16 +91,16 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
         stats.record_iteration_size(original_num_events - total_inputs_pruned)
       }
       if (!passes) {
-        println("Split fails. Recursing")
+        logger.info("Split fails. Recursing")
         total_inputs_pruned += (dag.length - split.length)
         return ddmin2(split, remainder)
       } else {
-        println("Split passes.")
+        logger.info("Split passes.")
       }
     }
 
     // Interference:
-    println("Interference")
+    logger.info("Interference")
     val left = ddmin2(splits(0), splits(1).union(remainder))
     val right = ddmin2(splits(1), splits(0).union(remainder))
     return left.union(right)

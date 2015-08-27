@@ -37,7 +37,6 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-
 // TODO(cs): mark any pending messages destined for blockedActors as
 // (temporarily) not enabled.
 // TODO(cs): remove FailureDetector support. Not used.
@@ -79,7 +78,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   stopAfterNextTrace:Boolean=false,
   injectedBacktracks:Boolean=false) extends Scheduler with TestOracle {
 
-  val logger = LoggerFactory.getLogger("DPOR")
+  val log = LoggerFactory.getLogger("DPOR")
 
   def getName: String = "DPORwHeuristics"
 
@@ -243,7 +242,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   }
 
   private[this] def awaitQuiescenceUpdate (nextEvent:Unique) = {
-    logger.trace(Console.BLUE + "Beginning to wait for quiescence " + Console.RESET)
+    log.trace(Console.BLUE + "Beginning to wait for quiescence " + Console.RESET)
     nextEvent match {
       case Unique(WaitQuiescence(), id) =>
         awaitingQuiescence = true
@@ -282,7 +281,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     depGraph.get(currentRoot).inNeighbors.find {
       x => x.value match {
         case Unique(WaitQuiescence(), id) =>
-          println("Existing WaitQuiescence: " + id + ". looking for: " + unique.id)
+          log.debug("Existing WaitQuiescence: " + id + ". looking for: " + unique.id)
           id == unique.id
         case _ => false
       }
@@ -374,7 +373,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   // received a message since the last checkpoint, no need to send it a
   // CheckpointRequest.
   def prepareCheckpoint() {
-    println("Initiating checkpoint..")
+    log.debug("Initiating checkpoint..")
     val actorRefs = Instrumenter().actorMappings.
                       filterNot({case (k,v) => ActorTypes.systemActor(k)}).
                       values.toSeq
@@ -391,14 +390,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   // Global invariant.
   def checkInvariant() {
-    println("Checking invariant")
+    log.info("Checking invariant")
     val checkpoint = if (checkpointer != null) checkpointer.checkpoints
                       else new HashMap[String, Option[CheckpointReply]]
     val violation = test_invariant(currentSubsequence, checkpoint)
     violation match {
       case Some(v) =>
         if (lookingFor.matches(v)) {
-          println("Found matching violation!")
+          log.info("Found matching violation!")
           foundLookingFor = true
           if (shortestTraceSoFar == null ||
               currentTrace.length < shortestTraceSoFar.length) {
@@ -406,10 +405,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           }
           return
         } else {
-          println("No matching violation. Proceeding...")
+          log.info("No matching violation. Proceeding...")
         }
       case None =>
-        println("No matching violation. Proceeding...")
+        log.info("No matching violation. Proceeding...")
     }
   }
 
@@ -440,22 +439,22 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       // Do we have some pending events
       Util.dequeueOne(pendingEvents) match {
         case Some( next @ (Unique(MsgEvent(snd, rcv, msg), id), _, _)) =>
-          logger.trace( Console.GREEN + "Now playing pending: "
+          log.trace( Console.GREEN + "Now playing pending: "
               + "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
           Some(next)
 
         case Some(par @ (Unique(NetworkPartition(part1, part2), id), _, _)) =>
-          logger.trace( Console.GREEN + "Now playing the high level partition event " +
+          log.trace( Console.GREEN + "Now playing the high level partition event " +
               id + Console.RESET)
           Some(par)
 
         case Some(par @ (Unique(NetworkUnpartition(part1, part2), id), _, _)) =>
-          logger.trace( Console.GREEN + "Now playing the high level partition event " +
+          log.trace( Console.GREEN + "Now playing the high level partition event " +
               id + Console.RESET)
           Some(par)
 
         case Some(qui @ (Unique(WaitQuiescence(), id), _, _)) =>
-          logger.trace( Console.GREEN + "Now playing the high level quiescence event " +
+          log.trace( Console.GREEN + "Now playing the high level quiescence event " +
               id + Console.RESET)
           Some(qui)
 
@@ -476,7 +475,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
                 val priorEvent = currentTrace.last
                 val branchI = currentTrace.length - 1
                 val toPlayNext = pending(idx)._1
-                logger.trace(s"Setting backtrack@${branchI} ${priorEvent} ${toPlayNext}")
+                log.trace(s"Setting backtrack@${branchI} ${priorEvent} ${toPlayNext}")
                 // TODO(cs): too specific to FungibleClockClustering.. we abuse
                 // the last tuple item to include our remaining WildCards [nextTrace.clone]
                 // N.B. currentTrace's head is the root event, so we skip over it.
@@ -543,7 +542,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         val idx = origNextTraceSize - nextTrace.size
         foundMatching = getMatchingMessage()
         if (foundMatching.isEmpty) {
-          println("Ignoring " + expecting)
+          log.debug("Ignoring " + expecting)
           ignoreAbsentCallback(idx)
         }
       }
@@ -594,22 +593,22 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           // There is a pending event that matches a message in our trace.
           // We call this a convergent state.
           case m @ Some((u @ Unique(MsgEvent(snd, rcv, msg), id), cell, env)) =>
-            logger.trace( Console.GREEN + "Replaying the exact message: Message: " +
+            log.trace( Console.GREEN + "Replaying the exact message: Message: " +
                 "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
             Some((u, cell, env))
 
           case Some((u @ Unique(NetworkPartition(part1, part2), id), _, _)) =>
-            logger.trace( Console.GREEN + "Replaying the exact message: Partition: ("
+            log.trace( Console.GREEN + "Replaying the exact message: Partition: ("
                 + part1 + " <-> " + part2 + ")" + Console.RESET )
             Some((u, null, null))
 
           case Some((u @ Unique(NetworkUnpartition(part1, part2), id), _, _)) =>
-            logger.trace( Console.GREEN + "Replaying the exact message: Unpartition: ("
+            log.trace( Console.GREEN + "Replaying the exact message: Unpartition: ("
                 + part1 + " <-> " + part2 + ")" + Console.RESET )
             Some((u, null, null))
 
           case Some((u @ Unique(WaitQuiescence(), id), _, _)) =>
-            logger.trace( Console.GREEN + "Replaying the exact message: Quiescence: ("
+            log.trace( Console.GREEN + "Replaying the exact message: Quiescence: ("
                 + id +  ")" + Console.RESET )
             Some((u, null, null))
 
@@ -630,7 +629,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     result match {
       case Some((nextEvent @ Unique(MsgEvent(snd, rcv, msg), nID), cell, env)) =>
         if ((isolatedActors contains snd) || (isolatedActors contains rcv)) {
-          logger.trace(Console.RED + "Discarding event " + nextEvent +
+          log.trace(Console.RED + "Discarding event " + nextEvent +
             " due to not yet started node " + snd + " or " + rcv + Console.RESET)
           // Self-messages without any prior messages break our assumptions.
           // Fix might be to store this message intead of dropping it.
@@ -642,7 +641,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         partitionMap.get(snd) match {
           case Some(set) =>
             if (set.contains(rcv)) {
-              logger.trace(Console.RED + "Discarding event " + nextEvent +
+              log.trace(Console.RED + "Discarding event " + nextEvent +
                 " due to partition" + Console.RESET)
               return schedule_new_message(blockedActors)
             }
@@ -746,7 +745,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   }
 
   def runExternal() = {
-    logger.trace(Console.RED + " RUN EXTERNAL CALLED initial IDX = " + externalEventIdx +Console.RESET)
+    log.trace(Console.RED + " RUN EXTERNAL CALLED initial IDX = " + externalEventIdx +Console.RESET)
 
     def processExternal() {
       var await = false
@@ -762,7 +761,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
           case Send(rcv, msgCtor) =>
             val ref = instrumenter().actorMappings(rcv)
-            logger.trace(Console.BLUE + " sending " + rcv + " messge " + msgCtor() + Console.RESET)
+            log.trace(Console.BLUE + " sending " + rcv + " messge " + msgCtor() + Console.RESET)
             instrumenter().actorMappings(rcv) ! msgCtor()
 
           case uniq @ Unique(par : NetworkPartition, id) =>
@@ -789,7 +788,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         externalEventIdx += 1
       }
 
-      logger.trace(Console.RED + " RUN EXTERNAL LOOP ENDED idx = " + externalEventIdx + Console.RESET)
+      log.trace(Console.RED + " RUN EXTERNAL LOOP ENDED idx = " + externalEventIdx + Console.RESET)
     }
 
     instrumenter().sendKnownExternalMessages(processExternal)
@@ -869,7 +868,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       case Some(x) => return x.value
       case None =>
         val newMsg = Unique( MsgEvent(msg.sender, msg.receiver, msg.msg) )
-        logger.trace(
+        log.trace(
             Console.YELLOW + "Not seen: " + newMsg.id +
             " (" + msg.sender + " -> " + msg.receiver + ") " + msg.msg + Console.RESET)
         return newMsg
@@ -903,14 +902,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         val msgs = pendingEvents.getOrElse((msg.sender,msg.receiver), new Queue[(Unique, Cell, Envelope)])
         // Do not enqueue if bound hit
         if (!should_bound || currentDepth < stop_at_depth) {
-          logger.trace(Console.BLUE + "Enqueuing event " + cell + " " + envelope + " " + unique +
+          log.trace(Console.BLUE + "Enqueuing event " + cell + " " + envelope + " " + unique +
                        " (" + parentEvent + ") " + Console.RESET)
           pendingEvents((msg.sender,msg.receiver)) = msgs += ((unique, cell, envelope))
         } else {
-          logger.debug(Console.RED + "Not adding message because we hit depth bound " + Console.RESET)
+          log.debug(Console.RED + "Not adding message because we hit depth bound " + Console.RESET)
         }
 
-        logger.debug(Console.BLUE + "New event: " +
+        log.debug(Console.BLUE + "New event: " +
             "(" + msg.sender + " -> " + msg.receiver + ") " +
             id + Console.RESET)
 
@@ -934,7 +933,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
     if (awaitingQuiescence) {
       awaitingQuiescence = false
-      logger.trace(Console.BLUE + " Done waiting for quiescence " + Console.RESET)
+      log.trace(Console.BLUE + " Done waiting for quiescence " + Console.RESET)
 
       currentQuiescentPeriod = nextQuiescentPeriod
       nextQuiescentPeriod = 0
@@ -974,14 +973,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         }
       }
 
-      logger.info("\n--------------------- Interleaving #" +
+      log.info("\n--------------------- Interleaving #" +
                   interleavingCounter + " ---------------------")
 
-      logger.debug(Console.BLUE + "Current trace: " +
+      log.debug(Console.BLUE + "Current trace: " +
           Util.traceStr(currentTrace) + Console.RESET)
 
       for (Unique(ev, id) <- currentTrace)
-        logger.debug(Console.BLUE + " " + id + " " + ev + Console.RESET)
+        log.debug(Console.BLUE + " " + id + " " + ev + Console.RESET)
 
       messagesScheduledSoFar = 0
       nextTrace.clear()
@@ -996,7 +995,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           nextTrace ++= trace
           origNextTraceSize = nextTrace.size
 
-          logger.debug(Console.BLUE + "Next trace:  " +
+          log.debug(Console.BLUE + "Next trace:  " +
               Util.traceStr(nextTrace) + Console.RESET)
 
           setParentEvent(getRootEvent)
@@ -1017,7 +1016,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   // Assume: only used for timers (which implies that it's always an
   // akka-dispatcher thread calling this method).
   def enqueue_message(senderOpt: Option[ActorRef], receiver: String,msg: Any): Unit = {
-    logger.trace(Console.BLUE + "Enqueuing timer to " + receiver + " with msg " + msg + Console.RESET)
+    log.trace(Console.BLUE + "Enqueuing timer to " + receiver + " with msg " + msg + Console.RESET)
     senderOpt match {
       case Some(sendRef) =>
         instrumenter().actorMappings(receiver).!(msg)(sendRef)
@@ -1032,7 +1031,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   }
 
   def notify_timer_cancel (receiver: String, msg: Any) = {
-    logger.trace(Console.BLUE + " Trying to cancel timer for " + receiver + " " + msg + Console.BLUE)
+    log.trace(Console.BLUE + " Trying to cancel timer for " + receiver + " " + msg + Console.BLUE)
     def equivalentTo(u: (Unique, Cell, Envelope)): Boolean = {
       u._3 match {
         case null => false
@@ -1043,14 +1042,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     pendingEvents.get(("deadLetters",receiver)) match {
       case Some(q) =>
         q.dequeueFirst(equivalentTo(_)) match {
-          case Some(u) => logger.trace(Console.RED + " Removing pending event (" +
+          case Some(u) => log.trace(Console.RED + " Removing pending event (" +
                     receiver + " , " + msg + ")" + Console.RESET)
-          case None => logger.trace(Console.RED +
+          case None => log.trace(Console.RED +
                     " Did not remove message due to timer cancellation (" +
                       receiver + ", " + msg + ")" +  Console.RESET)
         }
       case None => // This cancellation came too late, things have already been done.
-        logger.trace(Console.RED +
+        log.trace(Console.RED +
                     " Did not remove message due to timer cancellation (" +
                       receiver + ", " + msg + ")" +  Console.RESET)
 
@@ -1243,7 +1242,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
      * 2) Such interleaving hasn't been explored before.
      */
     if (!skipBacktrackComputation) {
-      logger.trace(Console.GREEN+ "Computing backtrack points. This may take awhile..." + Console.RESET)
+      log.trace(Console.GREEN+ "Computing backtrack points. This may take awhile..." + Console.RESET)
       for(laterI <- 0 to trace.size - 1) {
         val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
 
@@ -1268,7 +1267,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       // If the backtrack set is empty, this means we're done.
       if (backTrack.isEmpty ||
           (should_cap_distance && backtrackHeuristic.getDistance(backTrack.head) >= stop_at_distance)) {
-        logger.info("Tutto finito!")
+        log.info("Tutto finito!")
         done(depGraph)
         return None
       }
@@ -1278,7 +1277,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
       exploredTracker.isExplored((e1, e2)) match {
         case true =>
-          println("Skipping backTrack point: " + e1 + " " + e2)
+          log.debug("Skipping backTrack point: " + e1 + " " + e2)
           return getNext()
         case false => return Some((maxIndex, (e1, e2), replayThis))
       }
@@ -1286,12 +1285,12 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
     getNext() match {
       case Some((maxIndex, (e1, e2), replayThis)) =>
-        logger.info(Console.RED + "Exploring a new message interleaving " +
+        log.info(Console.RED + "Exploring a new message interleaving " +
            e1 + " and " + e2  + " at index " + maxIndex + Console.RESET)
 
         exploredTracker.setExplored(maxIndex, (e1, e2))
         exploredTracker.trimExplored(maxIndex)
-        exploredTracker.printExplored()
+        //exploredTracker.printExplored()
 
         if (injectedBacktracks) {
           return Some(new Queue[Unique] ++ replayThis)
@@ -1315,7 +1314,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
            init:Option[()=>Any]=None) : Option[EventTrace] = {
     assert(_initialTrace != null)
     if (stopIfViolationFound && shortestTraceSoFar != null) {
-      println("Already have shortestTrace!")
+      log.warn("Already have shortestTrace!")
       return Some(DPORwHeuristicsUtil.convertToEventTrace(shortestTraceSoFar,
                   events))
     }
@@ -1350,7 +1349,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         initialTrace=initialTrace,
         initialGraph=if (_initialDepGraph != null) Some(_initialDepGraph) else Some(depGraph))
     traceSem.acquire()
-    println("Returning from test("+stop_at_distance+")")
+    log.debug("Returning from test("+stop_at_distance+")")
     if (foundLookingFor) {
       return Some(DPORwHeuristicsUtil.convertToEventTrace(currentTrace,
                   events))

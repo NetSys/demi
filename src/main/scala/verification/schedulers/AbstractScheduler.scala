@@ -8,6 +8,10 @@ import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 // Basically just keeps track of actor names.
 //
 // Subclasses need to at least implement:
@@ -15,14 +19,16 @@ import scala.collection.mutable.HashSet
 //   - enqueue_message
 //   - event_produced(cell: Cell, envelope: Envelope)
 abstract class AbstractScheduler extends Scheduler {
-  
+
+  val logger = LoggerFactory.getLogger("AbstractScheduler")
+
   var instrumenter = Instrumenter()
   var currentTime = 0
-  
+
 
   var actorNames = new HashSet[String]
-  
-  
+
+
   // Is this message a system message
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef): Boolean = {
     if (sender == null && receiver == null) return true
@@ -34,43 +40,43 @@ abstract class AbstractScheduler extends Scheduler {
   def isSystemMessage(src: String, dst: String): Boolean = {
     if ((actorNames contains src) || (actorNames contains dst))
       return dst == "deadLetters"
-    
+
     return true
   }
 
   // Notification that the system has been reset
   def start_trace() : Unit = {
   }
-  
+
 
   // Record that an event was consumed
   def event_consumed(event: Event) = {
   }
-  
+
   def event_consumed(cell: Cell, envelope: Envelope) = {
   }
-  
-  // Record that an event was produced 
+
+  // Record that an event was produced
   def event_produced(event: Event) = {
     event match {
-      case event : SpawnEvent => 
+      case event : SpawnEvent =>
         if (!(actorNames contains event.name)) {
-          println("Sched knows about actor " + event.name)
+          logger.debug("Sched knows about actor " + event.name)
           actorNames += event.name
         }
     }
   }
-  
-  
+
+
   // Called before we start processing a newly received event
   def before_receive(cell: Cell) {
     currentTime += 1
   }
-  
-  // Called after receive is done being processed 
+
+  // Called after receive is done being processed
   def after_receive(cell: Cell) {
   }
-  
+
   def notify_quiescence () {
   }
 

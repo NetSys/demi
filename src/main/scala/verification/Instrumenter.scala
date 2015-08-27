@@ -307,7 +307,7 @@ class Instrumenter {
     var shouldDispatch = false
     _dispatchAfterMailboxIdleLock.synchronized {
       if (_dispatchAfterMailboxIdle != "" && mbox.actor != null && mbox.actor.self.path.name == _dispatchAfterMailboxIdle) {
-        println("mailboxIdle!: " + mbox.actor.self)
+        logger.info("mailboxIdle!: " + mbox.actor.self)
         _dispatchAfterMailboxIdle = ""
         shouldDispatch = true
         previousActor = ""
@@ -415,7 +415,7 @@ class Instrumenter {
       actorMappings.notifyAll
     }
       
-    println("System has created a new actor: " + actor.path.name)
+    logger.info("System has created a new actor: " + actor.path.name)
   }
   
   
@@ -478,7 +478,7 @@ class Instrumenter {
     reset_cancellables
     reset_per_system_state
     
-    println("Started a new actor system.")
+    logger.info("Started a new actor system.")
 
     // This is safe, we have just started a new actor system (after killing all
     // the old ones we knew about), there should be no actors running and no 
@@ -504,20 +504,20 @@ class Instrumenter {
 
     reset_cancellables
     for ((system, argQueue) <- allSystems) {
-      println("Shutting down the actor system. " + argQueue.size)
+      logger.info("Shutting down the actor system. " + argQueue.size)
       if (alsoRestart) {
         system.registerOnTermination(reinitialize_system(system, argQueue))
       }
 
       system.shutdown()
 
-      println("Shut down the actor system. " + argQueue.size)
+      logger.info("Shut down the actor system. " + argQueue.size)
     }
   }
 
   // Signal to the instrumenter that the scheduler wants to restart the system
   def restart_system() = {
-    println("Restarting system")
+    logger.info("Restarting system")
     shutdown_system(true)
   }
   
@@ -547,7 +547,7 @@ class Instrumenter {
       // Somehow, bizzarely, afterMessageReceive can be invoked for actors
       // from prior actor systems, after they have been shutdown. This obviously throws a
       // huge wrench into our current dispatching loop.
-      println("cell.system != _actorSystem")
+      logger.warn("cell.system != _actorSystem")
       return
     }
    
@@ -612,7 +612,7 @@ class Instrumenter {
       // Somehow, bizzarely, afterMessageReceive can be invoked for actors
       // from prior actor systems, after they have been shutdown. This obviously throws a
       // huge wrench into our current dispatching loop.
-      println("cell.system != _actorSystem")
+      logger.warn("cell.system != _actorSystem")
       return
     }
 
@@ -642,7 +642,7 @@ class Instrumenter {
 
     stopDispatch.synchronized {
       if (stopDispatch.get()) {
-        println("Stopping dispatch..")
+        logger.trace("Stopping dispatch..")
         stopDispatch.set(false)
         started.set(false)
         return
@@ -719,7 +719,7 @@ class Instrumenter {
 
   def afterReceiveAskAnswer(temp: PromiseActorRef, msg: Any, sender: ActorRef) = {
     if (dispatchAfterAskAnswer.get) {
-      println("Dispatching after receiveAskAnswer")
+      logger.trace("Dispatching after receiveAskAnswer")
       inActor.set(false)
       currentPendingDispatch.set(None)
       dispatchAfterAskAnswer.set(false)
@@ -771,7 +771,7 @@ class Instrumenter {
             if (timerToCancellable contains ("ScheduleFunction", msg)) {
               val cancellable = timerToCancellable(("ScheduleFunction", msg))
               if (ongoingCancellableTasks contains cancellable) {
-                println("Retriggering repeating code block: " + msg)
+                logger.trace("Retriggering repeating code block: " + msg)
                 handleTick("ScheduleFunction", msg, cancellable)
               }
             }
@@ -786,7 +786,7 @@ class Instrumenter {
 
       // Keep the scheduling loop going -- need to explicitly call
       // schedule_new_message, since afterMessageReceive will not be invoked.
-      println("Dispatching after kicking off schedule block!")
+      logger.trace("Dispatching after kicking off schedule block!")
       scheduler.schedule_new_message(blockedActors.keySet) match {
         case Some((new_cell, envelope)) =>
           val dst = new_cell.self.path.name
@@ -827,7 +827,7 @@ class Instrumenter {
       if (timerToCancellable contains (rcv, msg)) {
         val cancellable = timerToCancellable((rcv, msg))
         if (ongoingCancellableTasks contains cancellable) {
-          println("Retriggering repeating timer: " + rcv + " " + msg)
+          logger.trace("Retriggering repeating timer: " + rcv + " " + msg)
           handleTick(cell.self.path.name, msg, cancellable)
         }
       }
@@ -868,7 +868,7 @@ class Instrumenter {
       // Somehow, bizzarely, afterMessageReceive can be invoked for actors
       // from prior actor systems, after they have been shutdown. This obviously throws a
       // huge wrench into our current dispatching loop.
-      println("cell.system != _actorSystem")
+      logger.warn("cell.system != _actorSystem")
       return false
     }
 
@@ -914,7 +914,7 @@ class Instrumenter {
   def start_dispatch() {
     assert(!started.get)
     started.set(true)
-    println("start_dispatch. Dispatching!")
+    logger.debug("start_dispatch. Dispatching!")
     scheduler.schedule_new_message(blockedActors.keySet) match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name

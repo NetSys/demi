@@ -14,6 +14,10 @@ import scalax.collection.mutable.Graph,
 import java.io.PrintWriter
 import java.io.File
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 
 // Example minimization pipeline:
 //     fuzz()
@@ -24,6 +28,7 @@ import java.io.File
 
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
+  val logger = LoggerFactory.getLogger("RunnerUtils")
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            schedulerConfig: SchedulerConfig,
@@ -39,7 +44,7 @@ object RunnerUtils {
     var initialTrace : Queue[Unique] = null
     while (violationFound == null) {
       val fuzzTest = fuzzer.generateFuzzTest()
-      println("Trying: " + fuzzTest)
+      logger.info("Trying: " + fuzzTest)
 
       // TODO(cs): it's possible for RandomScheduler to never terminate
       // (waiting for a WaitQuiescene)
@@ -54,17 +59,17 @@ object RunnerUtils {
       Instrumenter().scheduler = sched
       sched.explore(fuzzTest) match {
         case None =>
-          println("Returned to main with events")
+          logger.info("Returned to main with events")
           sched.shutdown()
-          println("shutdown successfully")
+          logger.info("shutdown successfully")
         case Some((trace, violation)) => {
-          println("Found a safety violation!")
+          logger.info("Found a safety violation!")
           depGraph = sched.depTracker.getGraph
           initialTrace = sched.depTracker.getInitialTrace
           sched.shutdown()
           validate_replay match {
             case Some(replayerCtor) =>
-              println("Validating replay")
+              logger.info("Validating replay")
               val replayer = replayerCtor()
               Instrumenter().scheduler = replayer
               var deterministic = true
@@ -75,7 +80,7 @@ object RunnerUtils {
                 }
               } catch {
                 case r: ReplayException =>
-                  println("doesn't replay deterministically..." + r)
+                  logger.info("doesn't replay deterministically..." + r)
                   deterministic = false
               } finally {
                 replayer.shutdown()
@@ -95,14 +100,14 @@ object RunnerUtils {
     // Before returning, try to prune events that are concurrent with the violation.
     var filtered = new Queue[Unique]
     if (computeProvenance) {
-      println("Pruning events not in provenance of violation. This may take awhile...")
+      logger.info("Pruning events not in provenance of violation. This may take awhile...")
       val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
       val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
       filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
       val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
       // TODO(cs): track this number somewhere. Or reconstruct it from
       // initialTrace/filtered.
-      println("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
+      logger.info("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
     }
     return (traceFound, violationFound, depGraph, initialTrace, filtered)
   }
@@ -166,10 +171,10 @@ object RunnerUtils {
         new ReplayScheduler(schedulerConfig, false)
     }
     replayer.setActorNamePropPairs(actorNamePropPairs)
-    println("Trying replay:")
+    logger.info("Trying replay:")
     Instrumenter().scheduler = replayer
     val events = replayer.replay(trace)
-    println("Done with replay")
+    logger.info("Done with replay")
     replayer.shutdown
     return events
   }
@@ -180,9 +185,9 @@ object RunnerUtils {
     val replayer = new ReplayScheduler(schedulerConfig, false)
     Instrumenter().scheduler = replayer
     replayer.setActorNamePropPairs(actorNameProps)
-    println("Trying replay:")
+    logger.info("Trying replay:")
     val events = replayer.replay(trace)
-    println("Done with replay")
+    logger.info("Done with replay")
     replayer.shutdown
   }
 
@@ -196,11 +201,11 @@ object RunnerUtils {
 
     val ddmin = new DDMin(sched, false)
     val mcs = ddmin.minimize(trace.original_externals, violation)
-    println("Validating MCS...")
+    logger.info("Validating MCS...")
     val validated_mcs = ddmin.verify_mcs(mcs, violation)
     validated_mcs match {
-      case Some(_) => println("MCS Validated!")
-      case None => println("MCS doesn't reproduce bug...")
+      case Some(_) => logger.info("MCS Validated!")
+      case None => logger.info("MCS doesn't reproduce bug...")
     }
     return (mcs.events, ddmin.stats, validated_mcs, violation)
   }
@@ -249,15 +254,15 @@ object RunnerUtils {
           initializationRoutine=initializationRoutine)
     }
     printMCS(mcs.events)
-    println("Validating MCS...")
+    logger.info("Validating MCS...")
     var validated_mcs = ddmin.verify_mcs(mcs, violation,
       initializationRoutine=initializationRoutine)
     validated_mcs match {
       case Some(trace) =>
-        println("MCS Validated!")
+        logger.info("MCS Validated!")
         trace.setOriginalExternalEvents(mcs.events)
         validated_mcs = Some(trace.filterCheckpointMessages)
-      case None => println("MCS doesn't reproduce bug...")
+      case None => logger.info("MCS doesn't reproduce bug...")
     }
     return (mcs.events, ddmin.stats, validated_mcs, violation)
   }
@@ -274,11 +279,11 @@ object RunnerUtils {
     val ddmin = new DDMin(sched, false)
     val mcs = ddmin.minimize(trace.original_externals, violation)
     printMCS(mcs.events)
-    println("Validating MCS...")
+    logger.info("Validating MCS...")
     val validated_mcs = ddmin.verify_mcs(mcs, violation)
     validated_mcs match {
-      case Some(_) => println("MCS Validated!")
-      case None => println("MCS doesn't reproduce bug...")
+      case Some(_) => logger.info("MCS Validated!")
+      case None => logger.info("MCS doesn't reproduce bug...")
     }
     return (mcs.events, ddmin.stats, validated_mcs, violation)
   }
@@ -354,15 +359,15 @@ object RunnerUtils {
 
     // Verify the MCS. First, verify that DPOR can reproduce it.
     // TODO(cs): factor this out.
-    println("Validating MCS...")
+    logger.info("Validating MCS...")
     var verified_mcs : Option[EventTrace] = None
     val traceOpt = ddmin.verify_mcs(mcs, violation)
     traceOpt match {
       case None =>
-        println("MCS doesn't reproduce bug... DPOR")
+        logger.info("MCS doesn't reproduce bug... DPOR")
       case Some(toReplay) =>
         // Now verify that ReplayScheduler can reproduce it.
-        println("DPOR reproduced successfully. Now trying ReplayScheduler")
+        logger.info("DPOR reproduced successfully. Now trying ReplayScheduler")
         val replayer = new ReplayScheduler(schedulerConfig, false)
         Instrumenter().scheduler = replayer
         // Clean up after DPOR. Counterintuitively, use Replayer to do this, since
@@ -373,10 +378,10 @@ object RunnerUtils {
           val replayTrace = replayer.replay(toReplay)
           replayTrace.setOriginalExternalEvents(mcs.events)
           verified_mcs = Some(replayTrace)
-          println("MCS Validated!")
+          logger.info("MCS Validated!")
         } catch {
           case r: ReplayException =>
-            println("MCS doesn't reproduce bug... ReplayScheduler")
+            logger.info("MCS doesn't reproduce bug... ReplayScheduler")
         } finally {
           replayer.shutdown()
         }
@@ -432,8 +437,8 @@ object RunnerUtils {
         new LeftToRightOneAtATime(verified_mcs, schedulerConfig.messageFingerprinter)
         else removalStrategyCtor()
 
-    println("Minimizing internals..")
-    println("verified_mcs.original_externals: " + verified_mcs.original_externals)
+    logger.info("Minimizing internals..")
+    logger.info("verified_mcs.original_externals: " + verified_mcs.original_externals)
     val minimizer = new STSSchedMinimizer(mcs, verified_mcs, violation,
       removalStrategy, schedulerConfig,
       actorNameProps, initializationRoutine=initializationRoutine,
@@ -461,7 +466,7 @@ object RunnerUtils {
     //   if (masking component still triggers bug):
     //     firstSend.maskComponent!
 
-    println("Shrinking Send contents..")
+    logger.info("Shrinking Send contents..")
     val stats = new MinimizationStats("ShrinkSendContents", "STSSched")
 
     val shrinkable_sends = mcs flatMap {
@@ -475,13 +480,13 @@ object RunnerUtils {
     } toSeq
 
     if (shrinkable_sends.isEmpty) {
-      println("No shrinkable sends")
+      logger.warn("No shrinkable sends")
       return mcs
     }
 
     var components = shrinkable_sends.head.messageCtor.getComponents
     if (shrinkable_sends.forall(s => s.messageCtor.getComponents == components)) {
-      println("shrinkable_sends: " + shrinkable_sends)
+      logger.debug("shrinkable_sends: " + shrinkable_sends)
       throw new IllegalArgumentException("Not all shrinkable_sends the same")
     }
 
@@ -509,19 +514,19 @@ object RunnerUtils {
 
     var maskedIndices = Set[Int]()
     for (i <- 0 until components.size) {
-      println("Trying to remove component " + i + ":" + components(i))
+      logger.info("Trying to remove component " + i + ":" + components(i))
       val modifiedMCS = modifyMCS(mcs, maskedIndices + i)
       testWithStsSched(schedulerConfig, modifiedMCS,
                        verified_mcs, actorNameProps, violation, stats) match {
         case Some(trace) =>
-          println("Violation reproducable after removing component " + i)
+          logger.info("Violation reproducable after removing component " + i)
           maskedIndices = maskedIndices + i
         case None =>
-          println("Violation not reproducable")
+          logger.info("Violation not reproducable")
       }
     }
 
-    println("Was able to remove the following components: " + maskedIndices)
+    logger.info("Was able to remove the following components: " + maskedIndices)
     return modifyMCS(mcs, maskedIndices)
   }
 
