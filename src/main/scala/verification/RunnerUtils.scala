@@ -621,12 +621,12 @@ object RunnerUtils {
             println(s"${current._1} message deliveries: ${current._2.size} (${current._3} externals, ${current._4} timers)")
           } else {
             println(s"Removed by ${current._1}: ${(prev._2.size - current._2.size)} (${(prev._3 - current._3)} externals, ${(prev._4 - current._4)} timers)")
+            println(s"[After ${current._1}: ${current._2.size} (${current._3} externals, ${current._4} timers)]")
           }
 
           prev = current
 
           if (traceStats.isEmpty) {
-            println(s"Final deliveries: ${current._2.size} (${current._3} externals, ${current._4} timers)")
             // TODO(cs): annotate which events are unignorable.
             println("Final messages delivered:") // w/o fingerints
             current._2 foreach { case e => println(e) }
