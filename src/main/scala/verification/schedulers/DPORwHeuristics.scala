@@ -49,6 +49,10 @@ object DPORwHeuristics {
   // (depth where race occurs, (racingEvent1, racingEvent2), events to replay
   //  including the racing events)
   type BacktrackKey = (Int, (Unique, Unique), List[Unique])
+
+  // Called whenever we fail to find the violation and start to explore a new
+  // trace
+  type ResetCallback = () => Unit
 }
 
 /**
@@ -72,7 +76,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   stopIfViolationFound:Boolean=true,
   startFromBackTrackPoints:Boolean=true,
   skipBacktrackComputation:Boolean=false,
-  stopAfterNextTrace:Boolean=false) extends Scheduler with TestOracle {
+  stopAfterNextTrace:Boolean=false,
+  injectedBacktracks:Boolean=false) extends Scheduler with TestOracle {
 
   val logger = LoggerFactory.getLogger("DPOR")
 
@@ -124,6 +129,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   var ignoreAbsentCallback : STSScheduler.IgnoreAbsentCallback = (i: Int) => None
   def setIgnoreAbsentCallback(c: STSScheduler.IgnoreAbsentCallback) {
     ignoreAbsentCallback = c
+  }
+  var resetCallback : DPORwHeuristics.ResetCallback = () => None
+  def setResetCallback(c: DPORwHeuristics.ResetCallback) {
+    resetCallback = c
   }
 
   var instrumenter = Instrumenter
@@ -328,6 +337,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   // Notification that the system has been reset
   def start_trace() : Unit = {
+    resetCallback()
     started = false
     actorNames.clear
     externalEventIdx = 0
@@ -466,11 +476,12 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
                 val priorEvent = currentTrace.last
                 val branchI = currentTrace.length - 1
                 val toPlayNext = pending(idx)._1
-                logger.trace("Setting backtrack point: " + priorEvent + " " + toPlayNext)
+                logger.trace(s"Setting backtrack@${branchI} ${priorEvent} ${toPlayNext}")
                 // TODO(cs): too specific to FungibleClockClustering.. we abuse
                 // the last tuple item to include our remaining WildCards [nextTrace.clone]
-                backTrack.enqueue((branchI, (priorEvent, toPlayNext),
-                     currentTrace.clone.toList ++ List(toPlayNext) ++ nextTrace.clone.toList))
+                // N.B. currentTrace's head is the root event, so we skip over it.
+                val traceToPlayNext = currentTrace.tail.clone.toList ++ List(toPlayNext) ++ nextTrace.clone.toList
+                backTrack.enqueue((branchI, (priorEvent, toPlayNext), traceToPlayNext))
               }
               val pendingMessages = pending.map { case t => t._3.message }
               msgSelector(pendingMessages, backtrackSetter) match {
@@ -818,7 +829,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     initialTrace match {
       case Some(tr) =>
         nextTrace.clear()
-        println("SETTING NEXTTRACE")
         nextTrace ++= tr
         origNextTraceSize = nextTrace.size
         initialGraph match {
@@ -982,7 +992,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
       dpor(currentTrace) match {
         case Some(trace) =>
-          println("SETTING DPOR NEXTTRACE")
+          nextTrace.clear()
           nextTrace ++= trace
           origNextTraceSize = nextTrace.size
 
@@ -1283,10 +1293,11 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         exploredTracker.trimExplored(maxIndex)
         exploredTracker.printExplored()
 
-        // Return all events up to the backtrack index we're interested in
-        // and slap on it a new set of events that need to be replayed in
-        // order to explore that interleaving.
-        return Some(trace.take(maxIndex + 1) ++ replayThis)
+        if (injectedBacktracks) {
+          return Some(new Queue[Unique] ++ replayThis)
+        } else {
+          return Some(trace.take(maxIndex + 1) ++ replayThis)
+        }
       case None =>
         return None
     }

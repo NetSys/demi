@@ -56,8 +56,8 @@ class SrcDstFIFOOnly extends AmbiguityResolutionStrategy {
 class BackTrackStrategy extends AmbiguityResolutionStrategy {
   def resolve(msgSelector: MessageSelector, pending: Seq[Any],
               backtrackSetter: (Int) => Unit) : Option[Int] = {
-    val matching = pending.zipWithIndex.filter({ case (msg,i) =>
-      msgSelector(msg) })
+    val matching = pending.zipWithIndex.filter(
+      { case (msg,i) =>msgSelector(msg) })
 
     if (!matching.isEmpty) {
       // Set backtrack points, if any, for any messages that are of the same
@@ -106,7 +106,8 @@ class FungibleClockMinimizer(
   extends InternalEventMinimizer {
 
   def testWithDpor(nextTrace: EventTrace, stats: MinimizationStats,
-                   absentIgnored: STSScheduler.IgnoreAbsentCallback): Option[EventTrace] = {
+                   absentIgnored: STSScheduler.IgnoreAbsentCallback,
+                   resetCallback: DPORwHeuristics.ResetCallback): Option[EventTrace] = {
     val uniques = new Queue[Unique] ++ nextTrace.events.flatMap {
       case UniqueMsgEvent(m @ MsgEvent(snd,rcv,wildcard), id) =>
         Some(Unique(m,id=(-1)))
@@ -125,8 +126,10 @@ class FungibleClockMinimizer(
                         stopIfViolationFound=false,
                         startFromBackTrackPoints=false,
                         skipBacktrackComputation=true,
-                        stopAfterNextTrace=true)
+                        stopAfterNextTrace=true,
+                        injectedBacktracks=true)
     dpor.setIgnoreAbsentCallback(absentIgnored)
+    dpor.setResetCallback(resetCallback)
     depGraph match {
       case Some(g) => dpor.setInitialDepGraph(g)
       case None =>
@@ -173,8 +176,11 @@ class FungibleClockMinimizer(
       def ignoreAbsentCallback(idx: Int) {
         ignoredAbsentIndices += idx
       }
+      def resetCallback() {
+        ignoredAbsentIndices.clear
+      }
       val ret = if (testScheduler == TestScheduler.DPORwHeuristics)
-        testWithDpor(nextTrace.get, stats, ignoreAbsentCallback)
+        testWithDpor(nextTrace.get, stats, ignoreAbsentCallback, resetCallback)
         else testWithSTSSched(nextTrace.get, stats, ignoreAbsentCallback)
 
       var ignoredAbsentIds = Set[Int]()
@@ -183,10 +189,16 @@ class FungibleClockMinimizer(
         if (ret.get.size < minTrace.size) {
           minTrace = ret.get
         }
-        ignoredAbsentIndices.foreach {
-          case i =>
-            ignoredAbsentIds = ignoredAbsentIds +
-              nextTrace.get.events.get(i).get.asInstanceOf[UniqueMsgEvent].id
+        val adjustedTrace = if (testScheduler == TestScheduler.STSSched)
+          nextTrace.get.events
+        else nextTrace.get.events.flatMap {
+          case u: UniqueMsgEvent => Some(u)
+          case _ => None
+        }
+
+        ignoredAbsentIndices.foreach { case i =>
+          ignoredAbsentIds = ignoredAbsentIds +
+            adjustedTrace.get(i).get.asInstanceOf[UniqueMsgEvent].id
         }
       }
       nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
