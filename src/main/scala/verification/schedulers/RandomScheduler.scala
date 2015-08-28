@@ -684,15 +684,22 @@ class FullyRandom(
 // TODO(cs): simulate TCP connection resets, i.e. allow us to randomly drop
 // all pending messages for a src,dst pair. Probably trigger them via external
 // events, e.g. Kills or HardKills or something else.
-class SrcDstFIFO extends RandomizationStrategy {
+// TODO(cs): allow timers to be scheduled in arbitrary order
+class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) => true)
+    extends RandomizationStrategy {
   private var srcDsts = new ArrayList[(String, String)]
   private val rand = new Random(System.currentTimeMillis())
   private val srcDstToMessages = new HashMap[(String, String),
                                              Queue[(Uniq[(Cell,Envelope)],Unique)]]
   private val allMessages = new MultiSet[(Uniq[(Cell,Envelope)],Unique)]
 
-  def getRandomSrcDst(): ((String, String), Int) = synchronized {
-    val idx = rand.nextInt(srcDsts.size)
+  def getRandomSrcDst(ignore:Set[Int]=Set.empty): ((String, String), Int) = synchronized {
+    var idx = rand.nextInt(srcDsts.size)
+    // TODO(cs): unfortunate algorithm; not guarenteed to finish. Do this in a
+    // cleaner way.
+    while (ignore contains idx) {
+      idx = rand.nextInt(srcDsts.size)
+    }
     return (srcDsts.get(idx), idx)
   }
 
@@ -725,10 +732,35 @@ class SrcDstFIFO extends RandomizationStrategy {
   }
 
   def removeRandomElement(): (Uniq[(Cell,Envelope)],Unique) = synchronized {
-    // First find a random queue. Then dequeue from the queue.
-    val (srcDst, idx) = getRandomSrcDst
-    val queue = srcDstToMessages(srcDst)
-    val ret = queue.dequeue
+    // First find a random queue
+    var (srcDst, idx) = getRandomSrcDst()
+    var queue = srcDstToMessages(srcDst)
+    var ret = queue.head
+
+    var snd  = ret._1.element._2.sender.path.name
+    var rcv = ret._1.element._1.self.path.name
+    var msg = ret._1.element._2.message
+
+    // userDefinedFilter better be well-behaved...
+    var ignoredSrcDstIndices = Set[Int]()
+    while (ignoredSrcDstIndices.size < srcDsts.size && !userDefinedFilter(snd,rcv,msg)) {
+      ignoredSrcDstIndices = ignoredSrcDstIndices + idx
+      val t = getRandomSrcDst(ignoredSrcDstIndices)
+      srcDst = t._1
+      idx = t._2
+      queue = srcDstToMessages(srcDst)
+      ret = queue.head
+
+      snd  = ret._1.element._2.sender.path.name
+      rcv = ret._1.element._1.self.path.name
+      msg = ret._1.element._2.message
+    }
+
+    if (ignoredSrcDstIndices.size == srcDsts.size &&
+        !userDefinedFilter(snd,rcv,msg)) {
+      throw new IllegalStateException("Ill-Behaved userDefinedFilter. Choices exhausted")
+    }
+
     if (queue.isEmpty) {
       srcDstToMessages -= srcDst
       srcDsts.remove(idx)
