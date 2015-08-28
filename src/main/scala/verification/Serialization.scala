@@ -390,6 +390,12 @@ class ExperimentDeserializer(results_dir: String) {
     queue ++= events
     return new EventTrace(queue, originalExternals)
   }
+
+  def get_stats(): MinimizationStats = {
+    val source = scala.io.Source.fromFile(results_dir + ExperimentSerializer.stats)
+    val lines = try source.mkString finally source.close()
+    return MinimizationStats.fromJson(lines)
+  }
 }
 
 object JavaSerialization {

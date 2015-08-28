@@ -136,16 +136,24 @@ object RunnerUtils {
 
   def deserializeMCS(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
-      scheduler: ExternalEventInjector[_] with Scheduler):
-        Tuple4[Seq[ExternalEvent], EventTrace, ViolationFingerprint, Seq[Tuple2[Props, String]]] = {
+      scheduler: ExternalEventInjector[_] with Scheduler=null): // if null, use dummy
+        Tuple5[Seq[ExternalEvent], EventTrace, ViolationFingerprint,
+               Seq[Tuple2[Props, String]], MinimizationStats] = {
     val deserializer = new ExperimentDeserializer(experiment_dir)
-    Instrumenter().scheduler = scheduler
-    scheduler.populateActorSystem(deserializer.get_actors)
+    val _scheduler = if (scheduler == null)
+      new ReplayScheduler(SchedulerConfig())
+      else scheduler
+    Instrumenter().scheduler = _scheduler
+    _scheduler.populateActorSystem(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
     val mcs = deserializer.get_mcs
     val actorNameProps = deserializer.get_actors
-    return (mcs, trace, violation, actorNameProps)
+    val stats = deserializer.get_stats
+    if (scheduler == null) {
+      _scheduler.shutdown
+    }
+    return (mcs, trace, violation, actorNameProps, stats)
   }
 
   def replayExperiment(experiment_dir: String,
