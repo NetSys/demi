@@ -7,9 +7,13 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
-  def this(oracle: TestOracle) = this(oracle, true)
-  val stats = new MinimizationStats("LeftToRightRemoval", oracle.getName)
+class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed:Boolean=true,
+                          stats: Option[MinimizationStats]=None) extends Minimizer {
+  val _stats = stats match {
+    case Some(s) => s
+    case None => new MinimizationStats
+  }
+  _stats.updateStrategy("LeftToRightRemoval", oracle.getName)
 
   val logger = LoggerFactory.getLogger("LeftToRight")
 
@@ -20,10 +24,11 @@ class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends M
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
       logger.info("Checking if unmodified trace triggers violation...")
-      if (oracle.test(_dag.events, violation_fingerprint, stats,
+      if (oracle.test(_dag.events, violation_fingerprint, _stats,
         initializationRoutine=initializationRoutine) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
       }
+      _stats.reset
     }
 
     var dag = _dag
@@ -38,7 +43,7 @@ class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends M
       val new_dag = dag.remove_events(List(event))
 
       if (oracle.test(new_dag.get_all_events, violation_fingerprint,
-                      stats, initializationRoutine=initializationRoutine) == None) {
+                      _stats, initializationRoutine=initializationRoutine) == None) {
         logger.info("passes")
         // Move on to the next event to test
         events_to_test = events_to_test.slice(1, events_to_test.length)
@@ -57,8 +62,10 @@ class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed: Boolean) extends M
   def verify_mcs(mcs: EventDag,
                  violation_fingerprint: ViolationFingerprint,
                  initializationRoutine: Option[() => Any]=None): Option[EventTrace] = {
+    val nop_stats = new MinimizationStats
+    nop_stats.updateStrategy("NOP", "NOP")
     return oracle.test(mcs.events, violation_fingerprint,
-      new MinimizationStats("NOP", "NOP"), initializationRoutine=initializationRoutine)
+      nop_stats, initializationRoutine=initializationRoutine)
   }
 }
 

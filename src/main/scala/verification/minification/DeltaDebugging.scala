@@ -4,13 +4,16 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
-  def this(oracle: TestOracle) = this(oracle, true)
-
+class DDMin (oracle: TestOracle, checkUnmodifed:Boolean=true,
+             stats: Option[MinimizationStats]=None) extends Minimizer {
   val logger = LoggerFactory.getLogger("DDMin")
 
   var violation_fingerprint : ViolationFingerprint = null
-  val stats = new MinimizationStats("DDMin", oracle.getName)
+  val _stats = stats match {
+    case Some(s) => s
+    case None => new MinimizationStats
+  }
+  _stats.updateStrategy("DDMin", oracle.getName)
   var initializationRoutine : Option[() => Any] = None
   var original_num_events = 0
   var total_inputs_pruned = 0
@@ -37,32 +40,34 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
     // First check if the initial trace violates the exception
     if (checkUnmodifed) {
       logger.info("Checking if unmodified trace triggers violation...")
-      if (oracle.test(dag.events, violation_fingerprint, stats,
+      if (oracle.test(dag.events, violation_fingerprint, _stats,
                       initializationRoutine=initializationRoutine) == None) {
         throw new IllegalArgumentException("Unmodified trace does not trigger violation")
       }
     }
-    stats.reset()
+    _stats.reset()
 
     original_num_events = dag.length
     var remainder : EventDag = new UnmodifiedEventDag(List[ExternalEvent]())
 
-    stats.record_prune_start()
+    _stats.record_prune_start()
     val mcs_dag = ddmin2(dag, remainder)
     val mcs = mcs_dag.get_all_events
-    stats.record_prune_end()
+    _stats.record_prune_end()
 
     assert(original_num_events - total_inputs_pruned == mcs.length)
     // Record the final iteration (fencepost)
-    stats.record_iteration_size(original_num_events - total_inputs_pruned)
+    _stats.record_iteration_size(original_num_events - total_inputs_pruned)
     return mcs_dag
   }
 
   def verify_mcs(mcs: EventDag,
       _violation_fingerprint: ViolationFingerprint,
       initializationRoutine: Option[() => Any]=None): Option[EventTrace] = {
+    val nop_stats = new MinimizationStats
+    nop_stats.updateStrategy("NOP", "NOP")
     return oracle.test(mcs.events, _violation_fingerprint,
-      new MinimizationStats("NOP", "NOP"), initializationRoutine=initializationRoutine)
+      nop_stats, initializationRoutine=initializationRoutine)
   }
 
   def ddmin2(dag: EventDag, remainder: EventDag): EventDag = {
@@ -84,11 +89,11 @@ class DDMin (oracle: TestOracle, checkUnmodifed: Boolean) extends Minimizer {
       val union = split.union(remainder)
       logger.info("Checking split " + union.get_all_events.map(e => e.label).mkString(","))
       val passes = oracle.test(union.get_all_events, violation_fingerprint,
-        stats, initializationRoutine=initializationRoutine) == None
+        _stats, initializationRoutine=initializationRoutine) == None
       // There may have been many replays since the last time we recorded
       // iteration size; record each one's iteration size from before we invoked test()
-      for (i <- (stats.iteration until stats.total_replays)) {
-        stats.record_iteration_size(original_num_events - total_inputs_pruned)
+      for (i <- (_stats.inner().iteration until _stats.inner().total_replays)) {
+        _stats.record_iteration_size(original_num_events - total_inputs_pruned)
       }
       if (!passes) {
         logger.info("Split fails. Recursing")

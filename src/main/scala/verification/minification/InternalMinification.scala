@@ -28,13 +28,18 @@ class STSSchedMinimizer(
   actorNameProps: Seq[Tuple2[Props, String]],
   initializationRoutine: Option[() => Any]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
-  postTest: Option[STSScheduler.PostTestCallback]=None)
+  postTest: Option[STSScheduler.PostTestCallback]=None,
+  stats: Option[MinimizationStats]=None)
   extends InternalEventMinimizer {
 
   val logger = LoggerFactory.getLogger("IntMin")
 
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
-    val stats = new MinimizationStats("InternalMin", "STSSched")
+    val _stats = stats match {
+      case Some(s) => s
+      case None => new MinimizationStats
+    }
+    _stats.updateStrategy("InternalMin", "STSSched")
 
     val origTrace = verified_mcs.filterCheckpointMessages.filterFailureDetectorMessages
     var lastFailingTrace = origTrace
@@ -45,10 +50,10 @@ class STSSchedMinimizer(
     var nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
       prunedOverall, violationTriggered)
 
-    stats.record_prune_start
+    _stats.record_prune_start
     while (!nextTrace.isEmpty) {
       RunnerUtils.testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
-                       violation, stats, initializationRoutine=initializationRoutine,
+                       violation, _stats, initializationRoutine=initializationRoutine,
                        preTest=preTest, postTest=postTest) match {
         case Some(trace) =>
           // Some other events may have been pruned by virtue of being absent. So
@@ -91,13 +96,13 @@ class STSSchedMinimizer(
       nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
         prunedOverall, violationTriggered)
     }
-    stats.record_prune_end
+    _stats.record_prune_end
     val origSize = RunnerUtils.countMsgEvents(origTrace)
     val newSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
     val diff = origSize - newSize
     logger.info("Pruned " + diff + "/" + origSize + " deliveries (" + removalStrategy.unignorable + " unignorable)" +
-            " in " + stats.total_replays + " replays")
-    return (stats, lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
+            " in " + _stats.inner().total_replays + " replays")
+    return (_stats, lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
   }
 }
 

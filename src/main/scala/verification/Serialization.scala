@@ -58,11 +58,7 @@ object ExperimentSerializer {
   val original_externals = "/original_externals.bin"
   val violation = "/violation.bin"
   val mcs = "/mcs.bin"
-  val stats = "/minimization_stats.json" // DDMin
-  // Stats when minimizing internal events.
-  val internal_stats = "/internal_minimization_stats.json"
-  // Stats when minimizing with wildcards
-  val wildcard_stats = "/wildcard_minimization_stats.json"
+  val stats = "/minimization_stats.json"
   val depGraphEdges = "/depGraphEdges.bin"
   val depGraphNodes = "/depGraphNodes.bin"
   // trace of Unique(MsgEvent)s
@@ -246,10 +242,7 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
                                   mcsBuf)
 
-    val statsJson = stats.toJson()
-    JavaSerialization.withPrintWriter(new_experiment_dir, ExperimentSerializer.stats) { pw =>
-      pw.write(statsJson)
-    }
+    recordMinimizationStats(new_experiment_dir, stats)
 
     mcs_execution match {
       case Some(event_trace) =>
@@ -267,7 +260,7 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
 
   def recordMinimizedInternals(output_dir: String,
         internalStats: MinimizationStats, minimized: EventTrace) {
-    recordMinimizationStats(output_dir, internalStats, stats_file=ExperimentSerializer.internal_stats)
+    recordMinimizationStats(output_dir, internalStats)
     val sanitized = sanitize_trace(minimized.events)
     val asArray : Array[Event] = sanitized.toArray
     val sanitizedBuf = JavaSerialization.serialize(asArray)
@@ -275,10 +268,11 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
                                   sanitizedBuf)
   }
 
-  def recordMinimizationStats(output_dir: String,
-      internalStats: MinimizationStats, stats_file:String=ExperimentSerializer.internal_stats) {
+  def recordMinimizationStats(output_dir: String, internalStats: MinimizationStats) {
+    // Just continue overwriting the stats file. Stats are designed to be
+    // append only.
     val statsJson = internalStats.toJson()
-    JavaSerialization.withPrintWriter(output_dir, stats_file) { pw =>
+    JavaSerialization.withPrintWriter(output_dir, ExperimentSerializer.stats) { pw =>
       pw.write(statsJson)
     }
   }

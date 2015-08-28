@@ -24,97 +24,163 @@ trait Minimizer {
 }
 
 // Statistics about how the minimization process worked.
-// minimization_strategy: One of: {"LeftToRightRemoval", "DDMin"}
-// test_oracle: One of: {"RandomScheduler", "STSSchedNoPeek", "STSSched", "GreedyED", "DPOR", "FairScheduler"}
-class MinimizationStats(val minimization_strategy: String, val test_oracle: String) {
+class MinimizationStats {
+  // minimization_strategy:
+  //   One of: {"LeftToRightRemoval", "DDMin"}
+  // test_oracle:
+  //   One of: {"RandomScheduler", "STSSchedNoPeek", "STSSched",
+  //            "DPOR", "FairScheduler", "FungibleClocks"}
+  var minimization_strategy : String = ""
+  var test_oracle : String = ""
+  var strategyToStats = new HashMap[(String,String),InnerStats]
 
-  // For the ith replay attempt, how many external events were left?
-  val iterationSize = new HashMap[Int, Int]
-  var iteration = 0
-  // For each increase in maxDistance, what was the current iteration when the
-  // increase occurred? (See IncrementalDeltaDebugging.scala)
-  // { new maxDistance -> current iteration }
-  val maxDistance = new HashMap[Int, Int]
+  // Update which strategy, oracle pair we're recording stats for
+  def updateStrategy(_minimization_strategy: String, _test_oracle: String) {
+    if (strategyToStats contains ((_minimization_strategy,_test_oracle))) {
+      throw new IllegalArgumentException(
+        s"(minimization_strategy ${_minimization_strategy}, test_oracle ${_test_oracle }) already exist")
+    }
+    minimization_strategy = _minimization_strategy
+    test_oracle = _test_oracle
+    strategyToStats((_minimization_strategy, _test_oracle)) = new InnerStats
+  }
 
-  // Number of schedules attempted in order to find the MCS, not including the
-  // initial replay to verify the bug is still triggered
-  var total_replays = 0
+  class InnerStats {
+    // For the ith replay attempt, how many external events were left?
+    val iterationSize = new HashMap[Int, Int]
+    var iteration = 0
+    // For each increase in maxDistance, what was the current iteration when the
+    // increase occurred? (See IncrementalDeltaDebugging.scala)
+    // { new maxDistance -> current iteration }
+    val maxDistance = new HashMap[Int, Int]
 
-  // Other stats
-  val stats = new HashMap[String, Double]
+    // Number of schedules attempted in order to find the MCS, not including the
+    // initial replay to verify the bug is still triggered
+    var total_replays = 0
 
-  reset()
+    // Other stats
+    val stats = new HashMap[String, Double]
+
+    reset()
+
+    def reset() {
+      iterationSize.clear
+      maxDistance.clear
+      iteration = 0
+      stats.clear
+      stats ++= Seq(
+        // Overall minimization time
+        "prune_duration_seconds" -> -1.0,
+        "prune_start_epoch" -> -1.0,
+        "prune_end_epoch" -> -1.0,
+        // Time for the initial replay to verify the bug is still triggered
+        "replay_duration_seconds" -> -1.0,
+        "replay_end_epoch" -> -1.0,
+        "replay_start_epoch" -> -1.0,
+        // How long the original fuzz run took
+        // TODO(cs): should be a part of EventTrace?
+        "original_duration_seconds" -> -1.0,
+        // Number of external events in the unmodified execution
+        // TODO(cs): should be a part of EventTrace?
+        "total_inputs" -> 0.0,
+        // Number of events (both internal and external) in the unmodified execution
+        // TODO(cs): should be a part of EventTrace?
+        "total_events" -> 0.0,
+        // How many times we tried replaying unmodified execution before we were
+        // able to reproduce the violation
+        "initial_verification_runs_needed" -> 0.0
+      )
+    }
+
+    def increment_replays() {
+      total_replays += 1
+    }
+
+    def record_replay_start() {
+      stats("replay_start_epoch") = System.currentTimeMillis()
+    }
+
+    def record_replay_end() {
+      stats("replay_end_epoch") = System.currentTimeMillis()
+      stats("replay_duration_seconds") =
+        (stats("replay_end_epoch") * 1.0 - stats("replay_start_epoch")) / 1000
+    }
+
+    def record_prune_start() {
+      stats("prune_start_epoch") = System.currentTimeMillis()
+    }
+
+    def record_prune_end() {
+      stats("prune_end_epoch") = System.currentTimeMillis()
+      stats("prune_duration_seconds") =
+        (stats("prune_end_epoch") * 1.0 - stats("prune_start_epoch")) / 1000
+    }
+
+    def record_iteration_size(iteration_size: Integer) {
+      iterationSize(iteration) = iteration_size
+      iteration += 1
+    }
+
+    def record_distance_increase(newDistance: Integer) {
+      maxDistance(newDistance) = iteration
+    }
+
+    def toJson(): String = {
+      val map = new HashMap[String, Any]
+      map("iteration_size") = JSONObject(iterationSize.map(
+        pair => pair._1.toString -> pair._2).toMap)
+      map("total_replays") = total_replays
+      map("maxDistance") = JSONObject(maxDistance.map(
+        pair => pair._1.toString -> pair._2).toMap)
+      map ++= stats
+      val json = JSONObject(map.toMap).toString()
+      assert(json != "")
+      return json
+    }
+  }
+
+  def inner(): InnerStats = {
+    strategyToStats((minimization_strategy,test_oracle))
+  }
 
   def reset() {
-    iterationSize.clear
-    maxDistance.clear
-    iteration = 0
-    stats.clear
-    stats ++= Seq(
-      // Overall minimization time
-      "prune_duration_seconds" -> -1.0,
-      "prune_start_epoch" -> -1.0,
-      "prune_end_epoch" -> -1.0,
-      // Time for the initial replay to verify the bug is still triggered
-      "replay_duration_seconds" -> -1.0,
-      "replay_end_epoch" -> -1.0,
-      "replay_start_epoch" -> -1.0,
-      // How long the original fuzz run took
-      // TODO(cs): should be a part of EventTrace?
-      "original_duration_seconds" -> -1.0,
-      // Number of external events in the unmodified execution
-      // TODO(cs): should be a part of EventTrace?
-      "total_inputs" -> 0.0,
-      // Number of events (both internal and external) in the unmodified execution
-      // TODO(cs): should be a part of EventTrace?
-      "total_events" -> 0.0,
-      // How many times we tried replaying unmodified execution before we were
-      // able to reproduce the violation
-      "initial_verification_runs_needed" -> 0.0
-    )
+    inner().reset
   }
 
   def increment_replays() {
-    total_replays += 1
+    inner().increment_replays
   }
 
   def record_replay_start() {
-    stats("replay_start_epoch") = System.currentTimeMillis()
+    inner().record_replay_start
   }
 
   def record_replay_end() {
-    stats("replay_end_epoch") = System.currentTimeMillis()
-    stats("replay_duration_seconds") =
-      (stats("replay_end_epoch") * 1.0 - stats("replay_start_epoch")) / 1000
+    inner().record_replay_end
   }
 
   def record_prune_start() {
-    stats("prune_start_epoch") = System.currentTimeMillis()
+    inner().record_prune_start
   }
 
   def record_prune_end() {
-    stats("prune_end_epoch") = System.currentTimeMillis()
-    stats("prune_duration_seconds") =
-      (stats("prune_end_epoch") * 1.0 - stats("prune_start_epoch")) / 1000
+    inner().record_prune_end
   }
 
   def record_iteration_size(iteration_size: Integer) {
-    iterationSize(iteration) = iteration_size
-    iteration += 1
+    inner().record_iteration_size(iteration_size)
   }
 
   def record_distance_increase(newDistance: Integer) {
-    maxDistance(newDistance) = iteration
+    inner().record_distance_increase(newDistance)
   }
 
   def toJson(): String = {
-    val map = new HashMap[String, Any]
-    map("iteration_size") = JSONObject(iterationSize.map(
-      pair => pair._1.toString -> pair._2).toMap)
-    map("total_replays") = total_replays
-    map("maxDistance") = JSONObject(maxDistance.map(
-      pair => pair._1.toString -> pair._2).toMap)
-    map ++= stats
+    val map = new HashMap[String, String]
+    strategyToStats.foreach {
+      case (k,v) =>
+        map(k.toString) = v.toJson
+    }
     val json = JSONObject(map.toMap).toString()
     assert(json != "")
     return json

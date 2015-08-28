@@ -101,14 +101,14 @@ class FungibleClockMinimizer(
   trace: EventTrace,
   actorNameProps: Seq[Tuple2[Props, String]],
   violation: ViolationFingerprint,
-  stats: Option[MinimizationStats]=None,
   skipClockClusters:Boolean=false, // if true, only explore timers
   resolutionStrategy: AmbiguityResolutionStrategy=new BackTrackStrategy,
   testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
   depGraph: Option[Graph[Unique,DiEdge]]=None,
   initializationRoutine: Option[() => Any]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
-  postTest: Option[STSScheduler.PostTestCallback]=None)
+  postTest: Option[STSScheduler.PostTestCallback]=None,
+  stats: Option[MinimizationStats]=None)
   extends InternalEventMinimizer {
 
   val log = LoggerFactory.getLogger("WildCardMin")
@@ -171,9 +171,13 @@ class FungibleClockMinimizer(
   // we managed to remove anything here.
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
     val _stats = stats match {
-      case None => new MinimizationStats("FungibleClockMinimizer", "STSSched")
+      case None => new MinimizationStats
       case Some(s) => s
     }
+    val oracleName = if (testScheduler == TestScheduler.STSSched)
+      "STSSched" else "DPOR"
+    _stats.updateStrategy("FungibleClockMinimizer", oracleName)
+
     val aggressiveness = if (skipClockClusters)
       Aggressiveness.STOP_IMMEDIATELY
       else Aggressiveness.ALL_TIMERS_FIRST_ITR
@@ -186,7 +190,7 @@ class FungibleClockMinimizer(
     var minTrace = trace
 
     var nextTrace = clockClusterizer.getNextTrace(false, Set[Int]())
-    if (stats.isEmpty) _stats.record_prune_start
+    _stats.record_prune_start
     while (!nextTrace.isEmpty) {
       val ignoredAbsentIndices = new HashSet[Int]
       def ignoreAbsentCallback(idx: Int) {
@@ -219,7 +223,7 @@ class FungibleClockMinimizer(
       }
       nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
     }
-    if (stats.isEmpty) _stats.record_prune_end
+    _stats.record_prune_end
 
     if (testScheduler == TestScheduler.DPORwHeuristics) {
       // DPORwHeuristics doesn't play nicely with other schedulers, so we need
