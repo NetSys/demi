@@ -267,6 +267,59 @@ object RunnerUtils {
     return (mcs.events, ddmin.stats, validated_mcs, violation)
   }
 
+  def fungibleClocksDDMin(schedulerConfig: SchedulerConfig,
+        originalTrace: EventTrace,
+        violation: ViolationFingerprint,
+        actorNameProps: Seq[Tuple2[Props, String]],
+        initializationRoutine: Option[() => Any]=None,
+        resolutionStrategy: AmbiguityResolutionStrategy=new BackTrackStrategy,
+        testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
+        depGraph: Option[Graph[Unique,DiEdge]]=None,
+        preTest: Option[STSScheduler.PreTestCallback]=None,
+        postTest: Option[STSScheduler.PostTestCallback]=None,
+        dag: Option[EventDag]=None) :
+        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
+
+    val oracle = new FungibleClockTestOracle(
+        schedulerConfig,
+        originalTrace,
+        actorNameProps,
+        resolutionStrategy=resolutionStrategy,
+        testScheduler=testScheduler,
+        depGraph=depGraph,
+        preTest=preTest,
+        postTest=postTest)
+
+    val ddmin = new DDMin(oracle)
+    val mcs = dag match {
+      case Some(d) =>
+        ddmin.minimize(d, violation, initializationRoutine)
+      case None =>
+        // STSSched doesn't actually pay any attention to WaitQuiescence or
+        // WaitCondition, so just get rid of them.
+        // TODO(cs): doesn't necessarily make sense for DPOR?
+        val filteredQuiescence = originalTrace.original_externals flatMap {
+          case WaitQuiescence() => None
+          case WaitCondition(_) => None
+          case e => Some(e)
+        }
+        ddmin.minimize(filteredQuiescence, violation,
+          initializationRoutine=initializationRoutine)
+    }
+    printMCS(mcs.events)
+    logger.info("Validating MCS...")
+    var validated_mcs = ddmin.verify_mcs(mcs, violation,
+      initializationRoutine=initializationRoutine)
+    validated_mcs match {
+      case Some(trace) =>
+        logger.info("MCS Validated!")
+        trace.setOriginalExternalEvents(mcs.events)
+        validated_mcs = Some(trace.filterCheckpointMessages)
+      case None => logger.info("MCS doesn't reproduce bug...")
+    }
+    return (mcs.events, ddmin.stats, validated_mcs, violation)
+  }
+
   def roundRobinDDMin(experiment_dir: String,
                       schedulerConfig: SchedulerConfig,
                       messageDeserializer: MessageDeserializer) :
