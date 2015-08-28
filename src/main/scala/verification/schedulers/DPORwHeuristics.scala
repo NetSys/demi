@@ -472,8 +472,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
               val pending = queue.toIndexedSeq
               def backtrackSetter(idx: Int) {
                 val priorEvent = currentTrace.last
-                val branchI = currentTrace.length - 1
                 val toPlayNext = pending(idx)._1
+                val commonPrefix = getCommonPrefix(priorEvent, toPlayNext)
+                val lastElement = commonPrefix.last
+                val branchI = currentTrace.indexWhere { e => (e == lastElement.value) }
                 log.trace(s"Setting backtrack@${branchI} ${priorEvent} ${toPlayNext}")
                 // TODO(cs): too specific to FungibleClockClustering.. we abuse
                 // the last tuple item to include our remaining WildCards [nextTrace.clone]
@@ -1288,7 +1290,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
            e1 + " and " + e2  + " at index " + maxIndex + Console.RESET)
 
         exploredTracker.setExplored(maxIndex, (e1, e2))
-        exploredTracker.trimExplored(maxIndex)
+        // TODO(cs): the following optimization is not correct if we don't
+        // explore in depth-first order. Figure out how to make it correct.
+        //exploredTracker.trimExplored(maxIndex)
         //exploredTracker.printExplored()
 
         if (skipBacktrackComputation) {
