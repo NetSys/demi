@@ -763,7 +763,7 @@ class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) 
 
     // userDefinedFilter better be well-behaved...
     var ignoredSrcDstIndices = Set[Int]()
-    while (ignoredSrcDstIndices.size + 1 < srcDsts.size && !userDefinedFilter(snd,rcv,msg)) {
+    while (!userDefinedFilter(snd,rcv,msg) && ignoredSrcDstIndices.size + 1 < srcDsts.size) {
       ignoredSrcDstIndices = ignoredSrcDstIndices + idx
       val t = getRandomSrcDst(ignoredSrcDstIndices)
       srcDst = t._1
@@ -776,7 +776,7 @@ class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) 
       msg = ret._1.element._2.message
     }
 
-    if (ignoredSrcDstIndices.size == srcDsts.size &&
+    if (ignoredSrcDstIndices.size + 1 == srcDsts.size &&
         !userDefinedFilter(snd,rcv,msg)) {
       // Well, they better want a timer...
       val t = timersAndExternals.removeRandomElement
