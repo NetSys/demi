@@ -763,7 +763,7 @@ class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) 
 
     // userDefinedFilter better be well-behaved...
     var ignoredSrcDstIndices = Set[Int]()
-    while (ignoredSrcDstIndices.size < srcDsts.size && !userDefinedFilter(snd,rcv,msg)) {
+    while (ignoredSrcDstIndices.size + 1 < srcDsts.size && !userDefinedFilter(snd,rcv,msg)) {
       ignoredSrcDstIndices = ignoredSrcDstIndices + idx
       val t = getRandomSrcDst(ignoredSrcDstIndices)
       srcDst = t._1
@@ -784,6 +784,7 @@ class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) 
       return t
     }
 
+    queue.dequeue
     if (queue.isEmpty) {
       srcDstToMessages -= srcDst
       srcDsts.remove(idx)
