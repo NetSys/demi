@@ -651,16 +651,16 @@ object RunnerUtils {
 
     def get_deliveries(trace: EventTrace) : Seq[MsgEvent] = {
       // Make sure not to count checkpoint and failure detector messages.
-      // Also filter out Timers from other messages, by ensuring that the
+      // Also annotate Timers from other messages, by ensuring that the
       // "sender" field is "Timer"
       trace.filterFailureDetectorMessages.
             filterCheckpointMessages.flatMap {
         case m @ MsgEvent(s, r, msg) =>
           val fingerprint = messageFingerprinter.fingerprint(msg)
           if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
-            Some(MsgEvent("Timer", r, fingerprint))
+            Some(MsgEvent("Timer", r, msg))
           } else {
-            Some(MsgEvent(s, r, fingerprint))
+            Some(MsgEvent(s, r, msg))
           }
         case t: TimerDelivery => Some(MsgEvent("Timer", t.receiver, t.fingerprint))
         case e => None
@@ -688,8 +688,11 @@ object RunnerUtils {
       // { (name, deliveries, externals, timers) }
       var traceStats : Seq[(String,Seq[MsgEvent],Int,Int)] = Seq.empty
 
-      def appendTrace(name: String, deliveries:Seq[MsgEvent]) {
-        val externals = count_externals(deliveries)
+      def appendTrace(name: String, deliveries:Seq[MsgEvent],
+                      externalsUnchanged:Boolean=false) {
+        val externals = if (externalsUnchanged)
+          traceStats.last._3
+          else  count_externals(deliveries)
         val timers = count_timers(deliveries)
         traceStats = traceStats.:+((name,deliveries,externals,timers))
       }
@@ -735,9 +738,9 @@ object RunnerUtils {
            } else {
              val fingerprint = messageFingerprinter.fingerprint(msg)
              if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
-               Some(MsgEvent("Timer", r, fingerprint))
+               Some(MsgEvent("Timer", r, msg))
              } else {
-               Some(MsgEvent(s, r, fingerprint))
+               Some(MsgEvent(s, r, msg))
              }
            }
          case e => throw new UnsupportedOperationException("Non-MsgEvent:" + e)
@@ -746,7 +749,8 @@ object RunnerUtils {
 
     provenanceTrace match {
       case Some(trace) =>
-        printer.appendTrace("Provenance", getProvenanceDeliveries(trace))
+        printer.appendTrace("Provenance", getProvenanceDeliveries(trace),
+          externalsUnchanged=true)
       case None =>
         Seq.empty
     }
