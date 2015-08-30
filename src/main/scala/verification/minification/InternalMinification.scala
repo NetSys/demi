@@ -198,6 +198,8 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
         } else {
           None
         }
+      case _: MsgEvent =>
+        throw new IllegalArgumentException("Must be UniqueMsgEvent")
       case e =>
         Some(e)
     }

@@ -341,6 +341,8 @@ class ClockClusterizer(
         } else {
           None
         }
+      case _: MsgEvent =>
+        throw new IllegalArgumentException("Must be UniqueMsgEvent")
       case t @ UniqueTimerDelivery(_, _) =>
         throw new IllegalArgumentException("TimerDelivery not supported. Replay first")
       case e => Some(e)

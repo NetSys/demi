@@ -856,22 +856,28 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   def getMessage(cell: Cell, envelope: Envelope) : Unique = {
     val snd = envelope.sender.path.name
     val rcv = cell.self.path.name
-    val msg = new MsgEvent(snd, rcv, schedulerConfig.messageFingerprinter.fingerprint(envelope.message))
+    val msgEvent = new MsgEvent(snd, rcv, envelope.message)
+    val fingerprinted = schedulerConfig.messageFingerprinter.fingerprint(envelope.message)
+
     // Who cares if the parentEvent is in fact a message, as long as it is a parent.
     val parent = parentEvent
 
     def matchMessage (event: Event) : Boolean = {
-      return event == msg
+      event match {
+        case MsgEvent(s,r,m) => (s == snd && r == rcv &&
+          schedulerConfig.messageFingerprinter.fingerprint(m) == fingerprinted)
+        case e => throw new IllegalStateException("Not a MsgEvent: " + e)
+      }
     }
 
     val inNeighs = depGraph.get(parent).inNeighbors
     inNeighs.find { x => matchMessage(x.value.event) } match {
       case Some(x) => return x.value
       case None =>
-        val newMsg = Unique( MsgEvent(msg.sender, msg.receiver, msg.msg) )
+        val newMsg = Unique(msgEvent)
         log.trace(
             Console.YELLOW + "Not seen: " + newMsg.id +
-            " (" + msg.sender + " -> " + msg.receiver + ") " + msg.msg + Console.RESET)
+            " (" + msgEvent.sender + " -> " + msgEvent.receiver + ") " + msgEvent.msg + Console.RESET)
         return newMsg
       case _ => throw new Exception("wrong type")
     }
@@ -1371,15 +1377,14 @@ object DPORwHeuristicsUtil {
     events foreach {
       case Start(propCtor, name) =>
         toReplay += SpawnEvent("", propCtor(), name, null)
-      case Send(rcv, msgCtor) =>
-        toReplay += MsgSend("deadLetters", rcv, msgCtor())
       case _ => None
     }
-    // Then, convert Unique(MsgEvents) to MsgEvents.
+    // Then, convert Unique(MsgEvents) to UniqueMsgEvents.
     trace foreach {
       case Unique(m : MsgEvent, id) =>
         if (id != 0) { // Not root
-          toReplay += m
+          toReplay += UniqueMsgSend(MsgSend(m.sender,m.receiver,m.msg), id)
+          toReplay += UniqueMsgEvent(m, id)
         }
       case _ =>
         // Probably no need to consider Kills or Partitions
