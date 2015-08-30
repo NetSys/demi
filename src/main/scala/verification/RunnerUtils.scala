@@ -290,7 +290,7 @@ object RunnerUtils {
         postTest: Option[STSScheduler.PostTestCallback]=None,
         dag: Option[EventDag]=None,
         stats: Option[MinimizationStats]=None) :
-        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
+      Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
 
     val oracle = new FungibleClockTestOracle(
         schedulerConfig,

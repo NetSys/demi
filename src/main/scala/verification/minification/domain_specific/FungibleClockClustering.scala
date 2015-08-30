@@ -206,7 +206,7 @@ class FungibleClockMinimizer(
       var ignoredAbsentIds = Set[Int]()
       if (!ret.isEmpty) {
         log.info("Pruning was successful.")
-        if (ret.get.size < minTrace.size) {
+        if (ret.get.size <= minTrace.size) {
           minTrace = ret.get
         }
         val adjustedTrace = if (testScheduler == TestScheduler.STSSched)
