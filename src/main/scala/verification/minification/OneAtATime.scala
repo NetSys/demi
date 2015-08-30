@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed:Boolean=true,
+class LeftToRightRemoval (oracle: TestOracle, checkUnmodifed:Boolean=false,
                           stats: Option[MinimizationStats]=None) extends Minimizer {
   val _stats = stats match {
     case Some(s) => s

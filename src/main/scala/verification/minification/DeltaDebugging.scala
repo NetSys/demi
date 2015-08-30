@@ -4,7 +4,7 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-class DDMin (oracle: TestOracle, checkUnmodifed:Boolean=true,
+class DDMin (oracle: TestOracle, checkUnmodifed:Boolean=false,
              stats: Option[MinimizationStats]=None) extends Minimizer {
   val logger = LoggerFactory.getLogger("DDMin")
 

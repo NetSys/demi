@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory,
  */
 // TODO(cs): propogate stopAtSize to DDMin?
 class IncrementalDDMin (oracle: ResumableDPOR, maxMaxDistance:Int=256,
-                        stopAtSize:Int=1, checkUnmodifed:Boolean=true,
+                        stopAtSize:Int=1, checkUnmodifed:Boolean=false,
                         stats: Option[MinimizationStats]=None) extends Minimizer {
 
   val logger = LoggerFactory.getLogger("IncrementalDDMin")

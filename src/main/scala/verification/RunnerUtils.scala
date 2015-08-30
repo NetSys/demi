@@ -417,7 +417,6 @@ object RunnerUtils {
       ignoreQuiescence=ignoreQuiescence)
     val resumableDPOR = new ResumableDPOR(dporConstructor)
     val ddmin = new IncrementalDDMin(resumableDPOR,
-                                     checkUnmodifed=true,
                                      stopAtSize=6, maxMaxDistance=8,
                                      stats=stats)
     val mcs = ddmin.minimize(filtered_externals, violation)
