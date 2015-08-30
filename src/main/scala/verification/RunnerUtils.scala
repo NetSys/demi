@@ -210,13 +210,17 @@ object RunnerUtils {
 
     val ddmin = new DDMin(sched, checkUnmodifed=false, stats=stats)
     val mcs = ddmin.minimize(trace.original_externals, violation)
-    logger.info("Validating MCS...")
-    val validated_mcs = ddmin.verify_mcs(mcs, violation)
-    validated_mcs match {
-      case Some(_) => logger.info("MCS Validated!")
-      case None => logger.info("MCS doesn't reproduce bug...")
+    if (mcs.length < trace.original_externals.size) {
+      logger.info("Validating MCS...")
+      val validated_mcs = ddmin.verify_mcs(mcs, violation)
+      validated_mcs match {
+        case Some(_) => logger.info("MCS Validated!")
+        case None => logger.info("MCS doesn't reproduce bug...")
+      }
+      return (mcs.events, ddmin._stats, validated_mcs, violation)
+    } else {
+      return (mcs.events, ddmin._stats, Some(trace), violation)
     }
-    return (mcs.events, ddmin._stats, validated_mcs, violation)
   }
 
   def stsSchedDDMin(experiment_dir: String,
@@ -250,8 +254,10 @@ object RunnerUtils {
     }
 
     val ddmin = new DDMin(sched, stats=stats)
+    var externalsSize = 0
     val mcs = dag match {
       case Some(d) =>
+        externalsSize = d.length
         ddmin.minimize(d, violation, initializationRoutine)
       case None =>
         // STSSched doesn't actually pay any attention to WaitQuiescence or
@@ -261,21 +267,26 @@ object RunnerUtils {
           case WaitCondition(_) => None
           case e => Some(e)
         }
+        externalsSize = filteredQuiescence.size
         ddmin.minimize(filteredQuiescence, violation,
           initializationRoutine=initializationRoutine)
     }
-    printMCS(mcs.events)
-    logger.info("Validating MCS...")
-    var validated_mcs = ddmin.verify_mcs(mcs, violation,
-      initializationRoutine=initializationRoutine)
-    validated_mcs match {
-      case Some(trace) =>
-        logger.info("MCS Validated!")
-        trace.setOriginalExternalEvents(mcs.events)
-        validated_mcs = Some(trace.filterCheckpointMessages)
-      case None => logger.info("MCS doesn't reproduce bug...")
+    if (mcs.length < externalsSize) {
+      printMCS(mcs.events)
+      logger.info("Validating MCS...")
+      var validated_mcs = ddmin.verify_mcs(mcs, violation,
+        initializationRoutine=initializationRoutine)
+      validated_mcs match {
+        case Some(trace) =>
+          logger.info("MCS Validated!")
+          trace.setOriginalExternalEvents(mcs.events)
+          validated_mcs = Some(trace.filterCheckpointMessages)
+        case None => logger.info("MCS doesn't reproduce bug...")
+      }
+      return (mcs.events, ddmin._stats, validated_mcs, violation)
+    } else {
+      return (mcs.events, ddmin._stats, Some(trace), violation)
     }
-    return (mcs.events, ddmin._stats, validated_mcs, violation)
   }
 
   def fungibleClocksDDMin(schedulerConfig: SchedulerConfig,
@@ -303,8 +314,10 @@ object RunnerUtils {
         postTest=postTest)
 
     val ddmin = new DDMin(oracle, stats=stats)
+    var externalsSize = 0
     val mcs = dag match {
       case Some(d) =>
+        externalsSize = d.length
         ddmin.minimize(d, violation, initializationRoutine)
       case None =>
         // STSSched doesn't actually pay any attention to WaitQuiescence or
@@ -315,43 +328,26 @@ object RunnerUtils {
           case WaitCondition(_) => None
           case e => Some(e)
         }
+        externalsSize = filteredQuiescence.size
         ddmin.minimize(filteredQuiescence, violation,
           initializationRoutine=initializationRoutine)
     }
-    printMCS(mcs.events)
-    logger.info("Validating MCS...")
-    var validated_mcs = ddmin.verify_mcs(mcs, violation,
-      initializationRoutine=initializationRoutine)
-    validated_mcs match {
-      case Some(trace) =>
-        logger.info("MCS Validated!")
-        trace.setOriginalExternalEvents(mcs.events)
-        validated_mcs = Some(trace.filterCheckpointMessages)
-      case None => logger.info("MCS doesn't reproduce bug...")
+    if (mcs.length < externalsSize) {
+      printMCS(mcs.events)
+      logger.info("Validating MCS...")
+      var validated_mcs = ddmin.verify_mcs(mcs, violation,
+        initializationRoutine=initializationRoutine)
+      validated_mcs match {
+        case Some(trace) =>
+          logger.info("MCS Validated!")
+          trace.setOriginalExternalEvents(mcs.events)
+          validated_mcs = Some(trace.filterCheckpointMessages)
+        case None => logger.info("MCS doesn't reproduce bug...")
+      }
+      return (mcs.events, ddmin._stats, validated_mcs, violation)
+    } else {
+      return (mcs.events, ddmin._stats, Some(originalTrace), violation)
     }
-    return (mcs.events, ddmin._stats, validated_mcs, violation)
-  }
-
-  def roundRobinDDMin(experiment_dir: String,
-                      schedulerConfig: SchedulerConfig,
-                      messageDeserializer: MessageDeserializer,
-                      stats: Option[MinimizationStats]=None) :
-        Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
-    val sched = new PeekScheduler(schedulerConfig)
-    val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
-    sched.setMaxMessages(trace.size)
-
-    // Don't check unmodified execution, since RR will often fail
-    val ddmin = new DDMin(sched, checkUnmodifed=false, stats=stats)
-    val mcs = ddmin.minimize(trace.original_externals, violation)
-    printMCS(mcs.events)
-    logger.info("Validating MCS...")
-    val validated_mcs = ddmin.verify_mcs(mcs, violation)
-    validated_mcs match {
-      case Some(_) => logger.info("MCS Validated!")
-      case None => logger.info("MCS doesn't reproduce bug...")
-    }
-    return (mcs.events, ddmin._stats, validated_mcs, violation)
   }
 
   def editDistanceDporDDMin(experiment_dir: String,
@@ -426,36 +422,40 @@ object RunnerUtils {
                                      stats=stats)
     val mcs = ddmin.minimize(filtered_externals, violation)
 
-    // Verify the MCS. First, verify that DPOR can reproduce it.
-    // TODO(cs): factor this out.
-    logger.info("Validating MCS...")
-    var verified_mcs : Option[EventTrace] = None
-    val traceOpt = ddmin.verify_mcs(mcs, violation)
-    traceOpt match {
-      case None =>
-        logger.info("MCS doesn't reproduce bug... DPOR")
-      case Some(toReplay) =>
-        // Now verify that ReplayScheduler can reproduce it.
-        logger.info("DPOR reproduced successfully. Now trying ReplayScheduler")
-        val replayer = new ReplayScheduler(schedulerConfig, false)
-        Instrumenter().scheduler = replayer
-        // Clean up after DPOR. Counterintuitively, use Replayer to do this, since
-        // DPORwHeuristics doesn't have shutdownSemaphore.
-        replayer.shutdown()
-        try {
-          replayer.populateActorSystem(actorNameProps)
-          val replayTrace = replayer.replay(toReplay)
-          replayTrace.setOriginalExternalEvents(mcs.events)
-          verified_mcs = Some(replayTrace)
-          logger.info("MCS Validated!")
-        } catch {
-          case r: ReplayException =>
-            logger.info("MCS doesn't reproduce bug... ReplayScheduler")
-        } finally {
+    if (mcs.length < filtered_externals.size) {
+      // Verify the MCS. First, verify that DPOR can reproduce it.
+      // TODO(cs): factor this out.
+      logger.info("Validating MCS...")
+      var verified_mcs : Option[EventTrace] = None
+      val traceOpt = ddmin.verify_mcs(mcs, violation)
+      traceOpt match {
+        case None =>
+          logger.info("MCS doesn't reproduce bug... DPOR")
+        case Some(toReplay) =>
+          // Now verify that ReplayScheduler can reproduce it.
+          logger.info("DPOR reproduced successfully. Now trying ReplayScheduler")
+          val replayer = new ReplayScheduler(schedulerConfig, false)
+          Instrumenter().scheduler = replayer
+          // Clean up after DPOR. Counterintuitively, use Replayer to do this, since
+          // DPORwHeuristics doesn't have shutdownSemaphore.
           replayer.shutdown()
-        }
+          try {
+            replayer.populateActorSystem(actorNameProps)
+            val replayTrace = replayer.replay(toReplay)
+            replayTrace.setOriginalExternalEvents(mcs.events)
+            verified_mcs = Some(replayTrace)
+            logger.info("MCS Validated!")
+          } catch {
+            case r: ReplayException =>
+              logger.info("MCS doesn't reproduce bug... ReplayScheduler")
+          } finally {
+            replayer.shutdown()
+          }
+      }
+      return (mcs.events, ddmin._stats, verified_mcs, violation)
+    } else {
+      return (mcs.events, ddmin._stats, Some(trace), violation)
     }
-    return (mcs.events, ddmin._stats, verified_mcs, violation)
   }
 
   def testWithStsSched(schedulerConfig: SchedulerConfig,
