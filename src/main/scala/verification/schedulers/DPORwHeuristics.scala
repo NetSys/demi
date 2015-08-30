@@ -151,7 +151,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   implicit def orderedBacktrackKey(t: DPORwHeuristics.BacktrackKey) = backtrackHeuristic.getOrdered(t)
   val backTrack = new PriorityQueue[DPORwHeuristics.BacktrackKey]()
-  var exploredTracker = ExploredTacker()
+  var exploredTracker = new ExploredTacker()
 
   private[this] var currentRoot = getRootEvent
 
