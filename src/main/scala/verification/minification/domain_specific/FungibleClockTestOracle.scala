@@ -21,7 +21,9 @@ class FungibleClockTestOracle(
   // Should already be specific in schedulerConfig
   def setInvariant(invariant: Invariant) {}
 
-  var minTrace = originalTrace
+  // TODO(cs): possible optimization: if we ever find a smaller trace that
+  // triggers the bug, pass in that smaller trace from then on, rather than
+  // originalTrace.
 
   def test(events: Seq[ExternalEvent],
            violation_fingerprint: ViolationFingerprint,
@@ -30,7 +32,7 @@ class FungibleClockTestOracle(
     val minimizer = new FungibleClockMinimizer(
       schedulerConfig,
       events,
-      minTrace,
+      originalTrace,
       actorNameProps,
       violation_fingerprint,
       skipClockClusters=true,
@@ -40,13 +42,10 @@ class FungibleClockTestOracle(
       depGraph=depGraph,
       initializationRoutine=initializationRoutine,
       preTest=preTest,
-      postTest=postTest
-    )
+      postTest=postTest)
+
     val (_, trace) = minimizer.minimize()
     if (trace != originalTrace) {
-      if (trace.size < minTrace.size) {
-        minTrace = trace
-      }
       return Some(trace)
     }
     return None

@@ -211,7 +211,7 @@ class FungibleClockMinimizer(
         }
         val adjustedTrace = if (testScheduler == TestScheduler.STSSched)
           nextTrace.get.events
-        else nextTrace.get.events.flatMap {
+        else nextTrace.get.events.flatMap { // DPORwHeuristics
           case u: UniqueMsgEvent => Some(u)
           case _ => None
         }
