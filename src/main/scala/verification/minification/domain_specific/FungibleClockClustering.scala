@@ -210,7 +210,12 @@ class FungibleClockMinimizer(
           minTrace = ret.get
         }
         val adjustedTrace = if (testScheduler == TestScheduler.STSSched)
-          nextTrace.get.events
+          nextTrace.get.
+                    filterFailureDetectorMessages.
+                    filterCheckpointMessages.
+                    subsequenceIntersection(mcs,
+                      filterKnownAbsents=schedulerConfig.filterKnownAbsents).
+                    events
         else nextTrace.get.events.flatMap { // DPORwHeuristics
           case u: UniqueMsgEvent => Some(u)
           case _ => None
