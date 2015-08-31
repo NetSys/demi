@@ -163,10 +163,17 @@ class Instrumenter {
     }
   }
 
+  var logLevel = "INFO"
+  def setLogLevel(str: String) {
+    logLevel = str
+  }
+
   def defaultAkkaConfig : com.typesafe.config.Config = {
     ConfigFactory.parseString(
       s"""
       |akka.actor.guardian-supervisor-strategy = akka.actor.StoppingSupervisorStrategy
+      |akka.loglevel = "$logLevel"
+      |akka.stdout-loglevel = "$logLevel"
       """.stripMargin)
   }
 
