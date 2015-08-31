@@ -61,14 +61,16 @@ class BackTrackStrategy extends AmbiguityResolutionStrategy {
   def resolve(msgSelector: MessageSelector, pending: Seq[Any],
               backtrackSetter: (Int) => Unit) : Option[Int] = {
     val matching = pending.zipWithIndex.filter(
-      { case (msg,i) =>msgSelector(msg) })
+      { case (msg,i) => msgSelector(msg) })
 
     if (!matching.isEmpty) {
       // Set backtrack points, if any, for any messages that are of the same
       // type, but not exactly the same as eachother.
       val alreadyTried = new HashSet[Any]
       alreadyTried += matching.head._1
-      matching.tail.filter {
+      // Heuristic: reverse the remaining backtrack points, on the assumption
+      // that the last one is more fruitful than the middle ones
+      matching.tail.reverse.filter {
         case (msg,i) =>
           if (!(alreadyTried contains msg)) {
             alreadyTried += msg
@@ -84,6 +86,47 @@ class BackTrackStrategy extends AmbiguityResolutionStrategy {
     }
 
     return None
+  }
+}
+
+// Same as above, but only focus on the first and last matching message.
+class FirstAndLastBacktrack extends AmbiguityResolutionStrategy {
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any],
+              backtrackSetter: (Int) => Unit) : Option[Int] = {
+    val matching = pending.zipWithIndex.filter(
+      { case (msg,i) => msgSelector(msg) })
+
+    if (!matching.isEmpty) {
+      // Set backtrack points, if any, for any messages that are of the same
+      // type, but not exactly the same as eachother.
+      val alreadyTried = new HashSet[Any]
+      alreadyTried += matching.head._1
+      matching.tail.takeRight(1).filter {
+        case (msg,i) =>
+          if (!(alreadyTried contains msg)) {
+            alreadyTried += msg
+            true
+          } else {
+            false
+          }
+      }.foreach {
+        case (msg,i) => backtrackSetter(i)
+      }
+
+      return matching.headOption.map(t => t._2)
+    }
+
+    return None
+  }
+}
+
+class LastOnlyStrategy extends AmbiguityResolutionStrategy {
+  def resolve(msgSelector: MessageSelector, pending: Seq[Any],
+              backtrackSetter: (Int) => Unit) : Option[Int] = {
+    val matching = pending.zipWithIndex.filter(
+      { case (msg,i) => msgSelector(msg) })
+
+    return matching.lastOption.map(t => t._2)
   }
 }
 
