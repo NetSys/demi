@@ -39,7 +39,7 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
 
   val messageFingerprinter = schedulerConfig.messageFingerprinter
 
-  val logger = LoggerFactory.getLogger("ReplaySched")
+  override val logger = LoggerFactory.getLogger("ReplaySched")
 
   // Have we started off the execution yet?
   private[this] var firstMessage = true
@@ -125,7 +125,7 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
       case Some(check) =>
         val checkpoint = takeCheckpoint()
         violationAtEnd = check(List.empty, checkpoint)
-        println("Violation?: " + violationAtEnd)
+        logger.info("Violation?: " + violationAtEnd)
       case None =>
     }
     event_orchestrator.events.setOriginalExternalEvents(_trace.original_externals)
@@ -138,8 +138,8 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
     var loop = true
     breakable {
       while (loop && !event_orchestrator.trace_finished) {
-        // println("Replaying " + event_orchestrator.traceIdx + "/" +
-        //   event_orchestrator.trace.length + " " + event_orchestrator.current_event)
+        logger.trace("Replaying " + event_orchestrator.traceIdx + "/" +
+          event_orchestrator.trace.length + " " + event_orchestrator.current_event)
         event_orchestrator.current_event match {
           case SpawnEvent (_, _, name, _) =>
             event_orchestrator.trigger_start(name)
@@ -289,7 +289,7 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
       val nextMessage = pendingEvents.get(key) match {
         case Some(queue) =>
           if (queue.isEmpty) {
-            println("queue.isEmpty")
+            logger.debug("queue.isEmpty")
             // Message not enabled
             pendingEvents.remove(key)
             None
@@ -301,16 +301,16 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
             Some(willRet)
           }
         case None =>
-          println("key not found")
+          logger.debug("key not found")
           // Message not enabled
           None
       }
 
       nextMessage match {
         case None =>
-          println("pending keys:")
+          logger.debug("pending keys:")
           for (pending <- pendingEvents.keys) {
-            println(pending)
+            logger.debug("" + pending)
           }
           // Have the main thread crash on our behalf
           nonDeterministicErrorMsg = "Expected event " + key

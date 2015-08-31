@@ -7,6 +7,10 @@ import scala.collection.mutable.HashSet
 import scala.collection.mutable.ArrayBuffer
 import akka.actor.Props
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 // Minimizes internal events. One-time-use -- you shouldn't invoke minimize() more
 // than once.
 // TODO(cs): ultimately, we should try supporting DPOR removal of
@@ -24,11 +28,18 @@ class STSSchedMinimizer(
   actorNameProps: Seq[Tuple2[Props, String]],
   initializationRoutine: Option[() => Any]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
-  postTest: Option[STSScheduler.PostTestCallback]=None)
+  postTest: Option[STSScheduler.PostTestCallback]=None,
+  stats: Option[MinimizationStats]=None)
   extends InternalEventMinimizer {
 
+  val logger = LoggerFactory.getLogger("IntMin")
+
   def minimize(): Tuple2[MinimizationStats, EventTrace] = {
-    val stats = new MinimizationStats("InternalMin", "STSSched")
+    val _stats = stats match {
+      case Some(s) => s
+      case None => new MinimizationStats
+    }
+    _stats.updateStrategy("InternalMin", "STSSched")
 
     val origTrace = verified_mcs.filterCheckpointMessages.filterFailureDetectorMessages
     var lastFailingTrace = origTrace
@@ -39,9 +50,10 @@ class STSSchedMinimizer(
     var nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
       prunedOverall, violationTriggered)
 
+    _stats.record_prune_start
     while (!nextTrace.isEmpty) {
       RunnerUtils.testWithStsSched(schedulerConfig, mcs, nextTrace.get, actorNameProps,
-                       violation, stats, initializationRoutine=initializationRoutine,
+                       violation, _stats, initializationRoutine=initializationRoutine,
                        preTest=preTest, postTest=postTest) match {
         case Some(trace) =>
           // Some other events may have been pruned by virtue of being absent. So
@@ -52,7 +64,7 @@ class STSSchedMinimizer(
           val origSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
           val newSize = RunnerUtils.countMsgEvents(filteredTrace)
           val diff = origSize - newSize
-          println("Ignoring worked! Pruned " + diff + "/" + origSize + " deliveries")
+          logger.info("Ignoring worked! Pruned " + diff + "/" + origSize + " deliveries")
 
           val priorDeliveries = new MultiSet[(String,String,MessageFingerprint)]
           priorDeliveries ++= RunnerUtils.getFingerprintedDeliveries(
@@ -67,9 +79,9 @@ class STSSchedMinimizer(
           )
 
           val prunedThisRun = priorDeliveries.setDifference(newDeliveries)
-          println("Pruned: [ignore TimerDeliveries] ")
-          prunedThisRun.foreach { case e => println(e) }
-          println("---")
+          logger.debug("Pruned: [ignore TimerDeliveries] ")
+          prunedThisRun.foreach { case e => logger.debug("" + e) }
+          logger.debug("---")
 
           prunedOverall ++= prunedThisRun
 
@@ -78,18 +90,19 @@ class STSSchedMinimizer(
         case None =>
           // We didn't trigger the violation.
           violationTriggered = false
-          println("Ignoring didn't work.")
+          logger.info("Ignoring didn't work.")
           None
       }
       nextTrace = removalStrategy.getNextTrace(lastFailingTrace,
         prunedOverall, violationTriggered)
     }
+    _stats.record_prune_end
     val origSize = RunnerUtils.countMsgEvents(origTrace)
     val newSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
     val diff = origSize - newSize
-    println("Pruned " + diff + "/" + origSize + " deliveries (" + removalStrategy.unignorable + " unignorable)" +
-            " in " + stats.total_replays + " replays")
-    return (stats, lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
+    logger.info("Pruned " + diff + "/" + origSize + " deliveries (" + removalStrategy.unignorable + " unignorable)" +
+            " in " + _stats.inner().total_replays + " replays")
+    return (_stats, lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
   }
 }
 
@@ -99,6 +112,7 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
   // MsgEvents we've tried ignoring so far. MultiSet to account for duplicate MsgEvent's
   val triedIgnoring = new MultiSet[(String, String, MessageFingerprint)]
   var _unignorable = 0
+  val logger = LoggerFactory.getLogger("RemovalStrategy")
 
   // Populate triedIgnoring with all events that lie between a
   // UnignorableEvents block. Also, external messages.
@@ -156,7 +170,7 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
         if (keysThisIteration.count(key) > triedIgnoring.count(key) &&
             choiceFilter(key._1, key._2, key._3)) {
           // We found something to ignore
-          println("Ignoring next: " + key)
+          logger.info("Ignoring next: " + key)
           foundIgnoredEvent = true
           triedIgnoring += key
           return false
@@ -184,6 +198,8 @@ abstract class RemovalStrategy(verified_mcs: EventTrace, messageFingerprinter: F
         } else {
           None
         }
+      case _: MsgEvent =>
+        throw new IllegalArgumentException("Must be UniqueMsgEvent")
       case e =>
         Some(e)
     }
@@ -259,10 +275,13 @@ class SrcDstFIFORemoval(
       val idx = srcDstToCurrentIdx((snd,rcv))
       val lst = srcDstToMessages((snd,rcv))
       if (idx == lst.length - 1) {
-        assert(lst(idx) == fingerprint)
+        // assert(lst(idx) == fingerprint)
+        if (lst(idx) != fingerprint) {
+          logger.error(s"lst(idx) ${lst(idx)} != fingerprint ${fingerprint}")
+        }
         srcDstToMessages((snd,rcv)) = srcDstToMessages((snd,rcv)).dropRight(1)
         if (srcDstToMessages((snd,rcv)).isEmpty) {
-          println("src,dst is done!: " + ((snd,rcv)))
+          logger.info("src,dst is done!: " + ((snd,rcv)))
           srcDstToMessages -= ((snd,rcv))
         }
         previouslyChosenSrcDst = Some((snd,rcv))
@@ -288,7 +307,7 @@ class SrcDstFIFORemoval(
                    violationTriggeredLastRun: Boolean): Option[EventTrace] = {
     if (!violationTriggeredLastRun && !previouslyChosenSrcDst.isEmpty) {
       // Ignoring didn't work, so this src,dst is done.
-      println("src,dst is done: " + previouslyChosenSrcDst.get)
+      logger.info("src,dst is done: " + previouslyChosenSrcDst.get)
       srcDstToMessages -= previouslyChosenSrcDst.get
     }
 

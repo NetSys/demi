@@ -37,6 +37,9 @@ import org.slf4j.LoggerFactory,
 object STSScheduler {
   type PreTestCallback = () => Unit
   type PostTestCallback = () => Unit
+  // When we ignore an absent expected message, we'll signal to this
+  // callback that we just ignored the event at the given index.
+  type IgnoreAbsentCallback = (Int) => Unit
 
   // The maximum number of unexpected messages to try in a Peek() run before
   // giving up.
@@ -80,7 +83,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
   def getName: String = if (allowPeek) "STSSched" else "STSSchedNoPeek"
 
-  val logger = LoggerFactory.getLogger("STSScheduler")
+  override val logger = LoggerFactory.getLogger("STSScheduler")
 
   val messageFingerprinter = schedulerConfig.messageFingerprinter
   val shouldShutdownActorSystem = schedulerConfig.shouldShutdownActorSystem
@@ -131,6 +134,13 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   var postTestCallback : STSScheduler.PostTestCallback = () => None
   def setPostTestCallback(c: STSScheduler.PostTestCallback) { postTestCallback = c }
 
+  // When we ignore an absent expected message, we'll signal to this
+  // callback that we just ignored the event at the given index.
+  var ignoreAbsentCallback : STSScheduler.IgnoreAbsentCallback = (i: Int) => None
+  def setIgnoreAbsentCallback(c: STSScheduler.IgnoreAbsentCallback) {
+    ignoreAbsentCallback = c
+  }
+
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
   def test (subseq: Seq[ExternalEvent],
@@ -178,9 +188,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     event_orchestrator.set_trace(updatedEvents)
 
     if (logger.isTraceEnabled()) {
-      println("events:----")
-      updatedEvents.zipWithIndex.foreach { case (e,i) => println(i + " " + e) }
-      println("----")
+      logger.trace("events:----")
+      updatedEvents.zipWithIndex.foreach { case (e,i) => logger.trace(i + " " + e) }
+      logger.trace("----")
     }
 
     // Bad method name. "reset recorded events"
@@ -194,7 +204,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     var initThread : Thread = null
     initializationRoutine match {
       case Some(f) =>
-        println("Running initializationRoutine...")
+        logger.trace("Running initializationRoutine...")
         initThread = new Thread(
           new Runnable { def run() = { f() } },
           "initializationRoutine")
@@ -228,7 +238,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // Wait until the initialization thread is done. Assumes that it
     // terminates!
     if (initThread != null) {
-      println("Joining on initialization thread " + Thread.currentThread.getName)
+      logger.debug("Joining on initialization thread " + Thread.currentThread.getName)
       initThread.join
     }
     reset_all_state
@@ -259,7 +269,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
         messageFingerprinter)
 
     if (unexpected.isEmpty) {
-      println("No unexpected messages. Ignoring message" + msgEvent)
+      logger.debug("No unexpected messages. Ignoring message" + msgEvent)
       event_orchestrator.trace_advanced
       return
     }
@@ -275,7 +285,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // opposed to a checkpoint of the applications state for checking
     // invariants
     val checkpoint = Instrumenter().checkpoint()
-    println("Peek()'ing")
+    logger.debug("Peek()'ing")
     // Make sure to create all actors, not just those with Start events.
     // Prevents tellEnqueue issues.
     val spawns = original_trace.getEvents flatMap {
@@ -286,17 +296,17 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     peeker.populateActorSystem(spawns)
     val prefix = peeker.peek(event_orchestrator.events)
     peeker.shutdown
-    println("Restoring checkpoint")
+    logger.debug("Restoring checkpoint")
     Instrumenter().scheduler = this
     Instrumenter().restoreCheckpoint(checkpoint)
     prefix match {
       case Some(lst) =>
         // Prepend the prefix onto expected events so that
         // schedule_new_message() correctly schedules the prefix.
-        println("Found prefix!")
+        logger.debug("Found prefix!")
         event_orchestrator.prepend(lst)
       case None =>
-        println("No prefix found. Ignoring message" + msgEvent)
+        logger.debug("No prefix found. Ignoring message" + msgEvent)
         event_orchestrator.trace_advanced
     }
   }
@@ -351,7 +361,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
                 endedExternalAtomicBlocks.synchronized {
                   send_external_messages(false)
                   while (!(endedExternalAtomicBlocks contains id)) {
-                    println("Blocking until endExternalAtomicBlock("+id+")")
+                    logger.debug("Blocking until endExternalAtomicBlock("+id+")")
                     // (Releases lock)
                     endedExternalAtomicBlocks.wait()
                     send_external_messages(false)
@@ -360,7 +370,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
                   beganExternalAtomicBlocks -= id
                 }
               } else {
-                println("Ignoring externalAtomicBlock("+id+")")
+                logger.info("Ignoring externalAtomicBlock("+id+")")
               }
             }
           case EndExternalAtomicBlock(id) =>
@@ -398,9 +408,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
               // delivering this message.
               messagesToSend.synchronized {
                 while (!messagePending("deadLetters", m.receiver, m.msg)) {
-                  println("Blocking until enqueue_message... (MsgSend)")
+                  logger.trace("Blocking until enqueue_message... (MsgSend)")
                   messagesToSend.wait()
-                  println("Checking messagePending..")
+                  logger.trace("Checking messagePending..")
                   // N.B. messagePending(m) invokes send_external_messages
                 }
               }
@@ -423,7 +433,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             if (allowPeek) {
               // If it isn't enabled yet, let's try Peek()'ing for it.
               // First, we need to pause the ActorSystem.
-              println("Pausing")
+              logger.debug("Pausing")
               pausing.set(true)
               break
             }
@@ -439,9 +449,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
               // blocked here.
               messagesToSend.synchronized {
                 while (!messagePending(m.sender, m.receiver, m.msg)) {
-                  println("Blocking until enqueue_message...")
+                  logger.trace("Blocking until enqueue_message...")
                   messagesToSend.wait()
-                  println("Checking messagePending..")
+                  logger.trace("Checking messagePending..")
                   // N.B. messagePending(m) invokes send_external_messages
                 }
               }
@@ -449,7 +459,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
               break
             }
 
-            println("Ignoring message " + m)
+            logger.info("Ignoring message " + m)
+            ignoreAbsentCallback(event_orchestrator.traceIdx)
           case Quiescence =>
             // This is just a nop. Do nothing
             event_orchestrator.events += Quiescence
@@ -667,7 +678,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
         // If execution ended, don't schedule!
         if (Instrumenter()._passThrough.get) {
-          println("Execution ended! Not proceeding with schedule_new_message")
+          logger.warn("Execution ended! Not proceeding with schedule_new_message")
           schedSemaphore.release()
           traceSem.release()
           return None
@@ -723,7 +734,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
   // Notification that the system has been reset
   override def start_trace() : Unit = {
-    println("start_trace")
+    logger.info("start_trace")
     handle_start_trace
   }
 

@@ -26,7 +26,8 @@ trait TestOracle {
   type Invariant = (Seq[ExternalEvent], HashMap[String,Option[CheckpointReply]]) => Option[ViolationFingerprint]
 
   // Return one of:
-  // {"RandomScheduler", "STSSchedNoPeek", "STSSched", "GreedyED", "DPOR", "FairScheduler"}
+  // {"RandomScheduler", "STSSchedNoPeek", "STSSched", "DPOR",
+  //  "FairScheduler", "FungibleClocks"}
   def getName() : String
 
   def setInvariant(invariant: Invariant)

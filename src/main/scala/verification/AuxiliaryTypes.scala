@@ -257,6 +257,7 @@ class ExploredTacker {
   }
 }
 
+// Shared instance
 object ExploredTacker {
   var obj:ExploredTacker = null
   def apply() = {

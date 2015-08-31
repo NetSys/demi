@@ -29,6 +29,7 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
   // Optional: if you have the original external events, that helps us with
   // filtering.
   def setOriginalExternalEvents(_original_externals: Seq[ExternalEvent]) = {
+    println("Setting originalExternalEvents: " + _original_externals.size)
     original_externals = _original_externals
   }
 
@@ -238,13 +239,15 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
         if (EventTypes.isExternal(u)) {
           if (sendsQueue.isEmpty) {
             // XXX
+            // Problem seems to be some of the Send events that were actually
+            // sent, don't appear in externals. Truncated somehow?
             println("events:---")
-            getEvents.foreach { case e => println(e) }
+            events.foreach { case e => println(e) }
             println("---")
             println("externals:---")
             externals.foreach { case e => println(e) }
             println("---")
-            throw new IllegalStateException("sendsQueue is empty, yet " + u + " " + externals)
+            throw new IllegalStateException("sendsQueue is empty, yet " + u)
           }
           val send = sendsQueue.dequeue
           val new_msg = send.messageCtor()

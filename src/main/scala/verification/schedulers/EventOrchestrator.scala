@@ -16,6 +16,10 @@ import scala.collection.mutable.ArrayBuffer
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 /**
  * Maintains the current state of the network, and provides
  * an interface for triggering events that affect that state, e.g. inducing
@@ -41,6 +45,8 @@ class EventOrchestrator[E] {
   var unPartitionCallback : UnPartitionCallback = (a: String, b: String, id: Int) => None
   def setUnPartitionCallback(c: UnPartitionCallback) = unPartitionCallback = c
 
+  val log = LoggerFactory.getLogger("EventOrchestrator")
+
   // Pairs of actors that cannot communicate
   val partitioned = new HashSet[(String, String)]
 
@@ -64,6 +70,7 @@ class EventOrchestrator[E] {
   var fd : FDMessageOrchestrator = null
 
   def set_trace(_trace: Seq[E]) {
+    println("Setting trace: " + _trace.size)
     trace = new ArrayBuffer() ++ _trace
     traceIdx = 0
   }
@@ -125,7 +132,7 @@ class EventOrchestrator[E] {
   def inject_until_quiescence(enqueue_message: EnqueueMessage): Boolean = {
     var loop = true
     while (loop && !trace_finished) {
-      println("Injecting " + traceIdx + "/" + trace.length + " " + current_event)
+      log.trace("Injecting " + traceIdx + "/" + trace.length + " " + current_event)
       current_event.asInstanceOf[ExternalEvent] match {
         case Start (_, name) =>
           trigger_start(name)
@@ -252,7 +259,7 @@ class EventOrchestrator[E] {
     val ref = actorToActorRef(name)
 
     // Clean up our data before killing
-    println("Cleaning up before hard kill...")
+    log.debug("Cleaning up before hard kill...")
     for (name <- Seq(name) ++ children) {
       actorToActorRef -= name
       actorToSpawnEvent -= name
@@ -285,7 +292,7 @@ class EventOrchestrator[E] {
     val i = inbox()
     i watch ref
     // Kill it
-    println("Calling stop() and blocking... " + ref)
+    log.debug("Calling stop() and blocking... " + ref)
     Instrumenter()._actorSystem.stop(ref)
     // Now block
     def isTerminated(msg: Any) : Boolean = {

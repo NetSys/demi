@@ -18,11 +18,19 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
 abstract class MessageType()
 final case object ExternalMessage extends MessageType
 final case object InternalMessage extends MessageType
 final case object FailureDetectorQuery extends MessageType
 final case object CheckpointReplyMessage extends MessageType
+
+object ExternalEventInjector {
+  val log = LoggerFactory.getLogger("ExternalEventInjector")
+}
 
 /**
   * A mix-in for schedulers that take external events as input, and generate
@@ -224,7 +232,7 @@ trait ExternalEventInjector[E] {
         }
       }
       if (restartDispatch) {
-        println("Restarting dispatch!")
+        ExternalEventInjector.log.debug("Restarting dispatch!")
         Instrumenter().start_dispatch
       }
     }
@@ -235,7 +243,7 @@ trait ExternalEventInjector[E] {
     if (event_orchestrator.actorToActorRef contains receiver) {
       enqueue_message(sender, event_orchestrator.actorToActorRef(receiver), msg)
     } else {
-      println("WARNING! Unknown message receiver " + receiver)
+      ExternalEventInjector.log.warn("Unknown message receiver " + receiver)
     }
   }
 
@@ -252,7 +260,7 @@ trait ExternalEventInjector[E] {
     dispatchAfterEnqueueMessage.synchronized {
       if (dispatchAfterEnqueueMessage.get()) {
         dispatchAfterEnqueueMessage.set(false)
-        println("dispatching after enqueue_message")
+        ExternalEventInjector.log.debug("dispatching after enqueue_message")
         started.set(true)
         send_external_messages()
         Instrumenter().start_dispatch()
@@ -274,7 +282,7 @@ trait ExternalEventInjector[E] {
         messagesToSend.notifyAll()
       }
     } else {
-      println("WARNING! Unknown timer receiver " + receiver)
+      ExternalEventInjector.log.warn("Unknown timer receiver " + receiver)
     }
   }
 
@@ -319,7 +327,8 @@ trait ExternalEventInjector[E] {
               case _ =>
                 // It's a normal message
                 if (!Instrumenter().receiverIsAlive(receiver)) {
-                  println("Dropping message to non-existent receiver: " +
+                  ExternalEventInjector.log.warn(
+                    "Dropping message to non-existent receiver: " +
                           receiver + " " + msg)
                 } else {
                   senderOpt match {
@@ -431,7 +440,7 @@ trait ExternalEventInjector[E] {
    * checkpoints mid-execution without blocking.)
    */
   def takeCheckpoint() : HashMap[String, Option[CheckpointReply]] = {
-    println("Initiating checkpoint")
+    ExternalEventInjector.log.debug("Initiating checkpoint")
     if (!schedulerConfig.enableCheckpointing) {
       throw new IllegalStateException("Trying to take checkpoint, yet !schedulerConfig.enableCheckpointing")
     }
@@ -533,7 +542,7 @@ trait ExternalEventInjector[E] {
             advanceTrace()
           } else {
             // wait for enqueue_message to be invoked.
-            println("waiting for enqueue_message...")
+            ExternalEventInjector.log.debug("waiting for enqueue_message...")
             dispatchAfterEnqueueMessage.synchronized {
               dispatchAfterEnqueueMessage.set(true)
             }
@@ -598,7 +607,7 @@ trait ExternalEventInjector[E] {
     dispatchAfterEnqueueMessage.synchronized {
       if (dispatchAfterEnqueueMessage.get()) {
         dispatchAfterEnqueueMessage.set(false)
-        println("dispatching after enqueue_code_block")
+        ExternalEventInjector.log.debug("dispatching after enqueue_code_block")
         started.set(true)
         Instrumenter().start_dispatch()
       }
@@ -609,7 +618,7 @@ trait ExternalEventInjector[E] {
    * Reset ourselves and the Instrumenter to a initial clean state.
    */
   def reset_state (shutdown: Boolean) = {
-    println("resetting state...")
+    ExternalEventInjector.log.debug("resetting state...")
     if (shutdown) {
       handle_shutdown()
     }
@@ -636,6 +645,6 @@ trait ExternalEventInjector[E] {
     dispatchAfterEnqueueMessage = new AtomicBoolean(false)
     messagesToSend = new SynchronizedQueue[(Option[ActorRef], ActorRef, Any)]
     alreadyPopulated = false
-    println("state reset.")
+    ExternalEventInjector.log.debug("state reset.")
   }
 }

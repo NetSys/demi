@@ -59,8 +59,6 @@ object ExperimentSerializer {
   val violation = "/violation.bin"
   val mcs = "/mcs.bin"
   val stats = "/minimization_stats.json"
-  // Stats when minimizing internal events.
-  val internal_stats = "/internal_minimization_stats.json"
   val depGraphEdges = "/depGraphEdges.bin"
   val depGraphNodes = "/depGraphNodes.bin"
   // trace of Unique(MsgEvent)s
@@ -244,10 +242,7 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
                                   mcsBuf)
 
-    val statsJson = stats.toJson()
-    JavaSerialization.withPrintWriter(new_experiment_dir, ExperimentSerializer.stats) { pw =>
-      pw.write(statsJson)
-    }
+    recordMinimizationStats(new_experiment_dir, stats)
 
     mcs_execution match {
       case Some(event_trace) =>
@@ -265,17 +260,21 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
 
   def recordMinimizedInternals(output_dir: String,
         internalStats: MinimizationStats, minimized: EventTrace) {
-    val statsJson = internalStats.toJson()
-    JavaSerialization.withPrintWriter(output_dir,
-                                      ExperimentSerializer.internal_stats) { pw =>
-      pw.write(statsJson)
-    }
-
+    recordMinimizationStats(output_dir, internalStats)
     val sanitized = sanitize_trace(minimized.events)
     val asArray : Array[Event] = sanitized.toArray
     val sanitizedBuf = JavaSerialization.serialize(asArray)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.minimizedInternalTrace,
                                   sanitizedBuf)
+  }
+
+  def recordMinimizationStats(output_dir: String, internalStats: MinimizationStats) {
+    // Just continue overwriting the stats file. Stats are designed to be
+    // append only.
+    val statsJson = internalStats.toJson()
+    JavaSerialization.withPrintWriter(output_dir, ExperimentSerializer.stats) { pw =>
+      pw.write(statsJson)
+    }
   }
 
   def recordHandCraftedTrace(output_dir: String, minimized: EventTrace) {
@@ -390,6 +389,12 @@ class ExperimentDeserializer(results_dir: String) {
     val queue = new SynchronizedQueue[Event]
     queue ++= events
     return new EventTrace(queue, originalExternals)
+  }
+
+  def get_stats(): MinimizationStats = {
+    val source = scala.io.Source.fromFile(results_dir + ExperimentSerializer.stats)
+    val lines = try source.mkString finally source.close()
+    return MinimizationStats.fromJson(lines)
   }
 }
 
