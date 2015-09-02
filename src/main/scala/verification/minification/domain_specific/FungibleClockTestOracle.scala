@@ -21,6 +21,9 @@ class FungibleClockTestOracle(
   // Should already be specific in schedulerConfig
   def setInvariant(invariant: Invariant) {}
 
+  var minTrace = originalTrace
+  var externalsForMinTrace : Seq[ExternalEvent] = Seq.empty
+
   // TODO(cs): possible optimization: if we ever find a smaller trace that
   // triggers the bug, pass in that smaller trace from then on, rather than
   // originalTrace.
@@ -46,6 +49,10 @@ class FungibleClockTestOracle(
 
     val (_, trace) = minimizer.minimize()
     if (trace != originalTrace) {
+      if (trace.size < minTrace.size) {
+        minTrace = trace
+        externalsForMinTrace = events
+      }
       return Some(trace)
     }
     return None

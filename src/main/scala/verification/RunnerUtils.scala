@@ -139,7 +139,6 @@ object RunnerUtils {
                    currentStats: Option[MinimizationStats]) :
           Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint]
     }
-
     abstract class InternalMinimizer(val name: String) extends Minimizer {
       def minimize(currentExternals: Seq[ExternalEvent],
                    currentTrace: EventTrace,
@@ -161,9 +160,8 @@ object RunnerUtils {
                 e.asInstanceOf[ExternalMinimizer].
                   minimize(currentExternals, currentTrace, currentStats)
               currentExternals = externals
-              // TODO(cs): if MCS is not validatable, instead pick out the smallest failing
-              // execution that it found along the way.
-              currentTrace = verified_mcs.getOrElse(null)
+              currentTrace = verified_mcs.getOrElse(throw new
+                RuntimeException("MCS not replayable"))
               currentStats = Some(stats)
               namedTraces = namedTraces :+ ((e.name, currentTrace.copy))
             case i: InternalMinimizer =>
@@ -524,6 +522,7 @@ object RunnerUtils {
       validated_mcs match {
         case Some(trace) =>
           logger.info("MCS Validated!")
+          // TODO(cs): this line shouldn't be necessary, it's a hack.
           trace.setOriginalExternalEvents(mcs.events)
           validated_mcs = Some(trace.filterCheckpointMessages)
         case None => logger.info("MCS doesn't reproduce bug...")
@@ -570,9 +569,16 @@ object RunnerUtils {
       validated_mcs match {
         case Some(trace) =>
           logger.info("MCS Validated!")
+          // TODO(cs): this line shouldn't be necessary, it's a hack.
           trace.setOriginalExternalEvents(mcs.events)
           validated_mcs = Some(trace.filterCheckpointMessages)
-        case None => logger.info("MCS doesn't reproduce bug...")
+        case None =>
+          logger.warn("MCS doesn't reproduce bug...")
+          // We hack this, as a stop-gap for non-determinism, by just returning
+          // the smallest trace we observed so far.
+          oracle.minTrace.setOriginalExternalEvents(oracle.externalsForMinTrace)
+          return (oracle.externalsForMinTrace, ddmin._stats,
+                  Some(oracle.minTrace), violation)
       }
       return (mcs.events, ddmin._stats, validated_mcs, violation)
     } else {
@@ -675,6 +681,7 @@ object RunnerUtils {
           try {
             replayer.populateActorSystem(actorNameProps)
             val replayTrace = replayer.replay(toReplay)
+            // TODO(cs): this line shouldn't be necessary, it's a hack.
             replayTrace.setOriginalExternalEvents(mcs.events)
             verified_mcs = Some(replayTrace)
             logger.info("MCS Validated!")
