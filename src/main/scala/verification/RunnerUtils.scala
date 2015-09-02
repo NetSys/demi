@@ -156,18 +156,18 @@ object RunnerUtils {
         case minimizer =>
           minimizer match {
             case e: ExternalMinimizer =>
+              println(s"=== Executing ${e.name} ===")
               var (externals, stats, verified_mcs, _) =
-                e.asInstanceOf[ExternalMinimizer].
-                  minimize(currentExternals, currentTrace, currentStats)
+                e.minimize(currentExternals, currentTrace, currentStats)
               currentExternals = externals
               currentTrace = verified_mcs.getOrElse(throw new
                 RuntimeException("MCS not replayable"))
               currentStats = Some(stats)
               namedTraces = namedTraces :+ ((e.name, currentTrace.copy))
             case i: InternalMinimizer =>
+              println(s"=== Executing ${i.name} ===")
               var (stats, trace) =
-                i.asInstanceOf[InternalMinimizer].
-                  minimize(currentExternals, currentTrace, currentStats)
+                i.minimize(currentExternals, currentTrace, currentStats)
               currentTrace = trace
               currentStats = Some(stats)
               namedTraces = namedTraces :+ ((i.name, currentTrace.copy))
