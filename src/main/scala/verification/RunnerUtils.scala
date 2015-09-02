@@ -210,38 +210,44 @@ object RunnerUtils {
       if (!paranoid) None else
       Some(new ExternalMinimizer("WildCardDDMinNoBacktracks") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
-          RunnerUtils.fungibleClocksDDMin(schedulerConfig,
-           currentTrace,
-           new UnmodifiedEventDag(currentExternals.flatMap {
-              // STSSched doesn't actually pay any attention to WaitQuiescence or
-              // WaitCondition, so just get rid of them.
-              // TODO(cs): doesn't necessarily make sense for DPOR?
-              case WaitQuiescence() => None
-              case WaitCondition(_) => None
-              case e => Some(e)
-           }.toSeq),
-           violationFound,
-           actors,
-           stats=currentStats)
+          if (shouldRerunDDMin(currentExternals))
+            RunnerUtils.fungibleClocksDDMin(schedulerConfig,
+              currentTrace,
+              new UnmodifiedEventDag(currentExternals.flatMap {
+                 // STSSched doesn't actually pay any attention to WaitQuiescence or
+                 // WaitCondition, so just get rid of them.
+                 // TODO(cs): doesn't necessarily make sense for DPOR?
+                 case WaitQuiescence() => None
+                 case WaitCondition(_) => None
+                 case e => Some(e)
+              }.toSeq),
+              violationFound,
+              actors,
+              stats=currentStats)
+          else
+            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
       }),
       // fungibleClocks DDMin without backtracks, but focus on the last item first.
       if (!paranoid) None else
       Some(new ExternalMinimizer("WildCardDDMinLastOnly") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
-          RunnerUtils.fungibleClocksDDMin(schedulerConfig,
-           currentTrace,
-           new UnmodifiedEventDag(currentExternals.flatMap {
-              // STSSched doesn't actually pay any attention to WaitQuiescence or
-              // WaitCondition, so just get rid of them.
-              // TODO(cs): doesn't necessarily make sense for DPOR?
-              case WaitQuiescence() => None
-              case WaitCondition(_) => None
-              case e => Some(e)
-           }.toSeq),
-           violationFound,
-           actors,
-           resolutionStrategy=new LastOnlyStrategy,
-           stats=currentStats)
+          if (shouldRerunDDMin(currentExternals))
+            RunnerUtils.fungibleClocksDDMin(schedulerConfig,
+              currentTrace,
+              new UnmodifiedEventDag(currentExternals.flatMap {
+                 // STSSched doesn't actually pay any attention to WaitQuiescence or
+                 // WaitCondition, so just get rid of them.
+                 // TODO(cs): doesn't necessarily make sense for DPOR?
+                 case WaitQuiescence() => None
+                 case WaitCondition(_) => None
+                 case e => Some(e)
+              }.toSeq),
+              violationFound,
+              actors,
+              resolutionStrategy=new LastOnlyStrategy,
+              stats=currentStats)
+          else
+            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
       }),
       // Without backtracks first
       if (!paranoid) None else
@@ -287,21 +293,24 @@ object RunnerUtils {
       if (!paranoid) None else
       Some(new ExternalMinimizer("WildcardDDMinFirstLast") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
-          RunnerUtils.fungibleClocksDDMin(schedulerConfig,
-            currentTrace,
-            new UnmodifiedEventDag(currentExternals.flatMap {
-               // STSSched doesn't actually pay any attention to WaitQuiescence or
-               // WaitCondition, so just get rid of them.
-               // TODO(cs): doesn't necessarily make sense for DPOR?
-               case WaitQuiescence() => None
-               case WaitCondition(_) => None
-               case e => Some(e)
-            }.toSeq),
-            violationFound,
-            actors,
-            testScheduler=TestScheduler.DPORwHeuristics,
-            resolutionStrategy=new FirstAndLastBacktrack,
-            stats=currentStats)
+          if (shouldRerunDDMin(currentExternals))
+            RunnerUtils.fungibleClocksDDMin(schedulerConfig,
+              currentTrace,
+              new UnmodifiedEventDag(currentExternals.flatMap {
+                 // STSSched doesn't actually pay any attention to WaitQuiescence or
+                 // WaitCondition, so just get rid of them.
+                 // TODO(cs): doesn't necessarily make sense for DPOR?
+                 case WaitQuiescence() => None
+                 case WaitCondition(_) => None
+                 case e => Some(e)
+              }.toSeq),
+              violationFound,
+              actors,
+              testScheduler=TestScheduler.DPORwHeuristics,
+              resolutionStrategy=new FirstAndLastBacktrack,
+              stats=currentStats)
+          else
+            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
       }),
       // internal clocks with full backtracks
       Some(new InternalMinimizer("FungibleClocks") {
