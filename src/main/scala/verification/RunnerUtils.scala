@@ -120,7 +120,8 @@ object RunnerUtils {
                   schedulerConfig: SchedulerConfig,
                   msgSerializer: MessageSerializer,
                   msgDeserializer: MessageDeserializer,
-                  paranoid: Boolean=false) {
+                  paranoid: Boolean=false,
+                  shouldRerunDDMin:(Seq[ExternalEvent] => Boolean)=(_)=>true) {
 
     val serializer = new ExperimentSerializer(
       schedulerConfig.messageFingerprinter,
@@ -311,24 +312,25 @@ object RunnerUtils {
             stats=currentStats).minimize
       }),
       // fungibleClocks DDMin with all
-      // TODO(cs): optimization: if we know MCS can’t be minimized anymore, don’t
-      // run DDMin a second time.
       Some(new ExternalMinimizer("WildcardDDMin") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
-          RunnerUtils.fungibleClocksDDMin(schedulerConfig,
-            currentTrace,
-            new UnmodifiedEventDag(currentExternals.flatMap {
-               // STSSched doesn't actually pay any attention to WaitQuiescence or
-               // WaitCondition, so just get rid of them.
-               // TODO(cs): doesn't necessarily make sense for DPOR?
-               case WaitQuiescence() => None
-               case WaitCondition(_) => None
-               case e => Some(e)
-            }.toSeq),
-            violationFound,
-            actors,
-            testScheduler=TestScheduler.DPORwHeuristics,
-            stats=currentStats)
+          if (shouldRerunDDMin(currentExternals))
+            RunnerUtils.fungibleClocksDDMin(schedulerConfig,
+              currentTrace,
+              new UnmodifiedEventDag(currentExternals.flatMap {
+                 // STSSched doesn't actually pay any attention to WaitQuiescence or
+                 // WaitCondition, so just get rid of them.
+                 // TODO(cs): doesn't necessarily make sense for DPOR?
+                 case WaitQuiescence() => None
+                 case WaitCondition(_) => None
+                 case e => Some(e)
+              }.toSeq),
+              violationFound,
+              actors,
+              testScheduler=TestScheduler.DPORwHeuristics,
+              stats=currentStats)
+          else
+            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
       }),
       // One last internal minimization
       Some(new InternalMinimizer("IntMin") {
