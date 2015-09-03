@@ -173,13 +173,25 @@ object RunnerUtils {
               namedTraces = namedTraces :+ ((i.name, currentTrace.copy))
           }
 
-          // N.B. may be overwritten.
-          serializer.recordMinimizedInternals(output_dir,
-            currentStats.get, currentTrace)
+          // Record progress as DPOR goes along.
+          def recordProgressCallback(currentTrace: EventTrace) {
+            val statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
+              schedulerConfig.messageFingerprinter)
+            currentStats.get.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+            ExperimentSerializer.recordMinimizationStats(output_dir, currentStats.get)
+          }
+          // Need to set this callback after the first currentStats is bound,
+          // i.e. not None.
+          DPORwHeuristics.setProgressCallback(recordProgressCallback)
 
+          // Also record stats now that we've finished.
           val statsTuple =  RunnerUtils.extractDeliveryStats(currentTrace,
             schedulerConfig.messageFingerprinter)
           currentStats.get.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+
+          // N.B. may be overwritten.
+          serializer.recordMinimizedInternals(output_dir,
+            currentStats.get, currentTrace)
 
           RunnerUtils.printMinimizationStats(schedulerConfig.messageFingerprinter,
             traceFound, filteredTrace, namedTraces)

@@ -91,6 +91,15 @@ object ExperimentSerializer {
       case _ => None
     }.toSet.toSeq
   }
+
+  def recordMinimizationStats(output_dir: String, internalStats: MinimizationStats) {
+    // Just continue overwriting the stats file. Stats are designed to be
+    // append only.
+    val statsJson = internalStats.toJson()
+    JavaSerialization.withPrintWriter(output_dir, ExperimentSerializer.stats) { pw =>
+      pw.write(statsJson)
+    }
+  }
 }
 
 class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_serializer: MessageSerializer) {
@@ -269,12 +278,8 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
   }
 
   def recordMinimizationStats(output_dir: String, internalStats: MinimizationStats) {
-    // Just continue overwriting the stats file. Stats are designed to be
-    // append only.
-    val statsJson = internalStats.toJson()
-    JavaSerialization.withPrintWriter(output_dir, ExperimentSerializer.stats) { pw =>
-      pw.write(statsJson)
-    }
+    // Backwards compat
+    ExperimentSerializer.recordMinimizationStats(output_dir, internalStats)
   }
 
   def recordHandCraftedTrace(output_dir: String, minimized: EventTrace) {

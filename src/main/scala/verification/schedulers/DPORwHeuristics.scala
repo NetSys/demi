@@ -52,6 +52,11 @@ object DPORwHeuristics {
   // Called whenever we fail to find the violation and start to explore a new
   // trace
   type ResetCallback = () => Unit
+
+  // Called whenever we find a new violation-producing execution
+  type ProgressCallback = (EventTrace) => Unit
+  var progressCallback : DPORwHeuristics.ProgressCallback = (_) => None
+  def setProgressCallback(c: DPORwHeuristics.ProgressCallback) { progressCallback = c }
 }
 
 /**
@@ -397,6 +402,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       case Some(v) =>
         if (lookingFor.matches(v)) {
           log.info("Found matching violation!")
+          DPORwHeuristics.progressCallback(
+            DPORwHeuristicsUtil.convertToEventTrace(currentTrace,
+              currentSubsequence))
           foundLookingFor = true
           if (shortestTraceSoFar == null ||
               currentTrace.length < shortestTraceSoFar.length) {
