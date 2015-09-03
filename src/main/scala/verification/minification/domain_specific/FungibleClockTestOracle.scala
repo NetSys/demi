@@ -6,6 +6,7 @@ import scalax.collection.mutable.Graph,
        scalax.collection.edge.LDiEdge
 
 // Used in conjuction with DDMin for external events.
+// - timeBudgetSeconds: max time to give to *each* invocation of test
 class FungibleClockTestOracle(
   schedulerConfig: SchedulerConfig,
   originalTrace: EventTrace,
@@ -14,6 +15,7 @@ class FungibleClockTestOracle(
   testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
   depGraph: Option[Graph[Unique,DiEdge]]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
+  timeBudgetSeconds:Long=Long.MaxValue,
   postTest: Option[STSScheduler.PostTestCallback]=None) extends TestOracle {
 
   def getName = "FungibleClocks"
@@ -45,7 +47,8 @@ class FungibleClockTestOracle(
       depGraph=depGraph,
       initializationRoutine=initializationRoutine,
       preTest=preTest,
-      postTest=postTest)
+      postTest=postTest,
+      timeBudgetSeconds=timeBudgetSeconds)
 
     val (_, trace) = minimizer.minimize()
     if (trace != originalTrace) {

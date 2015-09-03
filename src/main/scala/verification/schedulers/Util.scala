@@ -184,6 +184,19 @@ class RandomizedHashSet[E](seed:Long=System.currentTimeMillis()) extends Set[E] 
   }
 }
 
+class Stopwatch(budget: Long) {
+  var startTime = System.currentTimeMillis
+  var elapsedTime: Long = 0
+
+  def start = { startTime = System.currentTimeMillis; elapsedTime = 0 }
+  def anyTimeLeft : Boolean = {
+    elapsedTime = System.currentTimeMillis - startTime
+    return elapsedTime < budget
+  }
+
+  override def toString = s"elapsed time: $elapsedTime milliseconds. Budget: $budget"
+}
+
 // Used by applications to log messages to the console. Transparently attaches vector
 // clocks to log messages.
 class VCLogger (writer: PrintWriter=new PrintWriter(System.out)) {

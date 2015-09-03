@@ -115,12 +115,15 @@ object RunnerUtils {
   // Run all the minimizations!
   // - paranoid: do we think this is going to take a long time? if so, try to
   //   prune as much as possible before trying backtracks.
+  // - timeBudgetSeconds: how many seconds to allow any one of the minimizers to
+  //   run for.
   def runTheGamut(original_dir: String,
                   output_dir: String,
                   schedulerConfig: SchedulerConfig,
                   msgSerializer: MessageSerializer,
                   msgDeserializer: MessageDeserializer,
                   paranoid: Boolean=true,
+                  timeBudgetSeconds:Long=(60*60*4:Long), // 4 hours per minimizer
                   shouldRerunDDMin:(Seq[ExternalEvent] => Boolean)=(_)=>true) {
 
     val serializer = new ExperimentSerializer(
@@ -338,6 +341,7 @@ object RunnerUtils {
           new FungibleClockMinimizer(schedulerConfig, currentExternals,
             currentTrace, actors, violationFound,
             testScheduler=TestScheduler.DPORwHeuristics,
+            timeBudgetSeconds=timeBudgetSeconds,
             stats=Some(currentStats)).minimize
       }),
       // fungibleClocks DDMin with all
@@ -357,6 +361,7 @@ object RunnerUtils {
               violationFound,
               actors,
               testScheduler=TestScheduler.DPORwHeuristics,
+              timeBudgetSeconds=timeBudgetSeconds,
               stats=Some(currentStats))
           else
             ((currentExternals, currentStats, Some(currentTrace), violationFound))
@@ -569,9 +574,14 @@ object RunnerUtils {
         depGraph: Option[Graph[Unique,DiEdge]]=None,
         preTest: Option[STSScheduler.PreTestCallback]=None,
         postTest: Option[STSScheduler.PostTestCallback]=None,
+        timeBudgetSeconds:Long=(60*60*4:Long), // 4 hours
         stats: Option[MinimizationStats]=None) :
       Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
 
+    // We estimate that there will be on average N subsequences chosen by
+    // DDMin. Therefore we give each subsequence a time budget of
+    // timeBudgetSeconds / N.
+    // TODO(cs): do this compuation within DDMin?
     val oracle = new FungibleClockTestOracle(
         schedulerConfig,
         originalTrace,
@@ -580,7 +590,8 @@ object RunnerUtils {
         testScheduler=testScheduler,
         depGraph=depGraph,
         preTest=preTest,
-        postTest=postTest)
+        postTest=postTest,
+        timeBudgetSeconds=timeBudgetSeconds/dag.length)
 
     val ddmin = new DDMin(oracle, stats=stats)
     var externalsSize = dag.length
