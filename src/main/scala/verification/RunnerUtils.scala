@@ -177,6 +177,10 @@ object RunnerUtils {
           serializer.recordMinimizedInternals(output_dir,
             currentStats.get, currentTrace)
 
+          val statsTuple =  RunnerUtils.extractDeliveryStats(currentTrace,
+            schedulerConfig.messageFingerprinter)
+          currentStats.get.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+
           RunnerUtils.printMinimizationStats(schedulerConfig.messageFingerprinter,
             traceFound, filteredTrace, namedTraces)
       }
@@ -847,6 +851,51 @@ object RunnerUtils {
     return ((_stats, modified))
   }
 
+  def count_externals(msgEvents: Seq[MsgEvent]): Int = {
+    msgEvents flatMap {
+      case m @ MsgEvent(_, _, _) =>
+        if (EventTypes.isExternal(m)) {
+          Some(m)
+        } else {
+          None
+        }
+      case _ => None
+    } length
+  }
+
+  def count_timers(msgEvents: Seq[MsgEvent]): Int = {
+    msgEvents flatMap {
+      case m @ MsgEvent("Timer", _, _) => Some(m)
+      case m @ MsgEvent("deadLetters", _, msg) if (!EventTypes.isExternal(m)) =>
+        Some(m)
+      case _ => None
+    } length
+  }
+
+  // Return (deliveries, total externals, total timers)
+  def extractDeliveryStats(trace: EventTrace, messageFingerprinter: FingerprintFactory): Tuple3[Seq[MsgEvent],Int,Int] = {
+    def get_deliveries() : Seq[MsgEvent] = {
+      // Make sure not to count checkpoint and failure detector messages.
+      // Also annotate Timers from other messages, by ensuring that the
+      // "sender" field is "Timer"
+      trace.filterFailureDetectorMessages.
+            filterCheckpointMessages.flatMap {
+        case m @ MsgEvent(s, r, msg) =>
+          val fingerprint = messageFingerprinter.fingerprint(msg)
+          if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
+            Some(MsgEvent("Timer", r, msg))
+          } else {
+            Some(MsgEvent(s, r, msg))
+          }
+        case t: TimerDelivery => Some(MsgEvent("Timer", t.receiver, t.fingerprint))
+        case e => None
+      }.toSeq
+    }
+    val deliveries = get_deliveries()
+    return ((deliveries, RunnerUtils.count_externals(deliveries),
+      RunnerUtils.count_timers(deliveries)))
+  }
+
   // Slight misnomer: stats as in "interesting numbers", not
   // MinimizationStatistics object.
   def printMinimizationStats(original_experiment_dir: String,
@@ -888,51 +937,17 @@ object RunnerUtils {
     origTrace: EventTrace, provenanceTrace: Option[Queue[Unique]],
     additionalNamedTraces:Seq[(String,EventTrace)]=Seq.empty) {
 
-    def get_deliveries(trace: EventTrace) : Seq[MsgEvent] = {
-      // Make sure not to count checkpoint and failure detector messages.
-      // Also annotate Timers from other messages, by ensuring that the
-      // "sender" field is "Timer"
-      trace.filterFailureDetectorMessages.
-            filterCheckpointMessages.flatMap {
-        case m @ MsgEvent(s, r, msg) =>
-          val fingerprint = messageFingerprinter.fingerprint(msg)
-          if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
-            Some(MsgEvent("Timer", r, msg))
-          } else {
-            Some(MsgEvent(s, r, msg))
-          }
-        case t: TimerDelivery => Some(MsgEvent("Timer", t.receiver, t.fingerprint))
-        case e => None
-      }.toSeq
-    }
-    def count_externals(msgEvents: Seq[MsgEvent]): Int = {
-      msgEvents flatMap {
-        case m @ MsgEvent(_, _, _) =>
-          if (EventTypes.isExternal(m)) {
-            Some(m)
-          } else {
-            None
-          }
-        case _ => None
-      } length
-    }
-    def count_timers(msgEvents: Seq[MsgEvent]): Int = {
-      msgEvents flatMap {
-        case m @ MsgEvent("Timer", _, _) => Some(m)
-        case _ => None
-      } length
-    }
-
     class OrderedTracePrinter {
       // { (name, deliveries, externals, timers) }
       var traceStats : Seq[(String,Seq[MsgEvent],Int,Int)] = Seq.empty
 
-      def appendTrace(name: String, deliveries:Seq[MsgEvent],
+      def appendTrace(name: String, delivery_stats:Tuple3[Seq[MsgEvent],Int,Int],
                       externalsUnchanged:Boolean=false) {
+        val deliveries = delivery_stats._1
         val externals = if (externalsUnchanged)
           traceStats.last._3
-          else  count_externals(deliveries)
-        val timers = count_timers(deliveries)
+          else delivery_stats._2
+        val timers = delivery_stats._3
         traceStats = traceStats.:+((name,deliveries,externals,timers))
       }
 
@@ -984,19 +999,23 @@ object RunnerUtils {
      }
 
     val printer = new OrderedTracePrinter
-    printer.appendTrace("Original", get_deliveries(origTrace))
+    printer.appendTrace("Original",
+      RunnerUtils.extractDeliveryStats(origTrace, messageFingerprinter))
 
     provenanceTrace match {
       case Some(trace) =>
-        printer.appendTrace("Provenance", getProvenanceDeliveries(trace),
-          externalsUnchanged=true)
+        val deliveries = getProvenanceDeliveries(trace)
+        val tuple = ((deliveries, RunnerUtils.count_externals(deliveries),
+          RunnerUtils.count_timers(deliveries)))
+        printer.appendTrace("Provenance", tuple, externalsUnchanged=true)
       case None =>
         Seq.empty
     }
 
     // Should be same actors, so no need to populateActorSystem
     additionalNamedTraces.foreach {
-      case (name,trace) => printer.appendTrace(name, get_deliveries(trace))
+      case (name,trace) => printer.appendTrace(name,
+        RunnerUtils.extractDeliveryStats(trace, messageFingerprinter))
     }
 
     printer.print

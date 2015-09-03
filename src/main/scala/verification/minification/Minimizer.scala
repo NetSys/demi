@@ -81,6 +81,12 @@ class MinimizationStats {
     inner().record_distance_increase(newDistance)
   }
 
+  def recordDeliveryStats(minimized_deliveries: Int, minimized_externals: Int,
+                          minimized_timers: Int) {
+    inner().recordDeliveryStats(minimized_deliveries, minimized_externals,
+      minimized_timers)
+  }
+
   def toJson(): String = {
     return JSONArray(stats.map(s => s.toJson).toList).toString
   }
@@ -130,7 +136,10 @@ object MinimizationStats {
         "total_events" -> 0.0,
         // How many times we tried replaying unmodified execution before we were
         // able to reproduce the violation
-        "initial_verification_runs_needed" -> 0.0
+        "initial_verification_runs_needed" -> 0.0,
+        "minimized_deliveries" -> 0.0,
+        "minimized_externals" -> 0.0,
+        "minimized_timers" -> 0.0
       )
     }
 
@@ -158,12 +167,19 @@ object MinimizationStats {
         (stats("prune_end_epoch") * 1.0 - stats("prune_start_epoch")) / 1000
     }
 
-    def record_iteration_size(iteration_size: Integer) {
+    def record_iteration_size(iteration_size: Int) {
       iterationSize(iteration) = iteration_size
       iteration += 1
     }
 
-    def record_distance_increase(newDistance: Integer) {
+    def recordDeliveryStats(minimized_deliveries: Int, minimized_externals: Int,
+                            minimized_timers: Int) {
+      stats("minimized_deliveries") = minimized_deliveries / 1.0
+      stats("minimized_externals") = minimized_externals / 1.0
+      stats("minimized_timers") = minimized_timers / 1.0
+    }
+
+    def record_distance_increase(newDistance: Int) {
       maxDistance(newDistance) = iteration
     }
 
