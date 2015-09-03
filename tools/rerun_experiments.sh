@@ -4,7 +4,7 @@ START_WITH=$1
 
 (cd experiments; git pull)
 
-for branch in raft-45 raft-46 raft-56 raft-58 raft-58-initialization raft-42 raft-66; do
+for branch in raft-45 raft-46 raft-56 raft-58-initialization raft-58 raft-42 raft-66; do
   if [ "$START_WITH" != "" -a "$START_WITH" != $branch ]; then
     continue
   fi
