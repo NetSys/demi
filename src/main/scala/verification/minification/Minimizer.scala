@@ -1,7 +1,9 @@
 package akka.dispatch.verification
 
+import scala.collection.mutable.ListBuffer
 import scala.collection.mutable.HashMap
 import scala.util.parsing.json.JSONObject
+import scala.util.parsing.json.JSONArray
 import scala.util.parsing.json.JSON
 
 trait Minimizer {
@@ -33,28 +35,18 @@ class MinimizationStats {
   //            "DPOR", "FairScheduler", "FungibleClocks"}
   var minimization_strategy : String = ""
   var test_oracle : String = ""
-  var strategyToStats = new HashMap[String,MinimizationStats.InnerStats]
+  var stats = new ListBuffer[MinimizationStats.InnerStats]
 
   // Update which <strategy, oracle> pair we're recording stats for
   def updateStrategy(_minimization_strategy: String, _test_oracle: String) {
-    var __minimization_strategy = _minimization_strategy
-    var __test_oracle = _test_oracle
-    var counter = 2
-    var key = (__minimization_strategy,__test_oracle).toString
-    while (strategyToStats contains key) {
-      __minimization_strategy = __minimization_strategy + counter
-      __test_oracle = __test_oracle + counter
-      key = (__minimization_strategy,__test_oracle).toString
-      counter += 1
-    }
-
-    minimization_strategy = __minimization_strategy
-    test_oracle = __test_oracle
-    strategyToStats((minimization_strategy, test_oracle).toString) = new MinimizationStats.InnerStats
+    minimization_strategy = _minimization_strategy
+    test_oracle = _test_oracle
+    val name = ((minimization_strategy,test_oracle)).toString
+    stats += new MinimizationStats.InnerStats(name)
   }
 
   def inner(): MinimizationStats.InnerStats = {
-    strategyToStats((minimization_strategy,test_oracle).toString)
+    stats.last
   }
 
   def reset() {
@@ -89,21 +81,19 @@ class MinimizationStats {
     inner().record_distance_increase(newDistance)
   }
 
+  def recordDeliveryStats(minimized_deliveries: Int, minimized_externals: Int,
+                          minimized_timers: Int) {
+    inner().recordDeliveryStats(minimized_deliveries, minimized_externals,
+      minimized_timers)
+  }
+
   def toJson(): String = {
-    // TODO(cs): possibly unnecessary to call .toJson on the inner maps.
-    val map = new HashMap[String, String]
-    strategyToStats.foreach {
-      case (k,v) =>
-        map(k.toString) = v.toJson
-    }
-    val json = JSONObject(map.toMap).toString()
-    assert(json != "")
-    return json
+    return JSONArray(stats.map(s => s.toJson).toList).toString
   }
 }
 
 object MinimizationStats {
-  class InnerStats {
+  class InnerStats(name: String) {
     // For the ith replay attempt, how many external events were left?
     val iterationSize = new HashMap[Int, Int]
     var iteration = 0
@@ -146,7 +136,10 @@ object MinimizationStats {
         "total_events" -> 0.0,
         // How many times we tried replaying unmodified execution before we were
         // able to reproduce the violation
-        "initial_verification_runs_needed" -> 0.0
+        "initial_verification_runs_needed" -> 0.0,
+        "minimized_deliveries" -> 0.0,
+        "minimized_externals" -> 0.0,
+        "minimized_timers" -> 0.0
       )
     }
 
@@ -174,35 +167,40 @@ object MinimizationStats {
         (stats("prune_end_epoch") * 1.0 - stats("prune_start_epoch")) / 1000
     }
 
-    def record_iteration_size(iteration_size: Integer) {
+    def record_iteration_size(iteration_size: Int) {
       iterationSize(iteration) = iteration_size
       iteration += 1
     }
 
-    def record_distance_increase(newDistance: Integer) {
+    def recordDeliveryStats(minimized_deliveries: Int, minimized_externals: Int,
+                            minimized_timers: Int) {
+      stats("minimized_deliveries") = minimized_deliveries / 1.0
+      stats("minimized_externals") = minimized_externals / 1.0
+      stats("minimized_timers") = minimized_timers / 1.0
+    }
+
+    def record_distance_increase(newDistance: Int) {
       maxDistance(newDistance) = iteration
     }
 
-    def toJson(): String = {
+    def toJson(): JSONObject = {
       val map = new HashMap[String, Any]
+      map("name") = name
       map("iteration_size") = JSONObject(iterationSize.map(
         pair => pair._1.toString -> pair._2).toMap)
       map("total_replays") = total_replays
       map("maxDistance") = JSONObject(maxDistance.map(
         pair => pair._1.toString -> pair._2).toMap)
       map ++= stats
-      val json = JSONObject(map.toMap).toString()
-      assert(json != "")
-      return json
+      return JSONObject(map.toMap)
     }
   }
 
   def fromJson(json: String): MinimizationStats = {
-    val outer = JSON.parseFull(json).get.asInstanceOf[Map[String,Any]]
+    val outer = JSON.parseFull(json).get.asInstanceOf[List[Map[String,Any]]]
     val outerObj = new MinimizationStats
-    outer.foreach { case (k,v) =>
-      val inner = JSON.parseFull(v.asInstanceOf[String]).get.asInstanceOf[Map[String,Any]]
-      val innerObj = new InnerStats
+    outer.foreach { case inner =>
+      val innerObj = new InnerStats(inner("name").asInstanceOf[String])
       innerObj.total_replays = inner("total_replays").asInstanceOf[Double].toInt
       innerObj.stats.keys.foreach { case k =>
         innerObj.stats(k) = inner(k).asInstanceOf[Double] }
@@ -210,7 +208,7 @@ object MinimizationStats {
         innerObj.maxDistance(k.toInt) = v.asInstanceOf[Double].toInt }
       inner("iteration_size").asInstanceOf[Map[String,Any]].foreach { case (k,v) =>
         innerObj.iterationSize(k.toInt) = v.asInstanceOf[Double].toInt }
-      outerObj.strategyToStats(k) = innerObj
+      outerObj.stats += innerObj
     }
     return outerObj
   }
