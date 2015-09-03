@@ -98,6 +98,7 @@ trait EventDag {
    * Return get_all_events().length
    */
   def length: Int
+  def size = length
 }
 
 // Internal utility methods

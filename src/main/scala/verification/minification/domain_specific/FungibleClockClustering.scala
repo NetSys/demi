@@ -151,14 +151,16 @@ class FungibleClockMinimizer(
   initializationRoutine: Option[() => Any]=None,
   preTest: Option[STSScheduler.PreTestCallback]=None,
   postTest: Option[STSScheduler.PostTestCallback]=None,
-  stats: Option[MinimizationStats]=None)
+  stats: Option[MinimizationStats]=None,
+  timeBudgetSeconds:Long=Long.MaxValue)
   extends InternalEventMinimizer {
 
   val log = LoggerFactory.getLogger("WildCardMin")
 
   def testWithDpor(nextTrace: EventTrace, stats: MinimizationStats,
                    absentIgnored: STSScheduler.IgnoreAbsentCallback,
-                   resetCallback: DPORwHeuristics.ResetCallback): Option[EventTrace] = {
+                   resetCallback: DPORwHeuristics.ResetCallback,
+                   dporBudgetSeconds: Long): Option[EventTrace] = {
     val uniques = new Queue[Unique] ++ nextTrace.events.flatMap {
       case UniqueMsgEvent(m @ MsgEvent(snd,rcv,wildcard), id) =>
         Some(Unique(m,id=(-1)))
@@ -177,7 +179,8 @@ class FungibleClockMinimizer(
                         stopIfViolationFound=false,
                         startFromBackTrackPoints=false,
                         skipBacktrackComputation=true,
-                        stopAfterNextTrace=true)
+                        stopAfterNextTrace=true,
+                        budgetSeconds=dporBudgetSeconds)
     dpor.setIgnoreAbsentCallback(absentIgnored)
     dpor.setResetCallback(resetCallback)
     depGraph match {
@@ -219,7 +222,8 @@ class FungibleClockMinimizer(
     }
     val oracleName = if (testScheduler == TestScheduler.STSSched)
       "STSSched" else "DPOR"
-    _stats.updateStrategy("FungibleClockMinimizer", oracleName)
+    // don't updateStrategy if we're being used as a TestOracle
+    if (!skipClockClusters) _stats.updateStrategy("FungibleClockMinimizer", oracleName)
 
     val aggressiveness = if (skipClockClusters)
       Aggressiveness.STOP_IMMEDIATELY
@@ -229,6 +233,9 @@ class FungibleClockMinimizer(
       schedulerConfig.messageFingerprinter, resolutionStrategy,
       skipClockClusters=skipClockClusters,
       aggressiveness=aggressiveness)
+
+    // Each cluster gets timeBudgetSeconds / numberOfClusters seconds
+    val dporBudgetSeconds = timeBudgetSeconds / clockClusterizer.approximateIterations
 
     var minTrace = trace
 
@@ -243,7 +250,8 @@ class FungibleClockMinimizer(
         ignoredAbsentIndices.clear
       }
       val ret = if (testScheduler == TestScheduler.DPORwHeuristics)
-        testWithDpor(nextTrace.get, _stats, ignoreAbsentCallback, resetCallback)
+        testWithDpor(nextTrace.get, _stats, ignoreAbsentCallback,
+          resetCallback, dporBudgetSeconds)
         else testWithSTSSched(nextTrace.get, _stats, ignoreAbsentCallback)
 
       var ignoredAbsentIds = Set[Int]()
@@ -336,6 +344,11 @@ class ClockClusterizer(
   var timerIterator = OneAtATimeIterator.fromTrace(originalTrace, fingerprinter)
   // current set of timer ids we're *including*
   var currentTimers = Set[Int]()
+
+  def approximateIterations: Int = {
+    if (skipClockClusters) return timerIterator.toRemove.size
+    return clusterIterator.clocks.size * timerIterator.toRemove.size
+  }
 
   def getNextTrace(violationReproducedLastRun: Boolean, ignoredAbsentIds: Set[Int])
         : Option[EventTrace] = {

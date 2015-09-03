@@ -52,6 +52,11 @@ object DPORwHeuristics {
   // Called whenever we fail to find the violation and start to explore a new
   // trace
   type ResetCallback = () => Unit
+
+  // Called whenever we find a new violation-producing execution
+  type ProgressCallback = (EventTrace) => Unit
+  var progressCallback : DPORwHeuristics.ProgressCallback = (_) => None
+  def setProgressCallback(c: DPORwHeuristics.ProgressCallback) { progressCallback = c }
 }
 
 /**
@@ -75,11 +80,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   stopIfViolationFound:Boolean=true,
   startFromBackTrackPoints:Boolean=true,
   skipBacktrackComputation:Boolean=false,
-  stopAfterNextTrace:Boolean=false) extends Scheduler with TestOracle {
+  stopAfterNextTrace:Boolean=false,
+  budgetSeconds:Long=Long.MaxValue) extends Scheduler with TestOracle {
 
   val log = LoggerFactory.getLogger("DPOR")
 
   def getName: String = "DPORwHeuristics"
+
+  var stopWatch = new Stopwatch(budgetSeconds)
 
   final val SCHEDULER = "__SCHEDULER__"
   final val PRIORITY = "__PRIORITY__"
@@ -216,6 +224,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     exploredTracker.clear
     depGraph.clear
     backTrack.clear
+    stopWatch
      */
     pendingEvents.clear()
     currentDepth = 0
@@ -397,6 +406,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       case Some(v) =>
         if (lookingFor.matches(v)) {
           log.info("Found matching violation!")
+          DPORwHeuristics.progressCallback(
+            DPORwHeuristicsUtil.convertToEventTrace(currentTrace,
+              currentSubsequence))
           foundLookingFor = true
           if (shortestTraceSoFar == null ||
               currentTrace.length < shortestTraceSoFar.length) {
@@ -1097,6 +1109,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   }
 
   def dpor(trace: Trace) : Option[Trace] = {
+    if (!stopWatch.anyTimeLeft) {
+      log.warn("Time Budget Expired!")
+      return None
+    }
     interleavingCounter += 1
     val root = getEvent(0, currentTrace)
     val rootN = ( depGraph get getRootEvent )
@@ -1350,6 +1366,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     // are invoked at the beginning of run(), hence we don't need to clean up
     // after ourselves at the end of test(), *unless* some other scheduler
     // besides DPORwHeuristics is going to use the actor system after this.
+    stopWatch.start
     run(events,
         f2 = (graph) => {
           if (_initialDepGraph != null) _initialDepGraph ++= graph
