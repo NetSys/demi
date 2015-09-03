@@ -352,6 +352,9 @@ object RunnerUtils {
             stats=currentStats)
       })
     ).flatten)
+
+    // Play nicely with ./interposition/tools/rerun_experiments.sh
+    System.exit(0)
   }
 
   def deserializeExperiment(experiment_dir: String,
