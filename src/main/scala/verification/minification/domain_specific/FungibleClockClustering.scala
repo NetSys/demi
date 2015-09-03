@@ -219,7 +219,8 @@ class FungibleClockMinimizer(
     }
     val oracleName = if (testScheduler == TestScheduler.STSSched)
       "STSSched" else "DPOR"
-    _stats.updateStrategy("FungibleClockMinimizer", oracleName)
+    // don't updateStrategy if we're being used as a TestOracle
+    if (!skipClockClusters) _stats.updateStrategy("FungibleClockMinimizer", oracleName)
 
     val aggressiveness = if (skipClockClusters)
       Aggressiveness.STOP_IMMEDIATELY
