@@ -136,21 +136,27 @@ object RunnerUtils {
     abstract class ExternalMinimizer(val name: String) extends Minimizer {
       def minimize(currentExternals: Seq[ExternalEvent],
                    currentTrace: EventTrace,
-                   currentStats: Option[MinimizationStats]) :
+                   currentStats: MinimizationStats) :
           Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint]
     }
     abstract class InternalMinimizer(val name: String) extends Minimizer {
       def minimize(currentExternals: Seq[ExternalEvent],
                    currentTrace: EventTrace,
-                   currentStats: Option[MinimizationStats]) :
+                   currentStats: MinimizationStats) :
           Tuple2[MinimizationStats, EventTrace]
     }
 
     def run(gamut: Seq[Minimizer]) {
       var currentTrace = traceFound
-      var currentStats : Option[MinimizationStats] = None
       var currentExternals : Seq[ExternalEvent] = Seq.empty
       var namedTraces : Seq[(String,EventTrace)] = Seq.empty
+
+      // Start with a fencepost stats
+      var currentStats = new MinimizationStats
+      currentStats.updateStrategy("FENCEPOST", "OriginalExecution")
+      val statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
+        schedulerConfig.messageFingerprinter)
+      currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
 
       gamut.foreach {
         case minimizer =>
@@ -162,14 +168,14 @@ object RunnerUtils {
               currentExternals = externals
               currentTrace = verified_mcs.getOrElse(throw new
                 RuntimeException("MCS not replayable"))
-              currentStats = Some(stats)
+              currentStats = stats
               namedTraces = namedTraces :+ ((e.name, currentTrace.copy))
             case i: InternalMinimizer =>
               println(s"=== Executing ${i.name} ===")
               var (stats, trace) =
                 i.minimize(currentExternals, currentTrace, currentStats)
               currentTrace = trace
-              currentStats = Some(stats)
+              currentStats = stats
               namedTraces = namedTraces :+ ((i.name, currentTrace.copy))
           }
 
@@ -177,8 +183,8 @@ object RunnerUtils {
           def recordProgressCallback(currentTrace: EventTrace) {
             val statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
               schedulerConfig.messageFingerprinter)
-            currentStats.get.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
-            ExperimentSerializer.recordMinimizationStats(output_dir, currentStats.get)
+            currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+            ExperimentSerializer.recordMinimizationStats(output_dir, currentStats)
           }
           // Need to set this callback after the first currentStats is bound,
           // i.e. not None.
@@ -187,11 +193,11 @@ object RunnerUtils {
           // Also record stats now that we've finished.
           val statsTuple =  RunnerUtils.extractDeliveryStats(currentTrace,
             schedulerConfig.messageFingerprinter)
-          currentStats.get.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+          currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
 
           // N.B. may be overwritten.
           serializer.recordMinimizedInternals(output_dir,
-            currentStats.get, currentTrace)
+            currentStats, currentTrace)
 
           RunnerUtils.printMinimizationStats(schedulerConfig.messageFingerprinter,
             traceFound, filteredTrace, namedTraces)
@@ -205,25 +211,25 @@ object RunnerUtils {
 
     run(Seq(
       Some(new ExternalMinimizer("DDMin") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           RunnerUtils.stsSchedDDMin(false,
             schedulerConfig,
             traceFound,
             violationFound,
             actorNameProps=Some(actors),
-            stats=currentStats)
+            stats=Some(currentStats))
       }),
       Some(new InternalMinimizer("IntMin") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           RunnerUtils.minimizeInternals(schedulerConfig,
             currentExternals, currentTrace, actors, violationFound,
             removalStrategyCtor=() => new SrcDstFIFORemoval(currentTrace, schedulerConfig.messageFingerprinter),
-            stats=currentStats)
+            stats=Some(currentStats))
       }),
       // fungibleClocks DDMin without backtracks.
       if (!paranoid) None else
       Some(new ExternalMinimizer("WildCardDDMinNoBacktracks") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           if (shouldRerunDDMin(currentExternals))
             RunnerUtils.fungibleClocksDDMin(schedulerConfig,
               currentTrace,
@@ -237,14 +243,14 @@ object RunnerUtils {
               }.toSeq),
               violationFound,
               actors,
-              stats=currentStats)
+              stats=Some(currentStats))
           else
-            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
+            ((currentExternals, currentStats, Some(currentTrace), violationFound))
       }),
       // fungibleClocks DDMin without backtracks, but focus on the last item first.
       if (!paranoid) None else
       Some(new ExternalMinimizer("WildCardDDMinLastOnly") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           if (shouldRerunDDMin(currentExternals))
             RunnerUtils.fungibleClocksDDMin(schedulerConfig,
               currentTrace,
@@ -259,30 +265,30 @@ object RunnerUtils {
               violationFound,
               actors,
               resolutionStrategy=new LastOnlyStrategy,
-              stats=currentStats)
+              stats=Some(currentStats))
           else
-            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
+            ((currentExternals, currentStats, Some(currentTrace), violationFound))
       }),
       // Without backtracks first
       if (!paranoid) None else
       Some(new InternalMinimizer("FungibleClocksNoBackTracks") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           new FungibleClockMinimizer(schedulerConfig,
             currentExternals,
             currentTrace, actors, violationFound,
             //testScheduler=TestScheduler.DPORwHeuristics,
-            stats=currentStats).minimize
+            stats=Some(currentStats)).minimize
       }),
       // Without backtracks, but focus on the last match.
       if (!paranoid) None else
       Some(new InternalMinimizer("FungibleClocksLastOnly") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           new FungibleClockMinimizer(schedulerConfig,
             currentExternals,
             currentTrace, actors, violationFound,
             //testScheduler=TestScheduler.DPORwHeuristics,
             resolutionStrategy=new LastOnlyStrategy,
-            stats=currentStats).minimize
+            stats=Some(currentStats)).minimize
       }),
       //// Now with "First and Last" backtracks
       //if (!paranoid) None else
@@ -328,15 +334,15 @@ object RunnerUtils {
       //}),
       // internal clocks with full backtracks
       Some(new InternalMinimizer("FungibleClocks") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           new FungibleClockMinimizer(schedulerConfig, currentExternals,
             currentTrace, actors, violationFound,
             testScheduler=TestScheduler.DPORwHeuristics,
-            stats=currentStats).minimize
+            stats=Some(currentStats)).minimize
       }),
       // fungibleClocks DDMin with all
       Some(new ExternalMinimizer("WildcardDDMin") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           if (shouldRerunDDMin(currentExternals))
             RunnerUtils.fungibleClocksDDMin(schedulerConfig,
               currentTrace,
@@ -351,17 +357,17 @@ object RunnerUtils {
               violationFound,
               actors,
               testScheduler=TestScheduler.DPORwHeuristics,
-              stats=currentStats)
+              stats=Some(currentStats))
           else
-            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
+            ((currentExternals, currentStats, Some(currentTrace), violationFound))
       }),
       // One last internal minimization
       Some(new InternalMinimizer("IntMin") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           RunnerUtils.minimizeInternals(schedulerConfig,
             currentExternals, currentTrace, actors, violationFound,
             removalStrategyCtor=() => new SrcDstFIFORemoval(currentTrace, schedulerConfig.messageFingerprinter),
-            stats=currentStats)
+            stats=Some(currentStats))
       })
     ).flatten)
 
