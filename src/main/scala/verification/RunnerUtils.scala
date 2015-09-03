@@ -120,7 +120,7 @@ object RunnerUtils {
                   schedulerConfig: SchedulerConfig,
                   msgSerializer: MessageSerializer,
                   msgDeserializer: MessageDeserializer,
-                  paranoid: Boolean=false,
+                  paranoid: Boolean=true,
                   shouldRerunDDMin:(Seq[ExternalEvent] => Boolean)=(_)=>true) {
 
     val serializer = new ExperimentSerializer(
@@ -272,48 +272,48 @@ object RunnerUtils {
             resolutionStrategy=new LastOnlyStrategy,
             stats=currentStats).minimize
       }),
-      // Now with "First and Last" backtracks
-      if (!paranoid) None else
-      Some(new InternalMinimizer("FungibleClocksFirstLast") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
-          new FungibleClockMinimizer(schedulerConfig, currentExternals,
-            currentTrace, actors, violationFound,
-            testScheduler=TestScheduler.DPORwHeuristics,
-            resolutionStrategy=new FirstAndLastBacktrack,
-            stats=currentStats).minimize
-      }),
-      // 2nd internal minimization pass
-      if (!paranoid) None else
-      Some(new InternalMinimizer("IntMin") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
-          RunnerUtils.minimizeInternals(schedulerConfig,
-            currentExternals, currentTrace, actors, violationFound,
-            removalStrategyCtor=() => new SrcDstFIFORemoval(currentTrace, schedulerConfig.messageFingerprinter),
-            stats=currentStats)
-      }),
-      // fungibleClocks DDMin with only "First and Last" backtracks.
-      if (!paranoid) None else
-      Some(new ExternalMinimizer("WildcardDDMinFirstLast") {
-        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
-          if (shouldRerunDDMin(currentExternals))
-            RunnerUtils.fungibleClocksDDMin(schedulerConfig,
-              currentTrace,
-              new UnmodifiedEventDag(currentExternals.flatMap {
-                 // STSSched doesn't actually pay any attention to WaitQuiescence or
-                 // WaitCondition, so just get rid of them.
-                 // TODO(cs): doesn't necessarily make sense for DPOR?
-                 case WaitQuiescence() => None
-                 case WaitCondition(_) => None
-                 case e => Some(e)
-              }.toSeq),
-              violationFound,
-              actors,
-              testScheduler=TestScheduler.DPORwHeuristics,
-              resolutionStrategy=new FirstAndLastBacktrack,
-              stats=currentStats)
-          else
-            ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
-      }),
+      //// Now with "First and Last" backtracks
+      //if (!paranoid) None else
+      //Some(new InternalMinimizer("FungibleClocksFirstLast") {
+      //  def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+      //    new FungibleClockMinimizer(schedulerConfig, currentExternals,
+      //      currentTrace, actors, violationFound,
+      //      testScheduler=TestScheduler.DPORwHeuristics,
+      //      resolutionStrategy=new FirstAndLastBacktrack,
+      //      stats=currentStats).minimize
+      //}),
+      //// 2nd internal minimization pass
+      //if (!paranoid) None else
+      //Some(new InternalMinimizer("IntMin") {
+      //  def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+      //    RunnerUtils.minimizeInternals(schedulerConfig,
+      //      currentExternals, currentTrace, actors, violationFound,
+      //      removalStrategyCtor=() => new SrcDstFIFORemoval(currentTrace, schedulerConfig.messageFingerprinter),
+      //      stats=currentStats)
+      //}),
+      //// fungibleClocks DDMin with only "First and Last" backtracks.
+      //if (!paranoid) None else
+      //Some(new ExternalMinimizer("WildcardDDMinFirstLast") {
+      //  def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
+      //    if (shouldRerunDDMin(currentExternals))
+      //      RunnerUtils.fungibleClocksDDMin(schedulerConfig,
+      //        currentTrace,
+      //        new UnmodifiedEventDag(currentExternals.flatMap {
+      //           // STSSched doesn't actually pay any attention to WaitQuiescence or
+      //           // WaitCondition, so just get rid of them.
+      //           // TODO(cs): doesn't necessarily make sense for DPOR?
+      //           case WaitQuiescence() => None
+      //           case WaitCondition(_) => None
+      //           case e => Some(e)
+      //        }.toSeq),
+      //        violationFound,
+      //        actors,
+      //        testScheduler=TestScheduler.DPORwHeuristics,
+      //        resolutionStrategy=new FirstAndLastBacktrack,
+      //        stats=currentStats)
+      //    else
+      //      ((currentExternals, currentStats.get, Some(currentTrace), violationFound))
+      //}),
       // internal clocks with full backtracks
       Some(new InternalMinimizer("FungibleClocks") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: Option[MinimizationStats]) =
