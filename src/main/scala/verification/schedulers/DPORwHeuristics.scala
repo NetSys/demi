@@ -37,8 +37,6 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-// TODO(cs): mark any pending messages destined for blockedActors as
-// (temporarily) not enabled.
 // TODO(cs): remove FailureDetector support. Not used.
 // TODO(cs): remove Partition/Unpartition support? Not strictly needed.
 // TODO(cs): don't assume enqueue_message is just for timers.
@@ -425,8 +423,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   // Figure out what is the next message to schedule.
   def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
-    // TODO(cs): marked any pending messages destined for blockedActors as
-    // (temporarily) not enabled.
     // Stop if we found the original invariant violation.
     if (foundLookingFor) {
       return None
@@ -448,25 +444,31 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     // Get from the current set of pending events.
     def getPendingEvent(): Option[(Unique, Cell, Envelope)] = {
       // Do we have some pending events
-      Util.dequeueOne(pendingEvents) match {
+      pendingEvents.find({
+        case (k,v) => !(blockedActors contains k._2) && !v.isEmpty
+      }).map(o => o._2.head) match {
         case Some( next @ (Unique(MsgEvent(snd, rcv, msg), id), _, _)) =>
           log.trace( Console.GREEN + "Now playing pending: "
               + "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
+          pendingEvents((snd,rcv)).dequeueFirst(e => e == next)
           Some(next)
 
         case Some(par @ (Unique(NetworkPartition(part1, part2), id), _, _)) =>
           log.trace( Console.GREEN + "Now playing the high level partition event " +
               id + Console.RESET)
+          pendingEvents((SCHEDULER,SCHEDULER)).dequeueFirst(e => e == par)
           Some(par)
 
         case Some(par @ (Unique(NetworkUnpartition(part1, part2), id), _, _)) =>
           log.trace( Console.GREEN + "Now playing the high level partition event " +
               id + Console.RESET)
+          pendingEvents((SCHEDULER,SCHEDULER)).dequeueFirst(e => e == par)
           Some(par)
 
         case Some(qui @ (Unique(WaitQuiescence(), id), _, _)) =>
           log.trace( Console.GREEN + "Now playing the high level quiescence event " +
               id + Console.RESET)
+          pendingEvents((SCHEDULER,SCHEDULER)).dequeueFirst(e => e == qui)
           Some(qui)
 
         case None => None
@@ -478,44 +480,51 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       getNextTraceMessage() match {
         // The trace says there is a message event to run.
         case Some(u @ Unique(MsgEvent(snd, rcv, WildCardMatch(msgSelector,_)), id)) =>
-          pendingEvents.get((snd,rcv)) match {
-            case Some(queue) =>
-              // queue should already be ordered by send order
-              val pending = queue.toIndexedSeq
-              def backtrackSetter(idx: Int) {
-                val priorEvent = currentTrace.last
-                val toPlayNext = pending(idx)._1
-                val commonPrefix = getCommonPrefix(priorEvent, toPlayNext)
-                val lastElement = commonPrefix.last
-                val branchI = currentTrace.indexWhere { e => (e == lastElement.value) }
-                log.trace(s"Setting backtrack@${branchI} ${priorEvent} ${toPlayNext}")
-                // TODO(cs): too specific to FungibleClockClustering.. we abuse
-                // the last tuple item to include our remaining WildCards [nextTrace.clone]
-                // N.B. currentTrace's head is the root event, so we skip over it.
-                val traceToPlayNext = currentTrace.tail.clone.toList ++ List(toPlayNext) ++ nextTrace.clone.toList
-                backTrack.enqueue((branchI, (priorEvent, toPlayNext), traceToPlayNext))
-              }
-              val pendingMessages = pending.map { case t => t._3.message }
-              msgSelector(pendingMessages, backtrackSetter) match {
-                case Some(idx) =>
-                  val found = pending(idx)
-                  // Mark this as done ordering done. // TODO(cs): possibly
-                  // not necessary
+          if (blockedActors contains rcv)
+            None
+          else
+            pendingEvents.get((snd,rcv)) match {
+              case Some(queue) =>
+                // queue should already be ordered by send order
+                val pending = queue.toIndexedSeq
+                def backtrackSetter(idx: Int) {
                   val priorEvent = currentTrace.last
-                  val branchI = currentTrace.length - 1
-                  exploredTracker.setExplored(branchI, (priorEvent, found._1))
-                  queue.dequeueFirst(e => e == found)
-                case None => None
-              }
-            case None =>  None
-          }
+                  val toPlayNext = pending(idx)._1
+                  val commonPrefix = getCommonPrefix(priorEvent, toPlayNext)
+                  val lastElement = commonPrefix.last
+                  val branchI = currentTrace.indexWhere { e => (e == lastElement.value) }
+                  log.trace(s"Setting backtrack@${branchI} ${priorEvent} ${toPlayNext}")
+                  // TODO(cs): too specific to FungibleClockClustering.. we abuse
+                  // the last tuple item to include our remaining WildCards [nextTrace.clone]
+                  // N.B. currentTrace's head is the root event, so we skip over it.
+                  val traceToPlayNext = currentTrace.tail.clone.toList ++ List(toPlayNext) ++ nextTrace.clone.toList
+                  backTrack.enqueue((branchI, (priorEvent, toPlayNext), traceToPlayNext))
+                }
+                val pendingMessages = pending.map { case t => t._3.message }
+                msgSelector(pendingMessages, backtrackSetter) match {
+                  case Some(idx) =>
+                    val found = pending(idx)
+                    // Mark this as done ordering done. // TODO(cs): possibly
+                    // not necessary
+                    val priorEvent = currentTrace.last
+                    val branchI = currentTrace.length - 1
+                    exploredTracker.setExplored(branchI, (priorEvent, found._1))
+                    val msgEvent = found._1.event
+                    queue.dequeueFirst(e => e == found)
+                  case None => None
+                }
+              case None =>  None
+            }
 
         case Some(u @ Unique(MsgEvent(snd, rcv, msg), id)) =>
           // Look at the pending events to see if such message event exists.
-          pendingEvents.get((snd,rcv)) match {
-            case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
-            case None =>  None
-          }
+          if (blockedActors contains rcv)
+            None
+          else
+            pendingEvents.get((snd,rcv)) match {
+              case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
+              case None =>  None
+            }
 
         case Some(u @ Unique(NetworkPartition(_, _), id)) =>
           // Look at the pending events to see if such message event exists.
@@ -543,7 +552,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         case _ => throw new Exception("internal error")
       }
     }
-
+ 
     // Keep looping until we find a pending message that matches.
     // Note that this mutates nextTrace; it pops from the head of the queue
     // until it finds a match or until the queue is empty.
@@ -1110,6 +1119,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   def dpor(trace: Trace) : Option[Trace] = {
     if (!stopWatch.anyTimeLeft) {
+      log.warn("No time left on stopWatch")
       done(depGraph)
       return None
     }
