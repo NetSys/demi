@@ -1110,7 +1110,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   def dpor(trace: Trace) : Option[Trace] = {
     if (!stopWatch.anyTimeLeft) {
-      log.warn("Time Budget Expired!")
+      done(depGraph)
       return None
     }
     interleavingCounter += 1
