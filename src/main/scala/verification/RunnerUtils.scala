@@ -569,7 +569,7 @@ object RunnerUtils {
         violation: ViolationFingerprint,
         actorNameProps: Seq[Tuple2[Props, String]],
         initializationRoutine: Option[() => Any]=None,
-        resolutionStrategy: AmbiguityResolutionStrategy=new BackTrackStrategy,
+        resolutionStrategy: AmbiguityResolutionStrategy=null, // if null, use BackTrackStrategy
         testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
         depGraph: Option[Graph[Unique,DiEdge]]=None,
         preTest: Option[STSScheduler.PreTestCallback]=None,

@@ -57,7 +57,7 @@ class SrcDstFIFOOnly extends AmbiguityResolutionStrategy {
 // For UDP bugs: set a backtrack point every time there are multiple pending
 // messages of the same type, and have DPORwHeuristics go back and explore
 // those.
-class BackTrackStrategy extends AmbiguityResolutionStrategy {
+class BackTrackStrategy(messageFingerprinter: FingerprintFactory) extends AmbiguityResolutionStrategy {
   def resolve(msgSelector: MessageSelector, pending: Seq[Any],
               backtrackSetter: (Int) => Unit) : Option[Int] = {
     val matching = pending.zipWithIndex.filter(
@@ -66,14 +66,15 @@ class BackTrackStrategy extends AmbiguityResolutionStrategy {
     if (!matching.isEmpty) {
       // Set backtrack points, if any, for any messages that are of the same
       // type, but not exactly the same as eachother.
-      val alreadyTried = new HashSet[Any]
-      alreadyTried += matching.head._1
+      val alreadyTried = new HashSet[MessageFingerprint]
+      alreadyTried += messageFingerprinter.fingerprint(matching.head._1)
       // Heuristic: reverse the remaining backtrack points, on the assumption
       // that the last one is more fruitful than the middle ones
       matching.tail.reverse.filter {
         case (msg,i) =>
-          if (!(alreadyTried contains msg)) {
-            alreadyTried += msg
+          val fingerprinted = messageFingerprinter.fingerprint(msg)
+          if (!(alreadyTried contains fingerprinted)) {
+            alreadyTried += fingerprinted
             true
           } else {
             false
@@ -90,7 +91,7 @@ class BackTrackStrategy extends AmbiguityResolutionStrategy {
 }
 
 // Same as above, but only focus on the first and last matching message.
-class FirstAndLastBacktrack extends AmbiguityResolutionStrategy {
+class FirstAndLastBacktrack(messageFingerprinter: FingerprintFactory) extends AmbiguityResolutionStrategy {
   def resolve(msgSelector: MessageSelector, pending: Seq[Any],
               backtrackSetter: (Int) => Unit) : Option[Int] = {
     val matching = pending.zipWithIndex.filter(
@@ -99,12 +100,13 @@ class FirstAndLastBacktrack extends AmbiguityResolutionStrategy {
     if (!matching.isEmpty) {
       // Set backtrack points, if any, for any messages that are of the same
       // type, but not exactly the same as eachother.
-      val alreadyTried = new HashSet[Any]
-      alreadyTried += matching.head._1
-      matching.tail.takeRight(1).filter {
+      val alreadyTried = new HashSet[MessageFingerprint]
+      alreadyTried += messageFingerprinter.fingerprint(matching.head._1)
+      matching.tail.reverse.find {
         case (msg,i) =>
-          if (!(alreadyTried contains msg)) {
-            alreadyTried += msg
+          val fingerprinted = messageFingerprinter.fingerprint(msg)
+          if (!(alreadyTried contains fingerprinted)) {
+            alreadyTried += fingerprinted
             true
           } else {
             false
@@ -145,7 +147,7 @@ class FungibleClockMinimizer(
   actorNameProps: Seq[Tuple2[Props, String]],
   violation: ViolationFingerprint,
   skipClockClusters:Boolean=false, // if true, only explore timers
-  resolutionStrategy: AmbiguityResolutionStrategy=new BackTrackStrategy,
+  resolutionStrategy: AmbiguityResolutionStrategy=null, // if null, use BackTrackStrategy
   testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
   depGraph: Option[Graph[Unique,DiEdge]]=None,
   initializationRoutine: Option[() => Any]=None,
@@ -230,7 +232,9 @@ class FungibleClockMinimizer(
       else Aggressiveness.ALL_TIMERS_FIRST_ITR
 
     val clockClusterizer = new ClockClusterizer(trace,
-      schedulerConfig.messageFingerprinter, resolutionStrategy,
+      schedulerConfig.messageFingerprinter,
+      if (resolutionStrategy != null) resolutionStrategy
+      else new BackTrackStrategy(schedulerConfig.messageFingerprinter),
       skipClockClusters=skipClockClusters,
       aggressiveness=aggressiveness)
 
