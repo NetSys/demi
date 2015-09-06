@@ -597,6 +597,7 @@ object RunnerUtils {
     var externalsSize = dag.length
     val mcs = ddmin.minimize(dag, violation, initializationRoutine)
 
+    // TODO(cs): shutdown the actor system at the end?
     if (mcs.length < externalsSize) {
       printMCS(mcs.events)
       logger.info("Validating MCS...")

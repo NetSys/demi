@@ -444,6 +444,7 @@ class Instrumenter {
   def reset_per_system_state() {
     actorMappings.clear()
     preStartCalled.clear()
+    // TODO(cs): seenActors might not be per-system state?
     seenActors.clear()
     allowedEvents.clear()
     dispatchers.clear()

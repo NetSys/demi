@@ -197,7 +197,15 @@ class FungibleClockMinimizer(
       actorNameProps.map(t => t._2), false)
 
     dpor.setInitialTrace(uniques)
-    return dpor.test(filtered_externals, violation, stats)
+    val ret = dpor.test(filtered_externals, violation, stats)
+    // DPORwHeuristics doesn't play nicely with other schedulers, so we need
+    // to clean up after it.
+    // Counterintuitively, use a dummy Replayer to do this, since
+    // DPORwHeuristics doesn't have shutdownSemaphore.
+    val replayer = new ReplayScheduler(schedulerConfig, false)
+    Instrumenter().scheduler = replayer
+    replayer.shutdown()
+    return ret
   }
 
   def testWithSTSSched(nextTrace: EventTrace, stats: MinimizationStats,
@@ -285,15 +293,6 @@ class FungibleClockMinimizer(
     }
     _stats.record_prune_end
 
-    if (testScheduler == TestScheduler.DPORwHeuristics) {
-      // DPORwHeuristics doesn't play nicely with other schedulers, so we need
-      // to clean up after it.
-      // Counterintuitively, use a dummy Replayer to do this, since
-      // DPORwHeuristics doesn't have shutdownSemaphore.
-      val replayer = new ReplayScheduler(schedulerConfig, false)
-      Instrumenter().scheduler = replayer
-      replayer.shutdown()
-    }
     return (_stats, minTrace)
   }
 }
