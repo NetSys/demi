@@ -4,6 +4,7 @@ import static java.lang.Thread.sleep;
 
 import akka.dispatch.verification.Instrumenter;
 import akka.dispatch.verification.WrappedCancellable;
+import akka.dispatch.verification.ShutdownHandler;
 
 import akka.actor.ActorRef;
 import akka.actor.ScalaActorRef;
@@ -28,6 +29,7 @@ import akka.dispatch.Envelope;
 import akka.dispatch.MessageQueue;
 import akka.dispatch.MessageDispatcher;
 import akka.dispatch.Mailbox;
+import akka.dispatch.MonitorableThreadFactory;
 
 import scala.concurrent.impl.CallbackRunnable;
 import scala.concurrent.duration.FiniteDuration;
@@ -38,6 +40,25 @@ import java.lang.Runnable;
 
 privileged public aspect WeaveActor {
   Instrumenter inst = Instrumenter.apply();
+
+  // Don't allow LightArrayRevolverScheduler to restart its timer thread.
+  // TODO(cs): much cleaner would be to not use Thread.stop(), and figure out
+  // what's really causing this memory leak...
+  Object around(MonitorableThreadFactory me):
+  execution(* akka.dispatch.MonitorableThreadFactory.newThread(Runnable)) &&
+  this(me) {
+    if (me.name().contains("scheduler") && me.counter().get() > 1) {
+      return null;
+    }
+    return proceed(me);
+  }
+
+  // Prevent memory leaks when the ActorSystem crashes?
+  Object around(ActorSystemImpl me):
+  execution(* akka.actor.ActorSystemImpl.uncaughtExceptionHandler(..)) &&
+  this(me) {
+    return ShutdownHandler.getHandler(me);
+  }
   
   before(ActorCell me, Object msg):
   execution(* akka.actor.ActorCell.receiveMessage(Object)) &&

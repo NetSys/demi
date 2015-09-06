@@ -479,6 +479,23 @@ class Instrumenter {
 
     shutdownCallback()
 
+    // TODO(cs): Hack: manually stop [depecrated!] all threads from previous
+    // actor systems, until we figure out what really causing the memory
+    // leak.
+    if (_actorSystem != null) {
+      val itr = Thread.getAllStackTraces().keySet().iterator
+      val currentSystemNumber = Instrumenter.getSystemNumber(_actorSystem.name).get
+      while (itr.hasNext) {
+        val next = itr.next
+        Instrumenter.getSystemNumber(next.getName) match {
+          case Some(n)  if next != Thread.currentThread && n < currentSystemNumber=>
+            //next.interrupt()
+            next.stop
+          case _ =>
+        }
+      }
+    }
+
     _actorSystem = ActorSystem("new-system-" + counter, defaultAkkaConfig)
     _random = new Random(0)
     counter += 1
@@ -1112,6 +1129,14 @@ object Instrumenter {
     // https://github.com/akka/akka/blob/release-2.2/akka-actor/src/main/scala/akka/pattern/AskSupport.scala#L334
     return callStack.contains("ask$extension")
   }
+
+  val systemNameRegex = ".*-system-(\\d+).*".r
+  def getSystemNumber(threadName: String) : Option[Int] = {
+    threadName match {
+      case systemNameRegex(number) => Some(number.toInt)
+      case _ => None
+    }
+  }
 }
 
 // Wraps a scala.function0 scheduled through akka.scheduler.schedule, but its
@@ -1135,4 +1160,13 @@ case class ScheduleBlock(f: Function0[Any], cell: Cell) {
   def apply(): Any = {
     return f()
   }
+}
+
+// Prevent memory leaks?
+object ShutdownHandler {
+  def getHandler(system: ActorSystemImpl): Thread.UncaughtExceptionHandler =
+    new Thread.UncaughtExceptionHandler() {
+      def uncaughtException(thread: Thread, cause: Throwable): Unit = {
+      }
+    }
 }
