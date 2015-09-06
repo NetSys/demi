@@ -260,12 +260,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   }
 
   private[this] def getPathLength(event: Unique) : Int = {
-    val graphNode = depGraph.get(event)
-    val rootNode = depGraph.get(getRootEvent)
-    return graphNode.pathTo(rootNode) match {
-      case Some(p) => p.length
-      case _ =>
-        throw new Exception("Unexpected path")
+    depGraph.synchronized {
+      val graphNode = depGraph.get(event)
+      val rootNode = depGraph.get(getRootEvent)
+      return graphNode.pathTo(rootNode) match {
+        case Some(p) => p.length
+        case _ =>
+          throw new Exception("Unexpected path")
+      }
     }
   }
 
@@ -277,27 +279,31 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   private[this] def addGraphNode (event: Unique) = {
     require(event != null)
-    depGraph.add(event)
-    quiescentPeriod(event) = currentQuiescentPeriod
+    depGraph.synchronized {
+      depGraph.add(event)
+      quiescentPeriod(event) = currentQuiescentPeriod
+    }
   }
 
   // Before adding a new WaitQuiescence/NetworkPartition/NetworkUnpartition to depGraph,
   // first try to see if it already exists in depGraph.
   def maybeAddGraphNode(unique: Unique): Unique = {
-    depGraph.get(currentRoot).inNeighbors.find {
-      x => x.value match {
-        case Unique(WaitQuiescence(), id) =>
-          log.debug("Existing WaitQuiescence: " + id + ". looking for: " + unique.id)
-          id == unique.id
-        case _ => false
+    depGraph.synchronized {
+      depGraph.get(currentRoot).inNeighbors.find {
+        x => x.value match {
+          case Unique(WaitQuiescence(), id) =>
+            log.debug("Existing WaitQuiescence: " + id + ". looking for: " + unique.id)
+            id == unique.id
+          case _ => false
+        }
+      } match {
+        case Some(e) =>
+          return e.value
+        case None =>
+          addGraphNode(unique)
+          depGraph.addEdge(unique, currentRoot)(DiEdge)
+          return unique
       }
-    } match {
-      case Some(e) =>
-        return e.value
-      case None =>
-        addGraphNode(unique)
-        depGraph.addEdge(unique, currentRoot)(DiEdge)
-        return unique
     }
   }
 
@@ -853,7 +859,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         nextTrace ++= tr
         origNextTraceSize = nextTrace.size
         initialGraph match {
-          case Some(gr) => depGraph ++= gr
+          case Some(gr) =>
+            depGraph.synchronized {
+              depGraph ++= gr
+            }
           case _ => throw new Exception("Must supply a dependency graph with a trace")
         }
       case _ =>
@@ -890,17 +899,24 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         case e => throw new IllegalStateException("Not a MsgEvent: " + e)
       }
     }
-
-    val inNeighs = depGraph.get(parent).inNeighbors
-    inNeighs.find { x => matchMessage(x.value.event) } match {
-      case Some(x) => return x.value
-      case None =>
-        val newMsg = Unique(msgEvent)
-        log.trace(
-            Console.YELLOW + "Not seen: " + newMsg.id +
-            " (" + msgEvent.sender + " -> " + msgEvent.receiver + ") " + msgEvent.msg + Console.RESET)
-        return newMsg
-      case _ => throw new Exception("wrong type")
+    depGraph.synchronized {
+      val parentNode = try {
+          depGraph.get(parent)
+      } catch {
+        case e: java.util.NoSuchElementException =>
+          throw new IllegalStateException(s"No such parent ${parent}")
+      }
+      val inNeighs = parentNode.inNeighbors
+      inNeighs.find { x => matchMessage(x.value.event) } match {
+        case Some(x) => return x.value
+        case None =>
+          val newMsg = Unique(msgEvent)
+          log.trace(
+              Console.YELLOW + "Not seen: " + newMsg.id +
+              " (" + msgEvent.sender + " -> " + msgEvent.receiver + ") " + msgEvent.msg + Console.RESET)
+          return newMsg
+        case _ => throw new Exception("wrong type")
+      }
     }
   }
 
@@ -941,8 +957,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             "(" + msg.sender + " -> " + msg.receiver + ") " +
             id + Console.RESET)
 
-        addGraphNode(unique)
-        depGraph.addEdge(unique, parentEvent)(DiEdge)
+        depGraph.synchronized {
+          addGraphNode(unique)
+          depGraph.addEdge(unique, parentEvent)(DiEdge)
+        }
     }
   }
 
@@ -1093,28 +1111,30 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
   private[dispatch] def getCommonPrefix(earlier: Unique,
                                         later: Unique) : Seq[DPORwHeuristics.this.depGraph.NodeT]= {
-    val rootN = ( depGraph get getRootEvent )
-    // Get the actual nodes in the dependency graph that
-    // correspond to those events
-    val earlierN = (depGraph get earlier)
-    val laterN = (depGraph get later)
+    depGraph.synchronized {
+      val rootN = ( depGraph get getRootEvent )
+      // Get the actual nodes in the dependency graph that
+      // correspond to those events
+      val earlierN = (depGraph get earlier)
+      val laterN = (depGraph get later)
 
-    // Get the dependency path between later event and the
-    // root event (root node) in the system.
-    val laterPath = laterN.pathTo(rootN) match {
-      case Some(path) => path.nodes.toList.reverse
-      case None => throw new Exception("no such path")
+      // Get the dependency path between later event and the
+      // root event (root node) in the system.
+      val laterPath = laterN.pathTo(rootN) match {
+        case Some(path) => path.nodes.toList.reverse
+        case None => throw new Exception("no such path")
+      }
+
+      // Get the dependency path between earlier event and the
+      // root event (root node) in the system.
+      val earlierPath = earlierN.pathTo(rootN) match {
+        case Some(path) => path.nodes.toList.reverse
+        case None => throw new Exception("no such path")
+      }
+
+      // Find the common prefix for the above paths.
+      return laterPath.intersect(earlierPath)
     }
-
-    // Get the dependency path between earlier event and the
-    // root event (root node) in the system.
-    val earlierPath = earlierN.pathTo(rootN) match {
-      case Some(path) => path.nodes.toList.reverse
-      case None => throw new Exception("no such path")
-    }
-
-    // Find the common prefix for the above paths.
-    return laterPath.intersect(earlierPath)
   }
 
   def dpor(trace: Trace) : Option[Trace] = {
@@ -1123,218 +1143,221 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       done(depGraph)
       return None
     }
-    interleavingCounter += 1
-    val root = getEvent(0, currentTrace)
-    val rootN = ( depGraph get getRootEvent )
 
-    val racingIndices = new HashSet[Integer]
+    depGraph.synchronized {
+      interleavingCounter += 1
+      val root = getEvent(0, currentTrace)
+      val rootN = ( depGraph get getRootEvent )
 
-    /**
-     *  Analyze the dependency between two events that are co-enabled
-     ** and have the same receiver.
-     *
-     ** @param earleirI: Index of the earlier event.
-     ** @param laterI: Index of the later event.
-     ** @param trace: The trace to which the events belong to.
-     *
-     ** @return none
-     */
-    def analyze_dep(earlierI: Int, laterI: Int, trace: Trace):
-    Option[(Int, List[Unique])] = {
-      // Retrieve the actual events.
-      val earlier = getEvent(earlierI, trace)
-      val later = getEvent(laterI, trace)
+      val racingIndices = new HashSet[Integer]
 
-      (earlier.event, later.event) match {
-        // Since the later event is completely independent, we
-        // can simply move it in front of the earlier event.
-        // This might cause the earlier event to become disabled,
-        // but we have no way of knowing.
-        case (_: MsgEvent, _: NetworkPartition) =>
-          val branchI = earlierI - 1
-          val needToReplay = List(later, earlier)
+      /**
+       *  Analyze the dependency between two events that are co-enabled
+       ** and have the same receiver.
+       *
+       ** @param earleirI: Index of the earlier event.
+       ** @param laterI: Index of the later event.
+       ** @param trace: The trace to which the events belong to.
+       *
+       ** @return none
+       */
+      def analyze_dep(earlierI: Int, laterI: Int, trace: Trace):
+      Option[(Int, List[Unique])] = {
+        // Retrieve the actual events.
+        val earlier = getEvent(earlierI, trace)
+        val later = getEvent(laterI, trace)
 
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
+        (earlier.event, later.event) match {
+          // Since the later event is completely independent, we
+          // can simply move it in front of the earlier event.
+          // This might cause the earlier event to become disabled,
+          // but we have no way of knowing.
+          case (_: MsgEvent, _: NetworkPartition) =>
+            val branchI = earlierI - 1
+            val needToReplay = List(later, earlier)
 
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        case (_: NetworkPartition, _: MsgEvent) =>
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
+            exploredTracker.setExplored(branchI, (earlier, later))
+            return Some((branchI, needToReplay))
 
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
+          // Similarly, we move an earlier independent event
+          // just after the later event. None of the two event
+          // will become disabled in this case.
+          case (_: NetworkPartition, _: MsgEvent) =>
+            val branchI = earlierI - 1
+            val needToReplay = currentTrace.clone()
+              .drop(earlierI + 1)
+              .take(laterI - earlierI)
+              .toList :+ earlier
 
-        // Since the later event is completely independent, we
-        // can simply move it in front of the earlier event.
-        // This might cause the earlier event to become disabled,
-        // but we have no way of knowing.
-        case (_: MsgEvent, _: NetworkUnpartition) =>
-          val branchI = earlierI - 1
-          val needToReplay = List(later, earlier)
+            exploredTracker.setExplored(branchI, (earlier, later))
+            return Some((branchI, needToReplay))
 
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
+          // Since the later event is completely independent, we
+          // can simply move it in front of the earlier event.
+          // This might cause the earlier event to become disabled,
+          // but we have no way of knowing.
+          case (_: MsgEvent, _: NetworkUnpartition) =>
+            val branchI = earlierI - 1
+            val needToReplay = List(later, earlier)
 
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        case (_: NetworkUnpartition, _: MsgEvent) =>
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
+            exploredTracker.setExplored(branchI, (earlier, later))
+            return Some((branchI, needToReplay))
 
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
+          // Similarly, we move an earlier independent event
+          // just after the later event. None of the two event
+          // will become disabled in this case.
+          case (_: NetworkUnpartition, _: MsgEvent) =>
+            val branchI = earlierI - 1
+            val needToReplay = currentTrace.clone()
+              .drop(earlierI + 1)
+              .take(laterI - earlierI)
+              .toList :+ earlier
 
-        case (_: MsgEvent, _: MsgEvent) =>
-          val commonPrefix = getCommonPrefix(earlier, later)
+            exploredTracker.setExplored(branchI, (earlier, later))
+            return Some((branchI, needToReplay))
 
-          // Figure out where in the provided trace this needs to be
-          // replayed. In other words, get the last element of the
-          // common prefix and figure out which index in the trace
-          // it corresponds to.
-          val lastElement = commonPrefix.last
-          val branchI = trace.indexWhere { e => (e == lastElement.value) }
+          case (_: MsgEvent, _: MsgEvent) =>
+            val commonPrefix = getCommonPrefix(earlier, later)
 
-          val needToReplay = currentTrace.clone()
-            .drop(branchI + 1)
-            .dropRight(currentTrace.size - laterI - 1)
-            .filter { x => x.id != earlier.id }
+            // Figure out where in the provided trace this needs to be
+            // replayed. In other words, get the last element of the
+            // common prefix and figure out which index in the trace
+            // it corresponds to.
+            val lastElement = commonPrefix.last
+            val branchI = trace.indexWhere { e => (e == lastElement.value) }
 
-          require(branchI < laterI)
+            val needToReplay = currentTrace.clone()
+              .drop(branchI + 1)
+              .dropRight(currentTrace.size - laterI - 1)
+              .filter { x => x.id != earlier.id }
 
-          // Since we're dealing with the vertices and not the
-          // events, we need to extract the values.
-          val needToReplayV = needToReplay.toList
+            require(branchI < laterI)
 
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplayV))
+            // Since we're dealing with the vertices and not the
+            // events, we need to extract the values.
+            val needToReplayV = needToReplay.toList
+
+            exploredTracker.setExplored(branchI, (earlier, later))
+            return Some((branchI, needToReplayV))
+        }
+        return None
       }
-      return None
-    }
 
-    /** Figure out if two events are co-enabled.
-     *
-     * See if there is a path from the later event to the
-     * earlier event on the dependency graph. If such
-     * path does exist, this means that one event disables
-     * the other one.
-     *
-     ** @param earlier: First event
-     ** @param later: Second event
-     *
-     ** @return: Boolean
-     */
-    def isCoEnabeled(earlier: Unique, later: Unique) : Boolean = (earlier, later) match {
-      // Quiescence is never co-enabled
-      case (Unique(WaitQuiescence(), _), _) => false
-      case (_, Unique(WaitQuiescence(), _)) => false
-      // Network partitions and unpartitions with interesection are not coenabled (cheap hack to
-      // prevent us from trying reordering these directly). We need to do something smarter maybe
-      case (Unique(p1: NetworkPartition, _), Unique(p2: NetworkPartition, _)) => false
-      case (Unique(u1: NetworkUnpartition, _), Unique(u2: NetworkUnpartition, _)) => false
-      case (Unique(p1: NetworkPartition, _), Unique(u2: NetworkUnpartition, _)) => false
-      case (Unique(u1: NetworkUnpartition, _), Unique(p2: NetworkPartition, _)) => false
-      // NetworkPartition is always co-enabled with any other event.
-      case (Unique(p : NetworkPartition, _), _) => true
-      case (_, Unique(p : NetworkPartition, _)) => true
-      // NetworkUnpartition is always co-enabled with any other event.
-      case (Unique(p : NetworkUnpartition, _), _) => true
-      case (_, Unique(p : NetworkUnpartition, _)) => true
-      case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
-        if (m1.receiver != m2.receiver)
-          return false
-        if (quiescentPeriod.get(earlier).get != quiescentPeriod.get(later).get) {
-          return false
-        }
-        val earlierN = (depGraph get earlier)
-        val laterN = (depGraph get later)
+      /** Figure out if two events are co-enabled.
+       *
+       * See if there is a path from the later event to the
+       * earlier event on the dependency graph. If such
+       * path does exist, this means that one event disables
+       * the other one.
+       *
+       ** @param earlier: First event
+       ** @param later: Second event
+       *
+       ** @return: Boolean
+       */
+      def isCoEnabeled(earlier: Unique, later: Unique) : Boolean = (earlier, later) match {
+        // Quiescence is never co-enabled
+        case (Unique(WaitQuiescence(), _), _) => false
+        case (_, Unique(WaitQuiescence(), _)) => false
+        // Network partitions and unpartitions with interesection are not coenabled (cheap hack to
+        // prevent us from trying reordering these directly). We need to do something smarter maybe
+        case (Unique(p1: NetworkPartition, _), Unique(p2: NetworkPartition, _)) => false
+        case (Unique(u1: NetworkUnpartition, _), Unique(u2: NetworkUnpartition, _)) => false
+        case (Unique(p1: NetworkPartition, _), Unique(u2: NetworkUnpartition, _)) => false
+        case (Unique(u1: NetworkUnpartition, _), Unique(p2: NetworkPartition, _)) => false
+        // NetworkPartition is always co-enabled with any other event.
+        case (Unique(p : NetworkPartition, _), _) => true
+        case (_, Unique(p : NetworkPartition, _)) => true
+        // NetworkUnpartition is always co-enabled with any other event.
+        case (Unique(p : NetworkUnpartition, _), _) => true
+        case (_, Unique(p : NetworkUnpartition, _)) => true
+        case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
+          if (m1.receiver != m2.receiver)
+            return false
+          if (quiescentPeriod.get(earlier).get != quiescentPeriod.get(later).get) {
+            return false
+          }
+          val earlierN = (depGraph get earlier)
+          val laterN = (depGraph get later)
 
-        val coEnabeled = laterN.pathTo(earlierN) match {
-          case None => true
-          case _ => false
-        }
+          val coEnabeled = laterN.pathTo(earlierN) match {
+            case None => true
+            case _ => false
+          }
 
-        return coEnabeled
-    }
+          return coEnabeled
+      }
 
-    /*
-     * For every event in the trace (called later),
-     * see if there is some earlier event, such that:
-     *
-     * 0) They belong to the same receiver.
-     * 1) They are co-enabled.
-     * 2) Such interleaving hasn't been explored before.
-     */
-    if (!skipBacktrackComputation) {
-      log.trace(Console.GREEN+ "Computing backtrack points. This may take awhile..." + Console.RESET)
-      for(laterI <- 0 to trace.size - 1) {
-        val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
+      /*
+       * For every event in the trace (called later),
+       * see if there is some earlier event, such that:
+       *
+       * 0) They belong to the same receiver.
+       * 1) They are co-enabled.
+       * 2) Such interleaving hasn't been explored before.
+       */
+      if (!skipBacktrackComputation) {
+        log.trace(Console.GREEN+ "Computing backtrack points. This may take awhile..." + Console.RESET)
+        for(laterI <- 0 to trace.size - 1) {
+          val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
 
-        for(earlierI <- 0 to laterI - 1) {
-          val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, trace)
+          for(earlierI <- 0 to laterI - 1) {
+            val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, trace)
 
-          if (isCoEnabeled(earlier, later)) {
-            analyze_dep(earlierI, laterI, trace) match {
-              case Some((branchI, needToReplayV)) =>
-                // Since we're exploring an already executed trace, we can
-                // safely mark the interleaving of (earlier, later) as
-                // already explored.
-                backTrack.enqueue((branchI, (later, earlier), needToReplayV))
-              case None => // Nothing
+            if (isCoEnabeled(earlier, later)) {
+              analyze_dep(earlierI, laterI, trace) match {
+                case Some((branchI, needToReplayV)) =>
+                  // Since we're exploring an already executed trace, we can
+                  // safely mark the interleaving of (earlier, later) as
+                  // already explored.
+                  backTrack.enqueue((branchI, (later, earlier), needToReplayV))
+                case None => // Nothing
+              }
             }
           }
         }
       }
-    }
 
-    def getNext() : Option[(Int, (Unique, Unique), Seq[Unique])] = {
-      // If the backtrack set is empty, this means we're done.
-      if (backTrack.isEmpty ||
-          (should_cap_distance && backtrackHeuristic.getDistance(backTrack.head) >= stop_at_distance)) {
-        log.info("Tutto finito!")
-        done(depGraph)
-        return None
-      }
-
-      backtrackHeuristic.clearKey(backTrack.head)
-      val (maxIndex, (e1, e2), replayThis) = backTrack.dequeue
-
-      exploredTracker.isExplored((e1, e2)) match {
-        case true =>
-          log.debug("Skipping backTrack point: " + e1 + " " + e2)
-          return getNext()
-        case false => return Some((maxIndex, (e1, e2), replayThis))
-      }
-    }
-
-    getNext() match {
-      case Some((maxIndex, (e1, e2), replayThis)) =>
-        log.info(Console.RED + "Exploring a new message interleaving " +
-           e1 + " and " + e2  + " at index " + maxIndex + Console.RESET)
-
-        exploredTracker.setExplored(maxIndex, (e1, e2))
-        // TODO(cs): the following optimization is not correct if we don't
-        // explore in depth-first order. Figure out how to make it correct.
-        //exploredTracker.trimExplored(maxIndex)
-        //exploredTracker.printExplored()
-
-        if (skipBacktrackComputation) {
-          return Some(new Queue[Unique] ++ replayThis)
-        } else {
-          return Some(trace.take(maxIndex + 1) ++ replayThis)
+      def getNext() : Option[(Int, (Unique, Unique), Seq[Unique])] = {
+        // If the backtrack set is empty, this means we're done.
+        if (backTrack.isEmpty ||
+            (should_cap_distance && backtrackHeuristic.getDistance(backTrack.head) >= stop_at_distance)) {
+          log.info("Tutto finito!")
+          done(depGraph)
+          return None
         }
-      case None =>
-        return None
-    }
+
+        backtrackHeuristic.clearKey(backTrack.head)
+        val (maxIndex, (e1, e2), replayThis) = backTrack.dequeue
+
+        exploredTracker.isExplored((e1, e2)) match {
+          case true =>
+            log.debug("Skipping backTrack point: " + e1 + " " + e2)
+            return getNext()
+          case false => return Some((maxIndex, (e1, e2), replayThis))
+        }
+      }
+
+      getNext() match {
+        case Some((maxIndex, (e1, e2), replayThis)) =>
+          log.info(Console.RED + "Exploring a new message interleaving " +
+             e1 + " and " + e2  + " at index " + maxIndex + Console.RESET)
+
+          exploredTracker.setExplored(maxIndex, (e1, e2))
+          // TODO(cs): the following optimization is not correct if we don't
+          // explore in depth-first order. Figure out how to make it correct.
+          //exploredTracker.trimExplored(maxIndex)
+          //exploredTracker.printExplored()
+
+          if (skipBacktrackComputation) {
+            return Some(new Queue[Unique] ++ replayThis)
+          } else {
+            return Some(trace.take(maxIndex + 1) ++ replayThis)
+          }
+        case None =>
+          return None
+      }
+    } // } depGraph.synchronized
   }
 
   def setInvariant(invariant: Invariant) {
