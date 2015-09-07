@@ -174,6 +174,15 @@ object RunnerUtils {
         case None =>
       }
 
+      // Record progress as DPOR goes along.
+      def recordProgressCallback(currentTrace: EventTrace) {
+        val statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
+          schedulerConfig.messageFingerprinter)
+        currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+        ExperimentSerializer.recordMinimizationStats(output_dir, currentStats)
+      }
+      DPORwHeuristics.setProgressCallback(recordProgressCallback)
+
       // Now run the gamut
       gamut.foreach {
         case minimizer =>
@@ -196,18 +205,7 @@ object RunnerUtils {
               namedTraces = namedTraces :+ ((i.name, currentTrace.copy))
           }
 
-          // Record progress as DPOR goes along.
-          def recordProgressCallback(currentTrace: EventTrace) {
-            val statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
-              schedulerConfig.messageFingerprinter)
-            currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
-            ExperimentSerializer.recordMinimizationStats(output_dir, currentStats)
-          }
-          // Need to set this callback after the first currentStats is bound,
-          // i.e. not None.
-          DPORwHeuristics.setProgressCallback(recordProgressCallback)
-
-          // Also record stats now that we've finished.
+          // record stats now that we've finished.
           val statsTuple =  RunnerUtils.extractDeliveryStats(currentTrace,
             schedulerConfig.messageFingerprinter)
           currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
