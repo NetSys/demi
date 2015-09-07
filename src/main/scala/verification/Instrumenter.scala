@@ -431,7 +431,10 @@ class Instrumenter {
     }
    
     val event = new SpawnEvent(currentActor, props, name, actor)
-    scheduler.event_produced(event : SpawnEvent)
+
+    scheduler.synchronized {
+      scheduler.event_produced(event : SpawnEvent)
+    }
     scheduler.event_consumed(event)
 
     if (!started.get) {
@@ -631,7 +634,10 @@ class Instrumenter {
     assert(inActor.get)
     inActor.set(false)
 
-    scheduler.schedule_new_message(blockedActors.keySet) match {
+    val new_message = scheduler.synchronized {
+      scheduler.schedule_new_message(blockedActors.keySet)
+    }
+    new_message match {
       // Note that dispatch_new_message is a non-blocking call; it hands off
       // the message to a new thread and returns immediately.
       case Some((new_cell, envelope)) =>
@@ -700,7 +706,10 @@ class Instrumenter {
 
     scheduler.after_receive(cell)
 
-    scheduler.schedule_new_message(blockedActors.keySet) match {
+    val new_message = scheduler.synchronized {
+      scheduler.schedule_new_message(blockedActors.keySet)
+    }
+    new_message match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name
         if (blockedActors contains dst) {
@@ -743,7 +752,9 @@ class Instrumenter {
       // Create a fake ActorCell and Envelope and give it to scheduler.
       val cell = new FakeCell(temp)
       val env = Envelope.apply(msg, sender, _actorSystem)
-      scheduler.event_produced(cell, env)
+      scheduler.synchronized {
+        scheduler.event_produced(cell, env)
+      }
       return false
     }
     // Else it was just scheduled for delivery immediately before this method
@@ -779,7 +790,10 @@ class Instrumenter {
       inActor.set(false)
       currentPendingDispatch.set(None)
       dispatchAfterAskAnswer.set(false)
-      scheduler.schedule_new_message(blockedActors.keySet) match {
+      val new_message = scheduler.synchronized {
+        scheduler.schedule_new_message(blockedActors.keySet)
+      }
+      new_message match {
         case Some((new_cell, envelope)) =>
           val dst = new_cell.self.path.name
           if (blockedActors contains dst) {
@@ -843,7 +857,10 @@ class Instrumenter {
       // Keep the scheduling loop going -- need to explicitly call
       // schedule_new_message, since afterMessageReceive will not be invoked.
       logger.trace("Dispatching after kicking off schedule block!")
-      scheduler.schedule_new_message(blockedActors.keySet) match {
+      val new_message = scheduler.synchronized {
+        scheduler.schedule_new_message(blockedActors.keySet)
+      }
+      new_message match {
         case Some((new_cell, envelope)) =>
           val dst = new_cell.self.path.name
           if (blockedActors contains dst) {
@@ -960,7 +977,9 @@ class Instrumenter {
 
     // Record that this event was produced. The scheduler is responsible for 
     // kick starting processing.
-    scheduler.event_produced(cell, envelope)
+    scheduler.synchronized {
+      scheduler.event_produced(cell, envelope)
+    }
     tellEnqueue.enqueue()
     return false
   }
@@ -971,7 +990,10 @@ class Instrumenter {
     assert(!started.get)
     started.set(true)
     logger.debug("start_dispatch. Dispatching!")
-    scheduler.schedule_new_message(blockedActors.keySet) match {
+    val new_message = scheduler.synchronized {
+      scheduler.schedule_new_message(blockedActors.keySet)
+    }
+    new_message match {
       case Some((new_cell, envelope)) =>
         val dst = new_cell.self.path.name
         if (blockedActors contains dst) {
