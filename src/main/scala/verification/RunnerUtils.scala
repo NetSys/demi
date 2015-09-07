@@ -569,7 +569,7 @@ object RunnerUtils {
         violation: ViolationFingerprint,
         actorNameProps: Seq[Tuple2[Props, String]],
         initializationRoutine: Option[() => Any]=None,
-        resolutionStrategy: AmbiguityResolutionStrategy=new BackTrackStrategy,
+        resolutionStrategy: AmbiguityResolutionStrategy=null, // if null, use BackTrackStrategy
         testScheduler:TestScheduler.TestScheduler=TestScheduler.STSSched,
         depGraph: Option[Graph[Unique,DiEdge]]=None,
         preTest: Option[STSScheduler.PreTestCallback]=None,
@@ -597,6 +597,7 @@ object RunnerUtils {
     var externalsSize = dag.length
     val mcs = ddmin.minimize(dag, violation, initializationRoutine)
 
+    // TODO(cs): shutdown the actor system at the end?
     if (mcs.length < externalsSize) {
       printMCS(mcs.events)
       logger.info("Validating MCS...")
