@@ -512,8 +512,9 @@ class Instrumenter {
       while (itr.hasNext) {
         val next = itr.next
         Instrumenter.getSystemNumber(next.getName) match {
-          case Some(n)  if next != Thread.currentThread && n < currentSystemNumber=>
+          case Some(n) if next != Thread.currentThread && n < currentSystemNumber =>
             //next.interrupt()
+            logger.debug(s"stop()ing ${next.getName}")
             next.stop
           case _ =>
         }
