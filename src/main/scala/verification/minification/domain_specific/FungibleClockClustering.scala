@@ -382,6 +382,8 @@ class ClockClusterizer(
 
     val events = new SynchronizedQueue[Event]
     events ++= originalTrace.events.flatMap {
+      case u @ UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) if EventTypes.isExternal(u) =>
+        Some(u)
       case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
         if (currentTimers contains id) {
           Some(UniqueMsgEvent(MsgEvent(snd,rcv,
