@@ -177,7 +177,10 @@ class Instrumenter {
       """.stripMargin)
   }
 
-  def actorCrashed(actorName: String, exc: Exception) {
+  def actorCrashed(actorName: String, exc: Exception): Unit = {
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return
+    }
     actorMappings.synchronized {
       if (!(actorMappings contains actorName)) {
         return
@@ -310,7 +313,11 @@ class Instrumenter {
     }
   }
 
-  def mailboxIdle(mbox: Mailbox) = {
+  def mailboxIdle(mbox: Mailbox) : Unit = {
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return
+    }
+
     var shouldDispatch = false
     _dispatchAfterMailboxIdleLock.synchronized {
       if (_dispatchAfterMailboxIdle != "" && mbox.actor != null && mbox.actor.self.path.name == _dispatchAfterMailboxIdle) {
@@ -338,6 +345,10 @@ class Instrumenter {
    *    scheduler.enqueue_message.
    */
   def tell(receiver: ActorRef, msg: Any, sender: ActorRef) : Boolean = {
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return false
+    }
+
     // Crucial property: if this is an external thread and STS2 is currently
     // sendingKnownExternalMessages, block here until STS2 is done!
     val sendingKnown = sendingKnownExternalMessages.synchronized {
@@ -382,6 +393,9 @@ class Instrumenter {
   }
   
   def blockUntilPreStartCalled(ref: ActorRef) {
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return
+    }
     preStartCalled.synchronized {
       while (!(preStartCalled contains ref)) {
         preStartCalled.wait
@@ -391,6 +405,9 @@ class Instrumenter {
   }
 
   def preStartCalled(ref: ActorRef) {
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return
+    }
     preStartCalled.synchronized {
       preStartCalled += ref
       preStartCalled.notifyAll
@@ -406,6 +423,10 @@ class Instrumenter {
     }
 
     if (actor.toString.contains("/system") || name == "/" || actor.path.name == "user") {
+      return
+    }
+
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
       return
     }
    
@@ -592,6 +613,9 @@ class Instrumenter {
     if (_passThrough.get()) {
       return
     }
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return
+    }
 
     if ((!Instrumenter.threadNameIsAkkaInternal) ||
         sendingKnownExternalMessages.get) {
@@ -697,6 +721,10 @@ class Instrumenter {
       return true
     }
 
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return false
+    }
+
     if (!(tempToParent contains temp.path)) {
       // temp actor was spawned by an external thread
       return true
@@ -742,7 +770,10 @@ class Instrumenter {
     return true
   }
 
-  def afterReceiveAskAnswer(temp: PromiseActorRef, msg: Any, sender: ActorRef) = {
+  def afterReceiveAskAnswer(temp: PromiseActorRef, msg: Any, sender: ActorRef) : Unit = {
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return
+    }
     if (dispatchAfterAskAnswer.get) {
       logger.trace("Dispatching after receiveAskAnswer")
       inActor.set(false)
@@ -959,6 +990,9 @@ class Instrumenter {
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
                           receiver: String, msg: Any) {
+    if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
+      return
+    }
     var _msg = msg
 
     timerToCancellable.synchronized {
@@ -1135,6 +1169,14 @@ object Instrumenter {
     threadName match {
       case systemNameRegex(number) => Some(number.toInt)
       case _ => None
+    }
+  }
+
+  def threadDoesntBelongToSystem(system: ActorSystem): Boolean = {
+    if (system == null) return false
+    getSystemNumber(Thread.currentThread.getName) match {
+      case Some(n) => n < getSystemNumber(system.name).get
+      case _ => false // Does belong by default
     }
   }
 }
