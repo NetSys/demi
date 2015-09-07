@@ -154,13 +154,27 @@ object RunnerUtils {
       var currentExternals : Seq[ExternalEvent] = Seq.empty
       var namedTraces : Seq[(String,EventTrace)] = Seq.empty
 
-      // Start with a fencepost stats
+      // Start with fencepost stats for original and provenance traces.
       var currentStats = new MinimizationStats
       currentStats.updateStrategy("FENCEPOST", "OriginalExecution")
-      val statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
+      var statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
         schedulerConfig.messageFingerprinter)
       currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
 
+      filteredTrace match {
+        case Some(trace) =>
+          val deliveries = RunnerUtils.getProvenanceDeliveries(trace,
+            schedulerConfig.messageFingerprinter)
+          val tuple = ((deliveries, RunnerUtils.count_externals(deliveries),
+            RunnerUtils.count_timers(deliveries)))
+          currentStats.updateStrategy("FENCEPOST", "Provenance")
+          statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
+            schedulerConfig.messageFingerprinter)
+          currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+        case None =>
+      }
+
+      // Now run the gamut
       gamut.foreach {
         case minimizer =>
           minimizer match {
@@ -929,6 +943,29 @@ object RunnerUtils {
       RunnerUtils.count_timers(deliveries)))
   }
 
+  // Assumes get_filtered_initial_trace only contains Unique(MsgEvent)s
+  def getProvenanceDeliveries(trace: Queue[Unique],
+                              messageFingerprinter: FingerprintFactory) : Seq[MsgEvent] = {
+    trace.flatMap {
+      case Unique(m @ MsgEvent(s,r,msg), id) =>
+        if (MessageTypes.fromFailureDetector(msg) ||
+            MessageTypes.fromCheckpointCollector(msg)) {
+          None
+        } else if (id == 0) {
+          // Filter out root event
+          None
+        } else {
+          val fingerprint = messageFingerprinter.fingerprint(msg)
+          if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
+            Some(MsgEvent("Timer", r, msg))
+          } else {
+            Some(MsgEvent(s, r, msg))
+          }
+        }
+      case e => throw new UnsupportedOperationException("Non-MsgEvent:" + e)
+    }
+  }
+
   // Slight misnomer: stats as in "interesting numbers", not
   // MinimizationStatistics object.
   def printMinimizationStats(original_experiment_dir: String,
@@ -1009,35 +1046,14 @@ object RunnerUtils {
       }
     }
 
-    // Assumes get_filtered_initial_trace only contains Unique(MsgEvent)s
-    def getProvenanceDeliveries(trace: Queue[Unique]) : Seq[MsgEvent] = {
-      trace.flatMap {
-         case Unique(m @ MsgEvent(s,r,msg), id) =>
-           if (MessageTypes.fromFailureDetector(msg) ||
-               MessageTypes.fromCheckpointCollector(msg)) {
-             None
-           } else if (id == 0) {
-             // Filter out root event
-             None
-           } else {
-             val fingerprint = messageFingerprinter.fingerprint(msg)
-             if ((s == "deadLetters" || s == "Timer") && BaseFingerprinter.isFSMTimer(fingerprint)) {
-               Some(MsgEvent("Timer", r, msg))
-             } else {
-               Some(MsgEvent(s, r, msg))
-             }
-           }
-         case e => throw new UnsupportedOperationException("Non-MsgEvent:" + e)
-       }
-     }
-
     val printer = new OrderedTracePrinter
     printer.appendTrace("Original",
       RunnerUtils.extractDeliveryStats(origTrace, messageFingerprinter))
 
     provenanceTrace match {
       case Some(trace) =>
-        val deliveries = getProvenanceDeliveries(trace)
+        val deliveries = RunnerUtils.getProvenanceDeliveries(trace,
+          messageFingerprinter)
         val tuple = ((deliveries, RunnerUtils.count_externals(deliveries),
           RunnerUtils.count_timers(deliveries)))
         printer.appendTrace("Provenance", tuple, externalsUnchanged=true)
