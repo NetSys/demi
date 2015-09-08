@@ -431,12 +431,23 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     // Find equivalent messages to the one we are currently looking for.
     def equivalentTo(u1: Unique, other: (Unique, Cell, Envelope)) :
     Boolean = (u1, other._1) match {
+      // Accomodate FungibleClockCluster, which may pass in externals as
+      // initialTrace without knowing what the depGraph looks like.
+      // TODO(cs): bad separation of concerns.
+      case (Unique(m1 @ MsgEvent(_, rcv1, msg1), -1),
+            Unique(m2 @ MsgEvent(_, rcv2, msg2), id2))
+        if (EventTypes.isExternal(m1) && EventTypes.isExternal(m2)) =>
+        rcv1 == rcv2 &&
+        schedulerConfig.messageFingerprinter.fingerprint(msg1) ==
+          schedulerConfig.messageFingerprinter.fingerprint(msg2)
+
       case (Unique(MsgEvent(_, rcv1, _), id1),
             Unique(MsgEvent(_, rcv2, _), id2) ) =>
         // If the ID is zero, this means it's a system message.
         // In that case compare only the receivers.
         if (id1 == 0) rcv1 == rcv2
         else rcv1 == rcv2 && id1 == id2
+
       case (Unique(_, id1), Unique(_, id2) ) => id1 == id2
       case _ => false
     }
