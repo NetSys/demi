@@ -1197,10 +1197,13 @@ object Instrumenter {
 
   def threadDoesntBelongToSystem(system: ActorSystem): Boolean = {
     if (system == null) return false
-    getSystemNumber(Thread.currentThread.getName) match {
-      case Some(n) => n < getSystemNumber(system.name).get
-      case _ => false // Does belong by default
-    }
+    return false
+    // TODO(cs): doesn't work during transitions from old systems to new
+    // systems.
+    //getSystemNumber(Thread.currentThread.getName) match {
+    //  case Some(n) => n < getSystemNumber(system.name).get
+    //  case _ => false // Does belong by default
+    //}
   }
 }
 
