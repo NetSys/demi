@@ -252,7 +252,8 @@ class FungibleClockMinimizer(
     var minTrace = trace
 
     var nextTrace = clockClusterizer.getNextTrace(false, Set[Int]())
-    _stats.record_prune_start
+    // don't overwrite prune start if we're being used as a TestOracle
+    if (!skipClockClusters) _stats.record_prune_start
     while (!nextTrace.isEmpty) {
       val ignoredAbsentIndices = new HashSet[Int]
       def ignoreAbsentCallback(idx: Int) {
@@ -291,7 +292,8 @@ class FungibleClockMinimizer(
       }
       nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
     }
-    _stats.record_prune_end
+    // don't overwrite prune end if we're being used as a TestOracle
+    if (!skipClockClusters) _stats.record_prune_end
 
     return (_stats, minTrace)
   }
