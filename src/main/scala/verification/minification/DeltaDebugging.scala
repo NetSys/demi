@@ -88,13 +88,10 @@ class DDMin (oracle: TestOracle, checkUnmodifed:Boolean=false,
     for ((split, i) <- splits.zipWithIndex) {
       val union = split.union(remainder)
       logger.info("Checking split " + union.get_all_events.map(e => e.label).mkString(","))
-      val passes = oracle.test(union.get_all_events, violation_fingerprint,
-        _stats, initializationRoutine=initializationRoutine) == None
-      // There may have been many replays since the last time we recorded
-      // iteration size; record each one's iteration size from before we invoked test()
-      for (i <- (_stats.inner().iteration until _stats.inner().total_replays)) {
-        _stats.record_iteration_size(original_num_events - total_inputs_pruned)
-      }
+      val trace = oracle.test(union.get_all_events, violation_fingerprint,
+        _stats, initializationRoutine=initializationRoutine)
+      val passes = trace == None
+      _stats.record_iteration_size(original_num_events - total_inputs_pruned)
       if (!passes) {
         logger.info("Split fails. Recursing")
         total_inputs_pruned += (dag.length - split.length)
