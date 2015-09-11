@@ -168,9 +168,7 @@ object RunnerUtils {
           val tuple = ((deliveries, RunnerUtils.count_externals(deliveries),
             RunnerUtils.count_timers(deliveries)))
           currentStats.updateStrategy("FENCEPOST", "Provenance")
-          statsTuple = RunnerUtils.extractDeliveryStats(currentTrace,
-            schedulerConfig.messageFingerprinter)
-          currentStats.recordDeliveryStats(statsTuple._1.size, statsTuple._2, statsTuple._3)
+          currentStats.recordDeliveryStats(tuple._1.size, tuple._2, tuple._3)
         case None =>
       }
 

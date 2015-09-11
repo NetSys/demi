@@ -43,6 +43,7 @@ class STSSchedMinimizer(
 
     val origTrace = verified_mcs.filterCheckpointMessages.filterFailureDetectorMessages
     var lastFailingTrace = origTrace
+    var lastFailingSize = RunnerUtils.countMsgEvents(lastFailingTrace.filterCheckpointMessages.filterFailureDetectorMessages)
     // { (snd,rcv,fingerprint) }
     val prunedOverall = new MultiSet[(String,String,MessageFingerprint)]
     // TODO(cs): make this more efficient? Currently O(n^2) overall.
@@ -87,9 +88,12 @@ class STSSchedMinimizer(
 
           lastFailingTrace = filteredTrace
           lastFailingTrace.setOriginalExternalEvents(mcs)
+          lastFailingSize = newSize
+          _stats.record_internal_size(lastFailingSize)
         case None =>
           // We didn't trigger the violation.
           violationTriggered = false
+          _stats.record_internal_size(lastFailingSize)
           logger.info("Ignoring didn't work.")
           None
       }

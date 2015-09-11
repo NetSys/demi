@@ -33,7 +33,7 @@ set style line 4 lt rgb "#F25900" lw 2 pt 9
 
 set key top right
 
-set ylabel "Number of Remaining Inputs"
+set ylabel "Number of Remaining Events"
 set xlabel "Number of Replays Executed"
 
 set yrange [0:]

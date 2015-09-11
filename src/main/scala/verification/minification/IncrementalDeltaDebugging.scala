@@ -32,10 +32,9 @@ class IncrementalDDMin (oracle: ResumableDPOR, maxMaxDistance:Int=256,
   private[this] def mergeStats(otherStats: MinimizationStats) {
     // Increment keys in otherStats.iterationSize by my current iteration
     for ((k, v) <- otherStats.inner().iterationSize) {
-      _stats.inner().iterationSize(k + _stats.inner().iteration) = v
+      _stats.inner().iterationSize(k + _stats.inner().total_replays) = v
     }
     // Now increment my own iteration
-    _stats.inner().iteration += otherStats.inner().iteration
     _stats.inner().total_replays += otherStats.inner().total_replays
     // Ignore otherStats.stats
   }

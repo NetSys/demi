@@ -267,6 +267,11 @@ class FungibleClockMinimizer(
           resetCallback, dporBudgetSeconds)
         else testWithSTSSched(nextTrace.get, _stats, ignoreAbsentCallback)
 
+      // Record interation size if we're being used for internal minimization
+      if (!skipClockClusters) {
+        _stats.record_internal_size(RunnerUtils.countMsgEvents(minTrace))
+      }
+
       var ignoredAbsentIds = Set[Int]()
       if (!ret.isEmpty) {
         log.info("Pruning was successful.")
@@ -292,8 +297,13 @@ class FungibleClockMinimizer(
       }
       nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
     }
+
     // don't overwrite prune end if we're being used as a TestOracle
-    if (!skipClockClusters) _stats.record_prune_end
+    if (!skipClockClusters) {
+      _stats.record_prune_end
+      // Fencepost
+      _stats.record_internal_size(RunnerUtils.countMsgEvents(minTrace))
+    }
 
     return (_stats, minTrace)
   }

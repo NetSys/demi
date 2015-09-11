@@ -73,8 +73,16 @@ class MinimizationStats {
     inner().record_prune_end
   }
 
+  // For external events (legacy name), record how many external events were
+  // left at the given iteration (replay #)
   def record_iteration_size(iteration_size: Integer) {
     inner().record_iteration_size(iteration_size)
+  }
+
+  // For internal events, record how many internal events were left at the
+  // given iteration (replay #)
+  def record_internal_size(iteration_size: Integer) {
+    inner().record_internal_size(iteration_size)
   }
 
   def record_distance_increase(newDistance: Integer) {
@@ -96,7 +104,10 @@ object MinimizationStats {
   class InnerStats(name: String) {
     // For the ith replay attempt, how many external events were left?
     val iterationSize = new HashMap[Int, Int]
-    var iteration = 0
+
+    // For the ith replay attempt, how many internal events were left?
+    val internalIterationSize = new HashMap[Int, Int]
+
     // For each increase in maxDistance, what was the current iteration when the
     // increase occurred? (See IncrementalDeltaDebugging.scala)
     // { new maxDistance -> current iteration }
@@ -113,8 +124,8 @@ object MinimizationStats {
 
     def reset() {
       iterationSize.clear
+      internalIterationSize.clear
       maxDistance.clear
-      iteration = 0
       stats.clear
       stats ++= Seq(
         // Overall minimization time
@@ -167,9 +178,16 @@ object MinimizationStats {
         (stats("prune_end_epoch") * 1.0 - stats("prune_start_epoch")) / 1000
     }
 
+    // For external events (legacy name), record how many external events were
+    // left at the given iteration (replay #)
     def record_iteration_size(iteration_size: Int) {
-      iterationSize(iteration) = iteration_size
-      iteration += 1
+      iterationSize(total_replays) = iteration_size
+    }
+
+    // For internal events, record how many internal events were left at the
+    // given iteration (replay #)
+    def record_internal_size(iteration_size: Integer) {
+      internalIterationSize(total_replays) = iteration_size
     }
 
     def recordDeliveryStats(minimized_deliveries: Int, minimized_externals: Int,
@@ -180,13 +198,15 @@ object MinimizationStats {
     }
 
     def record_distance_increase(newDistance: Int) {
-      maxDistance(newDistance) = iteration
+      maxDistance(newDistance) = total_replays
     }
 
     def toJson(): JSONObject = {
       val map = new HashMap[String, Any]
       map("name") = name
       map("iteration_size") = JSONObject(iterationSize.map(
+        pair => pair._1.toString -> pair._2).toMap)
+      map("internal_iteration_size") = JSONObject(internalIterationSize.map(
         pair => pair._1.toString -> pair._2).toMap)
       map("total_replays") = total_replays
       map("maxDistance") = JSONObject(maxDistance.map(
@@ -208,6 +228,8 @@ object MinimizationStats {
         innerObj.maxDistance(k.toInt) = v.asInstanceOf[Double].toInt }
       inner("iteration_size").asInstanceOf[Map[String,Any]].foreach { case (k,v) =>
         innerObj.iterationSize(k.toInt) = v.asInstanceOf[Double].toInt }
+      inner("internal_iteration_size").asInstanceOf[Map[String,Any]].foreach { case (k,v) =>
+        innerObj.internalIterationSize(k.toInt) = v.asInstanceOf[Double].toInt }
       outerObj.stats += innerObj
     }
     return outerObj
