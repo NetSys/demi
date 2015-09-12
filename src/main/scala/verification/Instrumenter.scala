@@ -989,6 +989,9 @@ class Instrumenter {
   // actually kickstarting things. 
   def start_dispatch() {
     assert(!started.get)
+    if (!EventTypes.externalMessageFilterHasBeenSet) {
+      throw new RuntimeException("Need to set EventTypes.externalMessageFilterHasBeenSet")
+    }
     started.set(true)
     logger.debug("start_dispatch. Dispatching!")
     val new_message = scheduler.synchronized {

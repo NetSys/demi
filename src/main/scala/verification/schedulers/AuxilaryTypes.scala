@@ -126,9 +126,11 @@ final case class TimerDelivery(sender: String, receiver: String, fingerprint: Ti
 
 object EventTypes {
   // Should return true if the given message is an external message
+  var externalMessageFilterHasBeenSet = false
   var externalMessageFilter: (Any) => Boolean = (_) => false
   // Should be set by applications during initialization.
   def setExternalMessageFilter(filter: (Any) => Boolean) {
+    externalMessageFilterHasBeenSet = true
     externalMessageFilter = filter
   }
 
