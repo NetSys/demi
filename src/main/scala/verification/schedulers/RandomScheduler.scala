@@ -23,8 +23,6 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-// TODO(cs): SrcDstFIFO is broken in the presence of blocked actors.
-
 /**
  * Takes a list of ExternalEvents as input, and explores random interleavings
  * of internal messages until either a maximum number of interleavings is
@@ -439,12 +437,21 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
 
     // Find a non-blocked destination
     var toSchedule: Option[Tuple2[Uniq[(Cell,Envelope)],Unique]] = None
-    pendingEvents.synchronized {
-      toSchedule = Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
-        blockedActors,
-        pendingEvents,
-        () => pendingEvents.removeRandomElement,
-        (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name)
+    // Hack: SrcDstFIFO doesn't play nicely with Util.find_non_blocked_message
+    // in the presense of blocked actors. Rather than finding a nicer
+    // interface, just do type casting.
+    if (pendingEvents.isInstanceOf[SrcDstFIFO]) {
+      toSchedule = pendingEvents.synchronized {
+        pendingEvents.asInstanceOf[SrcDstFIFO].getNonBlockedMessage(blockedActors)
+      }
+    } else {
+      toSchedule = pendingEvents.synchronized {
+        Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
+          blockedActors,
+          pendingEvents,
+          () => pendingEvents.removeRandomElement,
+          (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name)
+      }
     }
 
     toSchedule match {
@@ -700,6 +707,34 @@ class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) 
   // random order.
   private val timersAndExternals = new FullyRandom(userDefinedFilter=userDefinedFilter)
 
+  def getNonBlockedMessage(blockedActors: scala.collection.immutable.Set[String]): Option[(Uniq[(Cell,Envelope)],Unique)] = {
+    // Blocked actors should in general be much smaller than srcDsts, so
+    // copying all of srcDsts is probably more expensive than just trying
+    // randomly.
+    // TODO(cs): still kludgy, find a better way.
+    if (blockedActors.size == srcDsts.size) {
+      return None
+    }
+    var idx = rand.nextInt(srcDsts.size)
+    while (blockedActors contains srcDsts.get(idx)._2) {
+      idx = rand.nextInt(srcDsts.size)
+    }
+    val srcDst = srcDsts.get(idx)
+    return Some(dequeue(srcDst, idx))
+  }
+
+  private def dequeue(srcDst: (String,String), idx: Int): (Uniq[(Cell,Envelope)],Unique) = {
+    var queue = srcDstToMessages(srcDst)
+    assert(!queue.isEmpty)
+    val ret = queue.dequeue
+    if (queue.isEmpty) {
+      srcDstToMessages -= srcDst
+      srcDsts.remove(idx)
+    }
+    allMessages -= ret
+    return ret
+  }
+
   def getRandomSrcDst(ignore:Set[Int]=Set.empty): ((String, String), Int) = synchronized {
     var idx = rand.nextInt(srcDsts.size)
     // TODO(cs): unfortunate algorithm; not guarenteed to finish. Do this in a
@@ -785,13 +820,7 @@ class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) 
       return t
     }
 
-    queue.dequeue
-    if (queue.isEmpty) {
-      srcDstToMessages -= srcDst
-      srcDsts.remove(idx)
-    }
-    allMessages -= ret
-    return ret
+    return dequeue(srcDst, idx)
   }
 
   def remove(src: String, dst: String, msg: Any): Option[(Uniq[(Cell,Envelope)],Unique)] = synchronized {
