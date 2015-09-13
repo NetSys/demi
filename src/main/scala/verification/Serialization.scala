@@ -135,10 +135,10 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
           Some(UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
             message_fingerprinter.fingerprint(nestedMsg), repeat, generation)), id=id))
         // Need to serialize external messages
-        case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
+        case u @ UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) if EventTypes.isExternal(u) =>
           Some(SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
             message_serializer.serialize(msg).array()), id))
-        case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
+        case u @ UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) if EventTypes.isExternal(u) =>
           Some(SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
             message_serializer.serialize(msg).array()), id))
         // Only need to serialize fingerprints for all other messages
