@@ -1264,7 +1264,7 @@ case class ScheduleBlock(f: Function0[Any], cell: Cell) {
     val callStack = Thread.currentThread.getStackTrace.drop(6)
     val min3 = math.min(3, callStack.length)
     var truncated = callStack.take(min3).toList
-    return truncated.map(e => e.getFileName + ":" + e.getLineNumber).mkString("-")
+    return truncated.map(e => e.getFileName + ":" + e.getMethodName).mkString("-")
   }
 
   override def toString(): String = {
