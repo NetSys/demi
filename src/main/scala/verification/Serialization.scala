@@ -10,6 +10,8 @@ import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.SynchronizedQueue
 
+import scala.collection.JavaConversions._
+
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
@@ -70,12 +72,26 @@ object ExperimentSerializer {
   // trace that was manipulated by hand
   val manualTrace = "/manualTrace.bin"
 
+  def top_level_prefix(): String = {
+    // TODO(cs): use a string builder
+    var prefix = "."
+
+    def areWeThereYet(): Boolean = {
+      return (new java.io.File(prefix)).listFiles().exists(_.getName == "interposition")
+    }
+
+    while (!areWeThereYet) {
+      prefix = prefix + "/.."
+    }
+    return prefix + "/"
+  }
+
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
     var output_dir = ""
     val errToDevNull = BasicIO(false, (out) => output_dir = out, None)
     val basename = ("basename " + experiment_name).!!
-    var cmd = "./interposition/src/main/python/setup.py"
+    var cmd = top_level_prefix + "./interposition/src/main/python/setup.py"
     if (add_timestamp) {
       cmd = cmd + " -t"
     }
