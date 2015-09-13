@@ -353,6 +353,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     // First, check if we've found the violation. If so, stop.
     violationFound match {
       case Some(fingerprint) =>
+        logger.debug("schedule_new_message: violationFound")
         return None
       case None =>
         None
@@ -360,6 +361,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
 
     // Also check if the WaitCondition is true. If so, quiesce.
     if (checkWaitCondition) {
+      logger.debug("schedule_new_message: checkWaitCondition")
       return None
     }
 
@@ -385,6 +387,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         // Return early if we found one.
         violationFound match {
           case Some(fingerprint) =>
+            logger.debug("schedule_new_message: violationFound")
             return None
           case None =>
             None
@@ -476,6 +479,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
         updateRepeatingTimer(uniq.element)
         return Some(uniq.element)
       case None =>
+        logger.debug("schedule_new_message: no non-blocked messages")
         return None
     }
   }
@@ -707,14 +711,42 @@ class SrcDstFIFO (userDefinedFilter: (String, String, Any) => Boolean = (_,_,_) 
   // random order.
   private val timersAndExternals = new FullyRandom(userDefinedFilter=userDefinedFilter)
 
+  // TODO(cs): support user defined filter? Really, should just find a better
+  // interace, and get rid of this method altogether
   def getNonBlockedMessage(blockedActors: scala.collection.immutable.Set[String]): Option[(Uniq[(Cell,Envelope)],Unique)] = {
+    if (!srcDstToMessages.keys.exists(t => !(blockedActors contains t._2))) {
+      // Only timers left
+      val t = Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
+        blockedActors,
+        timersAndExternals,
+        () => timersAndExternals.removeRandomElement,
+        (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name)
+      if (!t.isEmpty) {
+        allMessages -= t.get
+      }
+      return t
+    }
+
+    // First check whether we should choose a timer
+    var timer: Option[(Uniq[(Cell,Envelope)],Unique)] = None
+    if (rand.nextInt(allMessages.size) < timersAndExternals.size) {
+      timer = Util.find_non_blocked_message[Tuple2[Uniq[(Cell,Envelope)],Unique]](
+        blockedActors,
+        timersAndExternals,
+        () => timersAndExternals.removeRandomElement,
+        (e: Tuple2[Uniq[(Cell,Envelope)],Unique]) => e._1.element._1.self.path.name)
+    }
+
+    if (!timer.isEmpty) {
+      allMessages -= timer.get
+      return timer
+    }
+
+    // Otherwise choose a normal message
     // Blocked actors should in general be much smaller than srcDsts, so
     // copying all of srcDsts is probably more expensive than just trying
     // randomly.
     // TODO(cs): still kludgy, find a better way.
-    if (blockedActors.size == srcDsts.size) {
-      return None
-    }
     var idx = rand.nextInt(srcDsts.size)
     while (blockedActors contains srcDsts.get(idx)._2) {
       idx = rand.nextInt(srcDsts.size)
