@@ -122,6 +122,7 @@ object RunnerUtils {
                   schedulerConfig: SchedulerConfig,
                   msgSerializer: MessageSerializer,
                   msgDeserializer: MessageDeserializer,
+                  loader:ClassLoader=ClassLoader.getSystemClassLoader(),
                   paranoid: Boolean=true,
                   timeBudgetSeconds:Long=(60*60*4:Long), // 4 hours per minimizer
                   shouldRerunDDMin:(Seq[ExternalEvent] => Boolean)=(_)=>true) {
@@ -131,8 +132,8 @@ object RunnerUtils {
       msgSerializer)
 
     // -- mostly for printing stats --
-    val (traceFound, _, _) = RunnerUtils.deserializeExperiment(original_dir, msgDeserializer)
-    val filteredTrace = new ExperimentDeserializer(original_dir).get_filtered_initial_trace
+    val (traceFound, _, _) = RunnerUtils.deserializeExperiment(original_dir, msgDeserializer, loader=loader)
+    val filteredTrace = new ExperimentDeserializer(original_dir, loader=loader).get_filtered_initial_trace
     // -- --
 
     trait Minimizer
@@ -217,7 +218,7 @@ object RunnerUtils {
       }
     }
 
-    val deserializer = new ExperimentDeserializer(output_dir)
+    val deserializer = new ExperimentDeserializer(output_dir, loader=loader)
 
     val violationFound = deserializer.get_violation(msgDeserializer)
     val actors = ExperimentSerializer.getActorNameProps(traceFound)
@@ -393,9 +394,10 @@ object RunnerUtils {
   def deserializeExperiment(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
       scheduler: ExternalEventInjector[_] with Scheduler=null, // if null, use dummy
-      traceFile:String=ExperimentSerializer.event_trace):
+      traceFile:String=ExperimentSerializer.event_trace,
+      loader:ClassLoader=ClassLoader.getSystemClassLoader()) :
                   Tuple3[EventTrace, ViolationFingerprint, Option[Graph[Unique, DiEdge]]] = {
-    val deserializer = new ExperimentDeserializer(experiment_dir)
+    val deserializer = new ExperimentDeserializer(experiment_dir, loader=loader)
     val _scheduler = if (scheduler == null)
       new ReplayScheduler(SchedulerConfig())
       else scheduler
@@ -415,10 +417,12 @@ object RunnerUtils {
   def deserializeMCS(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
       scheduler: ExternalEventInjector[_] with Scheduler=null,
-      skipStats: Boolean=false): // if null, use dummy
+      skipStats: Boolean=false, // if null, use dummy
+      loader:ClassLoader=ClassLoader.getSystemClassLoader()) :
         Tuple5[Seq[ExternalEvent], EventTrace, ViolationFingerprint,
                Seq[Tuple2[Props, String]], MinimizationStats] = {
-    val deserializer = new ExperimentDeserializer(experiment_dir)
+    val deserializer = new ExperimentDeserializer(experiment_dir,
+      loader=loader)
     val _scheduler = if (scheduler == null)
       new ReplayScheduler(SchedulerConfig())
       else scheduler
