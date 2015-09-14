@@ -66,6 +66,18 @@ def setup_experiment(args, config):
   #   if os.path.abspath(config_file) != os.path.abspath(canonical_config_file):
   #     shutil.copy(config_file, canonical_config_file)
 
+def top_level_prefix():
+  # TODO(cs): use a string builder
+  prefix = "."
+
+  def areWeThereYet(prefix):
+    return "interposition" in os.listdir(prefix)
+
+  while (not areWeThereYet(prefix)):
+    prefix = prefix + "/.."
+
+  return prefix + "/"
+
 
 if __name__ == '__main__':
   description = """
@@ -93,5 +105,8 @@ if __name__ == '__main__':
   class Config(object):
     pass
   config = Config()
+
+  os.chdir(top_level_prefix())
+
   setup_experiment(args, config)
-  print config.results_dir
+  print os.path.abspath(config.results_dir)
