@@ -123,6 +123,7 @@ object RunnerUtils {
                   msgSerializer: MessageSerializer,
                   msgDeserializer: MessageDeserializer,
                   loader:ClassLoader=ClassLoader.getSystemClassLoader(),
+                  atomIndices:Option[Seq[(Int,Int)]]=None, // Hack: remove after we serialize EventDags to disk
                   paranoid: Boolean=true,
                   populateActors:Boolean=true,
                   timeBudgetSeconds:Long=(60*60*4:Long), // 4 hours per minimizer
@@ -229,6 +230,24 @@ object RunnerUtils {
       ExperimentSerializer.getActorNameProps(traceFound)
       else Seq.empty
 
+    val dag = atomIndices match {
+      case Some(seq) =>
+        val d = new UnmodifiedEventDag(traceFound.original_externals flatMap {
+          case WaitQuiescence() => None
+          case WaitCondition(_) => None
+          case e => Some(e)
+        })
+        // Conjoin the HardKill and the subsequent recover
+        seq.foreach {
+          case ((i1, i2)) =>
+            d.conjoinAtoms(traceFound.original_externals(i1),
+                           traceFound.original_externals(i2))
+        }
+
+        Some(d)
+      case _ => None
+    }
+
     run(Seq(
       Some(new ExternalMinimizer("DDMin") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
@@ -238,6 +257,7 @@ object RunnerUtils {
             violationFound,
             actorNameProps=Some(actors),
             stats=Some(currentStats),
+            dag=dag,
             initializationRoutine=initializationRoutine,
             preTest=preTest,
             postTest=postTest)
