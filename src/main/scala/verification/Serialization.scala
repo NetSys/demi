@@ -10,6 +10,8 @@ import scala.collection.mutable.Queue
 import scala.collection.mutable.HashMap
 import scala.collection.mutable.SynchronizedQueue
 
+import scala.collection.JavaConversions._
+
 import scalax.collection.mutable.Graph,
        scalax.collection.GraphEdge.DiEdge,
        scalax.collection.edge.LDiEdge
@@ -35,9 +37,10 @@ trait MessageDeserializer {
   def deserialize(buf: ByteBuffer): Any
 }
 
-class BasicMessageDeserializer extends MessageDeserializer {
+class BasicMessageDeserializer(loader:ClassLoader=ClassLoader.getSystemClassLoader())
+      extends MessageDeserializer {
   def deserialize(buf: ByteBuffer): Any = {
-    return JavaSerialization.deserialize[Any](buf)
+    return JavaSerialization.deserialize[Any](buf, loader=loader)
   }
 }
 
@@ -70,12 +73,26 @@ object ExperimentSerializer {
   // trace that was manipulated by hand
   val manualTrace = "/manualTrace.bin"
 
+  def top_level_prefix(): String = {
+    // TODO(cs): use a string builder
+    var prefix = "."
+
+    def areWeThereYet(): Boolean = {
+      return (new java.io.File(prefix)).listFiles().exists(_.getName == "interposition")
+    }
+
+    while (!areWeThereYet) {
+      prefix = prefix + "/.."
+    }
+    return prefix + "/"
+  }
+
   def create_experiment_dir(experiment_name: String, add_timestamp:Boolean=true) : String = {
     // Create experiment dir.
     var output_dir = ""
     val errToDevNull = BasicIO(false, (out) => output_dir = out, None)
     val basename = ("basename " + experiment_name).!!
-    var cmd = "./interposition/src/main/python/setup.py"
+    var cmd = top_level_prefix + "./interposition/src/main/python/setup.py"
     if (add_timestamp) {
       cmd = cmd + " -t"
     }
@@ -119,10 +136,10 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
           Some(UniqueTimerDelivery(TimerDelivery(snd, rcv, TimerFingerprint(name,
             message_fingerprinter.fingerprint(nestedMsg), repeat, generation)), id=id))
         // Need to serialize external messages
-        case UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) =>
+        case u @ UniqueMsgSend(MsgSend("deadLetters", rcv, msg), id) if EventTypes.isExternal(u) =>
           Some(SerializedUniqueMsgSend(SerializedMsgSend("deadLetters", rcv,
             message_serializer.serialize(msg).array()), id))
-        case UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) =>
+        case u @ UniqueMsgEvent(MsgEvent("deadLetters", rcv, msg), id) if EventTypes.isExternal(u) =>
           Some(SerializedUniqueMsgEvent(SerializedMsgEvent("deadLetters", rcv,
             message_serializer.serialize(msg).array()), id))
         // Only need to serialize fingerprints for all other messages
@@ -291,7 +308,7 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
   }
 }
 
-class ExperimentDeserializer(results_dir: String) {
+class ExperimentDeserializer(results_dir: String, loader:ClassLoader=ClassLoader.getSystemClassLoader()) {
   readIfFileExists[Int](results_dir + ExperimentSerializer.idGenerator) match {
     case Some(int) => IDGenerator.uniqueId.set(int)
     case None => None
@@ -300,7 +317,7 @@ class ExperimentDeserializer(results_dir: String) {
   def get_actors() : Seq[Tuple2[Props, String]] = {
     val buf = JavaSerialization.readFromFile(results_dir +
       ExperimentSerializer.actors)
-    return JavaSerialization.deserialize[Array[Tuple2[Props, String]]](buf)
+    return JavaSerialization.deserialize[Array[Tuple2[Props, String]]](buf, loader=loader)
   }
 
   def get_violation(message_deserializer: MessageDeserializer): ViolationFingerprint = {
@@ -312,13 +329,13 @@ class ExperimentDeserializer(results_dir: String) {
   def get_mcs(): Seq[ExternalEvent] = {
     val buf = JavaSerialization.readFromFile(results_dir +
       ExperimentSerializer.mcs)
-    return JavaSerialization.deserialize[Array[ExternalEvent]](buf)
+    return JavaSerialization.deserialize[Array[ExternalEvent]](buf, loader=loader)
   }
 
   private[this] def readIfFileExists[T](file: String): Option[T] = {
    if (new java.io.File(file).exists) {
       val buf = JavaSerialization.readFromFile(file)
-      val result = JavaSerialization.deserialize[T](buf)
+      val result = JavaSerialization.deserialize[T](buf, loader=loader)
       return Some(result)
     }
     return None
@@ -369,7 +386,7 @@ class ExperimentDeserializer(results_dir: String) {
                  actorSystem: ActorSystem,
                  traceFile:String=ExperimentSerializer.event_trace) : EventTrace = {
     val buf = JavaSerialization.readFromFile(results_dir + traceFile)
-    val events = JavaSerialization.deserialize[Array[Event]](buf).map(e =>
+    val events = JavaSerialization.deserialize[Array[Event]](buf, loader=loader).map(e =>
       e match {
         case SerializedSpawnEvent(parent, props, name, actor) =>
           // For now, nobody uses the ActorRef field of SpawnEvents, so just
@@ -389,7 +406,7 @@ class ExperimentDeserializer(results_dir: String) {
     // N.B. sbt does some strange things with the class path, and sometimes
     // fails on this line. One way of fixing this: rather than running
     // `sbt run`, invoke `sbt assembly; java -cp /path/to/assembledjar Main`
-    val originalExternals = JavaSerialization.deserialize[Array[ExternalEvent]](originalExternalBuf)
+    val originalExternals = JavaSerialization.deserialize[Array[ExternalEvent]](originalExternalBuf, loader=loader)
 
     val queue = new SynchronizedQueue[Event]
     queue ++= events
@@ -427,11 +444,14 @@ object JavaSerialization {
     }
   }
 
-  def deserialize[T](b: ByteBuffer) : T = {
+  def deserialize[T](b: ByteBuffer, loader:ClassLoader=ClassLoader.getSystemClassLoader()) : T = {
     val bis = new ByteArrayInputStream(b.array())
     var in: ObjectInput = null
     try {
-      in = new ObjectInputStream(bis)
+      in = new ObjectInputStream(bis) {
+        override def resolveClass(desc: ObjectStreamClass) =
+          Class.forName(desc.getName, false, loader)
+      }
       return in.readObject().asInstanceOf[T]
     } finally {
       try {

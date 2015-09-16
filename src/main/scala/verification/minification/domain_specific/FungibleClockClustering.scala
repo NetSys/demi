@@ -247,7 +247,7 @@ class FungibleClockMinimizer(
       aggressiveness=aggressiveness)
 
     // Each cluster gets timeBudgetSeconds / numberOfClusters seconds
-    val dporBudgetSeconds = timeBudgetSeconds / clockClusterizer.approximateIterations
+    val dporBudgetSeconds = timeBudgetSeconds / (List(clockClusterizer.approximateIterations,1).max)
 
     var minTrace = trace
 

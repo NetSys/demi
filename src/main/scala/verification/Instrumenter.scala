@@ -417,7 +417,7 @@ class Instrumenter {
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem, 
       props: Props, name: String, actor: ActorRef) : Unit = {
-
+    
     if (_passThrough.get()) {
       return
     }
@@ -432,10 +432,15 @@ class Instrumenter {
    
     val event = new SpawnEvent(currentActor, props, name, actor)
 
-    scheduler.synchronized {
+    if (Instrumenter.synchronizeOnScheduler) {
+      scheduler.synchronized {
+        scheduler.event_produced(event : SpawnEvent)
+        scheduler.event_consumed(event)
+      }
+    } else {
       scheduler.event_produced(event : SpawnEvent)
+      scheduler.event_consumed(event)
     }
-    scheduler.event_consumed(event)
 
     if (!started.get) {
       seenActors += ((system, (actor, props, name)))
@@ -635,9 +640,14 @@ class Instrumenter {
     assert(inActor.get)
     inActor.set(false)
 
-    val new_message = scheduler.synchronized {
+    val new_message = if (Instrumenter.synchronizeOnScheduler) {
+      scheduler.synchronized {
+        scheduler.schedule_new_message(blockedActors.keySet)
+      }
+    } else {
       scheduler.schedule_new_message(blockedActors.keySet)
     }
+
     new_message match {
       // Note that dispatch_new_message is a non-blocking call; it hands off
       // the message to a new thread and returns immediately.
@@ -707,7 +717,11 @@ class Instrumenter {
 
     scheduler.after_receive(cell)
 
-    val new_message = scheduler.synchronized {
+    val new_message = if (Instrumenter.synchronizeOnScheduler) {
+      scheduler.synchronized {
+        scheduler.schedule_new_message(blockedActors.keySet)
+      }
+    } else {
       scheduler.schedule_new_message(blockedActors.keySet)
     }
     new_message match {
@@ -753,7 +767,11 @@ class Instrumenter {
       // Create a fake ActorCell and Envelope and give it to scheduler.
       val cell = new FakeCell(temp)
       val env = Envelope.apply(msg, sender, _actorSystem)
-      scheduler.synchronized {
+      if (Instrumenter.synchronizeOnScheduler) {
+        scheduler.synchronized {
+          scheduler.event_produced(cell, env)
+        }
+      } else {
         scheduler.event_produced(cell, env)
       }
       return false
@@ -791,9 +809,14 @@ class Instrumenter {
       inActor.set(false)
       currentPendingDispatch.set(None)
       dispatchAfterAskAnswer.set(false)
-      val new_message = scheduler.synchronized {
+      val new_message = if (Instrumenter.synchronizeOnScheduler) {
+        scheduler.synchronized {
+          scheduler.schedule_new_message(blockedActors.keySet)
+        }
+      } else {
         scheduler.schedule_new_message(blockedActors.keySet)
       }
+
       new_message match {
         case Some((new_cell, envelope)) =>
           val dst = new_cell.self.path.name
@@ -858,7 +881,12 @@ class Instrumenter {
       // Keep the scheduling loop going -- need to explicitly call
       // schedule_new_message, since afterMessageReceive will not be invoked.
       logger.trace("Dispatching after kicking off schedule block!")
-      val new_message = scheduler.synchronized {
+
+      val new_message = if (Instrumenter.synchronizeOnScheduler) {
+        scheduler.synchronized {
+          scheduler.schedule_new_message(blockedActors.keySet)
+        }
+      } else {
         scheduler.schedule_new_message(blockedActors.keySet)
       }
       new_message match {
@@ -978,7 +1006,11 @@ class Instrumenter {
 
     // Record that this event was produced. The scheduler is responsible for 
     // kick starting processing.
-    scheduler.synchronized {
+    if (Instrumenter.synchronizeOnScheduler) {
+      scheduler.synchronized {
+        scheduler.event_produced(cell, envelope)
+      }
+    } else {
       scheduler.event_produced(cell, envelope)
     }
     tellEnqueue.enqueue()
@@ -989,9 +1021,17 @@ class Instrumenter {
   // actually kickstarting things. 
   def start_dispatch() {
     assert(!started.get)
+    if (!EventTypes.externalMessageFilterHasBeenSet) {
+      throw new RuntimeException("Need to set EventTypes.externalMessageFilterHasBeenSet")
+    }
     started.set(true)
     logger.debug("start_dispatch. Dispatching!")
-    val new_message = scheduler.synchronized {
+
+    val new_message = if (Instrumenter.synchronizeOnScheduler) {
+      scheduler.synchronized {
+        scheduler.schedule_new_message(blockedActors.keySet)
+      }
+    } else {
       scheduler.schedule_new_message(blockedActors.keySet)
     }
     new_message match {
@@ -1012,13 +1052,19 @@ class Instrumenter {
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
-                          receiver: String, msg: Any) {
+                          receiver: String, msg: Any): Unit = {
     if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
       return
     }
     var _msg = msg
 
     timerToCancellable.synchronized {
+      // TODO(cs): for now, assume that msg's are unique. Don't assume that.
+      if (timerToCancellable contains (receiver, _msg)) {
+        logger.error("Non-unique timer: "+ receiver + " " + _msg)
+        return
+      }
+
       registeredCancellableTasks += c
       if (ongoingTimer) {
         ongoingCancellableTasks += c
@@ -1029,10 +1075,6 @@ class Instrumenter {
         _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]], cell)
       }
       cancellableToTimer(c) = ((receiver, _msg))
-      // TODO(cs): for now, assume that msg's are unique. Don't assume that.
-      if (timerToCancellable contains (receiver, _msg)) {
-        throw new RuntimeException("Non-unique timer: "+ receiver + " " + _msg)
-      }
       timerToCancellable((receiver, _msg)) = c
     }
     // Schedule it immediately!
@@ -1178,6 +1220,12 @@ object Instrumenter {
            !_overrideInternalThreadRule.get()
   }
 
+  // TODO(cs): hack: remove me after deadline.
+  var synchronizeOnScheduler = true
+  def setSynchronizeOnScheduler(doOrDont: Boolean) {
+    synchronizeOnScheduler = doOrDont
+  }
+
   // When a code block is about to be scheduled through
   // akka.scheduler.schedule, check if it's an akka internal code block.
   // TODO(cs): would be nice to have a better interface.
@@ -1218,7 +1266,7 @@ case class ScheduleBlock(f: Function0[Any], cell: Cell) {
     val callStack = Thread.currentThread.getStackTrace.drop(6)
     val min3 = math.min(3, callStack.length)
     var truncated = callStack.take(min3).toList
-    return truncated.map(e => e.getFileName + ":" + e.getLineNumber).mkString("-")
+    return truncated.map(e => e.getFileName + ":" + e.getMethodName).mkString("-")
   }
 
   override def toString(): String = {

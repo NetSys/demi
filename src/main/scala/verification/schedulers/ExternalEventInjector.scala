@@ -248,7 +248,9 @@ trait ExternalEventInjector[E] {
   }
 
   def enqueue_message(sender: Option[ActorRef], actor: ActorRef, msg: Any) {
-    enqueuedExternalMessages += msg
+    enqueuedExternalMessages.synchronized {
+      enqueuedExternalMessages += msg
+    }
 
     // signal to the main thread that it should wake up if it's blocked on
     // external messages
@@ -491,7 +493,9 @@ trait ExternalEventInjector[E] {
         checkpointer.handleCheckpointResponse(envelope.message, snd)
       }
       return CheckpointReplyMessage
-    } else if (enqueuedExternalMessages.contains(envelope.message)) {
+    } else if (enqueuedExternalMessages.synchronized {
+        enqueuedExternalMessages.contains(envelope.message)
+        }) {
       return ExternalMessage
     } else {
       return InternalMessage
@@ -517,8 +521,10 @@ trait ExternalEventInjector[E] {
   def handle_event_consumed(cell: Cell, envelope: Envelope) = {
     val rcv = cell.self.path.name
     val msg = envelope.message
-    if (enqueuedExternalMessages.contains(msg)) {
-      enqueuedExternalMessages -= msg
+    enqueuedExternalMessages.synchronized {
+      if (enqueuedExternalMessages.contains(msg)) {
+        enqueuedExternalMessages -= msg
+      }
     }
     assert(started.get)
     //event_orchestrator.events += ChangeContext(rcv)
