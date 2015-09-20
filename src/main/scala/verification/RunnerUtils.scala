@@ -503,13 +503,15 @@ object RunnerUtils {
                     schedulerConfig: SchedulerConfig,
                     messageDeserializer: MessageDeserializer,
                     allowPeek: Boolean,
-                    stats: Option[MinimizationStats]) :
+                    stats: Option[MinimizationStats],
+                    checkUnmodified: Boolean) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(schedulerConfig, new EventTrace, allowPeek)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
     stsSchedDDMin(allowPeek, schedulerConfig, trace,
-                  violation, _sched=Some(sched), stats=stats)
+                  violation, _sched=Some(sched), stats=stats,
+                  checkUnmodified=checkUnmodified)
   }
 
   // TODO(cs): force this to take an EventDag, so that we don't accidentally
@@ -524,7 +526,8 @@ object RunnerUtils {
                     preTest: Option[STSScheduler.PreTestCallback]=None,
                     postTest: Option[STSScheduler.PostTestCallback]=None,
                     dag: Option[EventDag]=None,
-                    stats: Option[MinimizationStats]=None) :
+                    stats: Option[MinimizationStats]=None,
+                    checkUnmodified:Boolean=false) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = if (_sched != None) _sched.get else
                 new STSScheduler(schedulerConfig, trace, allowPeek)
@@ -542,7 +545,7 @@ object RunnerUtils {
       sched.setActorNamePropPairs(actorNameProps.get)
     }
 
-    val ddmin = new DDMin(sched, stats=stats)
+    val ddmin = new DDMin(sched, stats=stats, checkUnmodifed=checkUnmodified)
     var externalsSize = 0
     val mcs = dag match {
       case Some(d) =>
