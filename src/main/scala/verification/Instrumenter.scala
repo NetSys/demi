@@ -349,6 +349,21 @@ class Instrumenter {
     }
   }
 
+  // In some corner cases, Spark isn't guarenteed that it will be able to
+  // invoke BeginAtomicBlock before Instrumenter.afterMessageReceive() is
+  // invoked (i.e. before Insturmenter moves on with its scheduling.
+  // To handle those cases, have Spark explicitly notify us that immediately
+  // after delivering the next message we should
+  // block until Instrumenter.beginAtomicBlock is invoked.
+  var messagesToBlockAfterToTaskId = new HashMap[Any, Long]
+  def blockForAtomicAfterNextMessage(taskId: Long, message: Any) {
+    logger.trace(s"Instrumenter.blockForAtomicAfterNextMessage $taskId $message")
+    messagesToBlockAfterToTaskId.synchronized {
+      assert(!(messagesToBlockAfterToTaskId contains message))
+      messagesToBlockAfterToTaskId(message) = taskId
+    }
+  }
+
   /**
    * Two cases:
    *  - In a normal `tell` from actor to actor, we need to mark
@@ -702,6 +717,24 @@ class Instrumenter {
         cell.sender.path.name,
         cell.self.path.name,
         msg)) return
+
+    messagesToBlockAfterToTaskId.synchronized {
+      if (messagesToBlockAfterToTaskId contains msg) {
+        // Before we proceed, we need to block until the beginAtomicBlock is
+        // invoked. See: blockForAtomicAfterNextMessage().
+        val taskIdToBlockOn = messagesToBlockAfterToTaskId(msg)
+        logger.debug(s"Blocking until beginAtomicBlock($taskIdToBlockOn) $msg")
+        val beganExternalAtomicBlocks = scheduler.asInstanceOf[ExternalEventInjector[_]].beganExternalAtomicBlocks
+        beganExternalAtomicBlocks.synchronized {
+          while (!(beganExternalAtomicBlocks contains taskIdToBlockOn)) {
+            logger.trace(s"Waiting on beginAtomicBlock($taskIdToBlockOn)")
+            beganExternalAtomicBlocks.wait()
+          }
+        }
+        logger.trace(s"Done blocking on beginAtomicBlock($taskIdToBlockOn)")
+        messagesToBlockAfterToTaskId -= msg
+      }
+    }
 
     if (logger.isTraceEnabled()) {
       logger.trace("afterMessageReceive: just finished: " + cell.sender.path.name + " -> " +
