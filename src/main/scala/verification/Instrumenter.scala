@@ -262,13 +262,17 @@ class Instrumenter {
    * as we replay. See this design doc for more details:
    *   https://docs.google.com/document/d/1rAM8EEy3WnLRhhPROvHmBhAREv0rmihz0Gw0GgF1xC4
    */
-  def assignTempPath(tempPath: ActorPath): ActorPath = synchronized {
+  def assignTempPath(tempPath: ActorPath): ActorPath = {
     val callStack = Thread.currentThread().getStackTrace().map(e => e.getMethodName).drop(14) // drop off common prefix
     val min3 = math.min(3, callStack.length)
     var truncated = callStack.take(min3).toList
-    if (idToPrependToCallStack != "") {
-      truncated = idToPrependToCallStack :: truncated
-      idToPrependToCallStack = ""
+    threadToIdToPrependToTempPath.synchronized {
+      threadToIdToPrependToTempPath.get(Thread.currentThread) match {
+        case Some(id) =>
+          truncated = id :: truncated
+          threadToIdToPrependToTempPath -= Thread.currentThread
+        case None =>
+      }
     }
     val bytes = truncated.mkString("-").getBytes(StandardCharsets.UTF_8)
     val b64 = java.util.Base64.getEncoder.encodeToString(bytes)
@@ -276,17 +280,29 @@ class Instrumenter {
     return path
   }
 
+  val threadToIdToPrependToTempPath = new HashMap[Thread, String]
+
   // In cases where there might be multiple threads with the same callstack
   // invoking `ask`, have them call this with an ID to avoid ambiguity in temp
-  // actor names. Serialized with a lock on the Instrumenter object.
-  var idToPrependToCallStack = ""
-
+  // actor names.
   // linearize == if there are concurrent asks, make sure only one happens at
   // a time.
-  def linearizeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
-    assert(idToPrependToCallStack == "")
-    idToPrependToCallStack = id
-    return ask()
+  def linearizeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = {
+    threadToIdToPrependToTempPath.synchronized {
+      assert(threadToIdToPrependToTempPath.get(Thread.currentThread).isEmpty,
+        s"threadToIdToPrependToTempPath ${threadToIdToPrependToTempPath.get(Thread.currentThread)} != ''")
+      threadToIdToPrependToTempPath(Thread.currentThread) = id
+    }
+    // N.B. assignTempPath should be called directly after this within this same thread, as part
+    // of ask()
+    val future = try {
+      ask()
+    } finally {
+      threadToIdToPrependToTempPath.synchronized {
+        threadToIdToPrependToTempPath -= Thread.currentThread
+      }
+    }
+    return future
   }
 
   def receiverIsAlive(receiver: ActorRef): Boolean = {
