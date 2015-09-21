@@ -356,6 +356,11 @@ class Instrumenter {
   // block until Instrumenter.beginAtomicBlock is invoked.
   var messagesToBlockAfterToTaskId = new HashMap[Any, Long]
   def blockForAtomicAfterNextMessage(taskId: Long, message: Any) {
+    if ((!Instrumenter.threadNameIsAkkaInternal) ||
+        sendingKnownExternalMessages.get) {
+      // External thread (or ScheduleBlock), so we don't care if it blocks.
+      return
+    }
     logger.trace(s"Instrumenter.blockForAtomicAfterNextMessage $taskId $message")
     messagesToBlockAfterToTaskId.synchronized {
       assert(!(messagesToBlockAfterToTaskId contains message))
