@@ -452,7 +452,7 @@ class Instrumenter {
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem,
       props: Props, name: String, actor: ActorRef) : Unit = {
-
+    
     if (_passThrough.get()) {
       return
     }
@@ -1125,13 +1125,19 @@ class Instrumenter {
   // When someone calls akka.actor.schedulerOnce to schedule a Timer, we
   // record the returned Cancellable object here, so that we can cancel it later.
   def registerCancellable(c: Cancellable, ongoingTimer: Boolean,
-                          receiver: String, msg: Any) {
+                          receiver: String, msg: Any): Unit = {
     if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
       return
     }
     var _msg = msg
 
     timerToCancellable.synchronized {
+      // TODO(cs): for now, assume that msg's are unique. Don't assume that.
+      if (timerToCancellable contains (receiver, _msg)) {
+        logger.error("Non-unique timer: "+ receiver + " " + _msg)
+        return
+      }
+
       registeredCancellableTasks += c
       if (ongoingTimer) {
         ongoingCancellableTasks += c
@@ -1142,10 +1148,6 @@ class Instrumenter {
         _msg = new ScheduleBlock(msg.asInstanceOf[Function0[Any]], cell)
       }
       cancellableToTimer(c) = ((receiver, _msg))
-      // TODO(cs): for now, assume that msg's are unique. Don't assume that.
-      if (timerToCancellable contains (receiver, _msg)) {
-        throw new RuntimeException("Non-unique timer: "+ receiver + " " + _msg)
-      }
       timerToCancellable((receiver, _msg)) = c
     }
     // Schedule it immediately!

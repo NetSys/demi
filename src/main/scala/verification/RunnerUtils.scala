@@ -123,6 +123,7 @@ object RunnerUtils {
                   msgSerializer: MessageSerializer,
                   msgDeserializer: MessageDeserializer,
                   loader:ClassLoader=ClassLoader.getSystemClassLoader(),
+                  atomIndices:Option[Seq[(Int,Int)]]=None, // Hack: remove after we serialize EventDags to disk
                   paranoid: Boolean=true,
                   populateActors:Boolean=true,
                   timeBudgetSeconds:Long=(60*60*4:Long), // 4 hours per minimizer
@@ -229,6 +230,24 @@ object RunnerUtils {
       ExperimentSerializer.getActorNameProps(traceFound)
       else Seq.empty
 
+    val dag = atomIndices match {
+      case Some(seq) =>
+        val d = new UnmodifiedEventDag(traceFound.original_externals flatMap {
+          case WaitQuiescence() => None
+          case WaitCondition(_) => None
+          case e => Some(e)
+        })
+        // Conjoin the HardKill and the subsequent recover
+        seq.foreach {
+          case ((i1, i2)) =>
+            d.conjoinAtoms(traceFound.original_externals(i1),
+                           traceFound.original_externals(i2))
+        }
+
+        Some(d)
+      case _ => None
+    }
+
     run(Seq(
       Some(new ExternalMinimizer("DDMin") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
@@ -238,6 +257,7 @@ object RunnerUtils {
             violationFound,
             actorNameProps=Some(actors),
             stats=Some(currentStats),
+            dag=dag,
             initializationRoutine=initializationRoutine,
             preTest=preTest,
             postTest=postTest)
@@ -503,15 +523,13 @@ object RunnerUtils {
                     schedulerConfig: SchedulerConfig,
                     messageDeserializer: MessageDeserializer,
                     allowPeek: Boolean,
-                    stats: Option[MinimizationStats],
-                    checkUnmodified: Boolean) :
+                    stats: Option[MinimizationStats]) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(schedulerConfig, new EventTrace, allowPeek)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
     stsSchedDDMin(allowPeek, schedulerConfig, trace,
-                  violation, _sched=Some(sched), stats=stats,
-                  checkUnmodified=checkUnmodified)
+                  violation, _sched=Some(sched), stats=stats)
   }
 
   // TODO(cs): force this to take an EventDag, so that we don't accidentally
@@ -526,8 +544,7 @@ object RunnerUtils {
                     preTest: Option[STSScheduler.PreTestCallback]=None,
                     postTest: Option[STSScheduler.PostTestCallback]=None,
                     dag: Option[EventDag]=None,
-                    stats: Option[MinimizationStats]=None,
-                    checkUnmodified:Boolean=false) :
+                    stats: Option[MinimizationStats]=None) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = if (_sched != None) _sched.get else
                 new STSScheduler(schedulerConfig, trace, allowPeek)
@@ -545,7 +562,7 @@ object RunnerUtils {
       sched.setActorNamePropPairs(actorNameProps.get)
     }
 
-    val ddmin = new DDMin(sched, stats=stats, checkUnmodifed=checkUnmodified)
+    val ddmin = new DDMin(sched, stats=stats)
     var externalsSize = 0
     val mcs = dag match {
       case Some(d) =>
