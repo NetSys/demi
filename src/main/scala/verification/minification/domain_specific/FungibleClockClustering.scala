@@ -138,6 +138,12 @@ object TestScheduler extends Enumeration {
   val DPORwHeuristics = Value
 }
 
+object ClusteringStrategy extends Enumeration {
+  type ClusteringStrategy = Value
+  val ClockClusterizer = Value
+  val SingletonClusterizer = Value
+}
+
 // Domain-specific strategy. See design doc:
 //   https://docs.google.com/document/d/1_EqOkSehZVC7oE2hjV1FxY8jw4mXAlM5ESigQYt4ojg/edit
 class FungibleClockMinimizer(
@@ -154,6 +160,7 @@ class FungibleClockMinimizer(
   preTest: Option[STSScheduler.PreTestCallback]=None,
   postTest: Option[STSScheduler.PostTestCallback]=None,
   stats: Option[MinimizationStats]=None,
+  clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockClusterizer,
   timeBudgetSeconds:Long=Long.MaxValue)
   extends InternalEventMinimizer {
 
@@ -239,19 +246,26 @@ class FungibleClockMinimizer(
       Aggressiveness.STOP_IMMEDIATELY
       else Aggressiveness.ALL_TIMERS_FIRST_ITR
 
-    val clockClusterizer = new ClockClusterizer(trace,
-      schedulerConfig.messageFingerprinter,
-      if (resolutionStrategy != null) resolutionStrategy
-      else new BackTrackStrategy(schedulerConfig.messageFingerprinter),
-      skipClockClusters=skipClockClusters,
-      aggressiveness=aggressiveness)
+    val _resolutionStrategy = if (resolutionStrategy != null)
+        resolutionStrategy
+        else new BackTrackStrategy(schedulerConfig.messageFingerprinter)
+
+    val clusterizer = if (clusteringStrategy == ClusteringStrategy.ClockClusterizer)
+        new ClockClusterizer(trace,
+          schedulerConfig.messageFingerprinter,
+          _resolutionStrategy,
+          skipClockClusters=skipClockClusters,
+          aggressiveness=aggressiveness)
+      else
+        new SingletonClusterizer(trace,
+          schedulerConfig.messageFingerprinter, _resolutionStrategy)
 
     // Each cluster gets timeBudgetSeconds / numberOfClusters seconds
-    val dporBudgetSeconds = timeBudgetSeconds / (List(clockClusterizer.approximateIterations,1).max)
+    val dporBudgetSeconds = timeBudgetSeconds / (List(clusterizer.approximateIterations,1).max)
 
     var minTrace = trace
 
-    var nextTrace = clockClusterizer.getNextTrace(false, Set[Int]())
+    var nextTrace = clusterizer.getNextTrace(false, Set[Int]())
     // don't overwrite prune start if we're being used as a TestOracle
     if (!skipClockClusters) _stats.record_prune_start
     while (!nextTrace.isEmpty) {
@@ -295,7 +309,7 @@ class FungibleClockMinimizer(
             adjustedTrace.get(i).get.asInstanceOf[UniqueMsgEvent].id
         }
       }
-      nextTrace = clockClusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
+      nextTrace = clusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
     }
 
     // don't overwrite prune end if we're being used as a TestOracle
@@ -320,6 +334,12 @@ object Aggressiveness extends Enumeration {
   val STOP_IMMEDIATELY = Value
 }
 
+trait Clusterizer {
+  def approximateIterations: Int
+  def getNextTrace(violationReproducedLastRun: Boolean, ignoredAbsentIds: Set[Int])
+        : Option[EventTrace]
+}
+
 // - aggressive: whether to stop trying to remove timers as soon as we've
 //   found at least one failing violation for the current cluster.
 // - skipClockClusters: whether to only explore timers, and just play all
@@ -329,7 +349,7 @@ class ClockClusterizer(
     fingerprinter: FingerprintFactory,
     resolutionStrategy: AmbiguityResolutionStrategy,
     aggressiveness: Aggressiveness.Level=Aggressiveness.ALL_TIMERS_FIRST_ITR,
-    skipClockClusters: Boolean=false) {
+    skipClockClusters: Boolean=false) extends Clusterizer {
 
   val log = LoggerFactory.getLogger("ClockClusterizer")
 

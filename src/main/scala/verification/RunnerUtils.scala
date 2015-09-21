@@ -129,6 +129,7 @@ object RunnerUtils {
                   timeBudgetSeconds:Long=(60*60*4:Long), // 4 hours per minimizer
                   shouldRerunDDMin:(Seq[ExternalEvent] => Boolean)=(_)=>true,
                   initializationRoutine: Option[() => Any]=None,
+                  clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockClusterizer,
                   preTest: Option[STSScheduler.PreTestCallback]=None,
                   postTest: Option[STSScheduler.PostTestCallback]=None) {
 
@@ -330,6 +331,7 @@ object RunnerUtils {
             currentTrace, actors, violationFound,
             //testScheduler=TestScheduler.DPORwHeuristics,
             stats=Some(currentStats),
+            clusteringStrategy=clusteringStrategy,
             initializationRoutine=initializationRoutine,
             preTest=preTest,
             postTest=postTest).minimize
@@ -344,6 +346,7 @@ object RunnerUtils {
             //testScheduler=TestScheduler.DPORwHeuristics,
             resolutionStrategy=new LastOnlyStrategy,
             stats=Some(currentStats),
+            clusteringStrategy=clusteringStrategy,
             initializationRoutine=initializationRoutine,
             preTest=preTest,
             postTest=postTest).minimize
@@ -355,6 +358,7 @@ object RunnerUtils {
             currentTrace, actors, violationFound,
             testScheduler=TestScheduler.DPORwHeuristics,
             timeBudgetSeconds=timeBudgetSeconds,
+            clusteringStrategy=clusteringStrategy,
             stats=Some(currentStats),
             initializationRoutine=initializationRoutine,
             preTest=preTest,
@@ -386,6 +390,8 @@ object RunnerUtils {
             ((currentExternals, currentStats, Some(currentTrace), violationFound))
       }),
       // One last internal minimization
+      // TODO(cs): optimization: if nothing has been removed, don't rerun
+      // this.
       Some(new InternalMinimizer("IntMin") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           RunnerUtils.minimizeInternals(schedulerConfig,
