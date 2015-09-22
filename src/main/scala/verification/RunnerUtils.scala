@@ -130,6 +130,7 @@ object RunnerUtils {
                   shouldRerunDDMin:(Seq[ExternalEvent] => Boolean)=(_)=>true,
                   initializationRoutine: Option[() => Any]=None,
                   clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockClusterizer,
+                  fungClocksScheduler:TestScheduler.TestScheduler=TestScheduler.DPORwHeuristics, // Hack: remove after we have Spark support for DPOR
                   preTest: Option[STSScheduler.PreTestCallback]=None,
                   postTest: Option[STSScheduler.PostTestCallback]=None) {
 
@@ -329,7 +330,7 @@ object RunnerUtils {
           new FungibleClockMinimizer(schedulerConfig,
             currentExternals,
             currentTrace, actors, violationFound,
-            //testScheduler=TestScheduler.DPORwHeuristics,
+            //testScheduler=fungClocksScheduler,
             stats=Some(currentStats),
             clusteringStrategy=clusteringStrategy,
             initializationRoutine=initializationRoutine,
@@ -356,7 +357,7 @@ object RunnerUtils {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           new FungibleClockMinimizer(schedulerConfig, currentExternals,
             currentTrace, actors, violationFound,
-            testScheduler=TestScheduler.DPORwHeuristics,
+            testScheduler=fungClocksScheduler,
             timeBudgetSeconds=timeBudgetSeconds,
             clusteringStrategy=clusteringStrategy,
             stats=Some(currentStats),
@@ -380,7 +381,7 @@ object RunnerUtils {
               }.toSeq),
               violationFound,
               actors,
-              testScheduler=TestScheduler.DPORwHeuristics,
+              testScheduler=fungClocksScheduler,
               timeBudgetSeconds=timeBudgetSeconds,
               stats=Some(currentStats),
               initializationRoutine=initializationRoutine,
@@ -604,6 +605,7 @@ object RunnerUtils {
       }
       return (mcs.events, ddmin._stats, validated_mcs, violation)
     } else {
+      // TODO(cs): return the smallest trace DDMin was able to trigger so far?
       return (mcs.events, ddmin._stats, Some(trace), violation)
     }
   }
