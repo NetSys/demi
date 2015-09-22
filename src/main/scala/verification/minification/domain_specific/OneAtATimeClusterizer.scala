@@ -17,14 +17,15 @@ class SingletonClusterizer(
 
   val log = LoggerFactory.getLogger("SingletonClusterizer")
 
-  var sortedIds = getIdsToRemove
-  val allIds = sortedIds.toSet
+  var sortedIds = getIdsToRemove()
+  val allIds = sortedIds.toSet | getUnignorableIds()
   var successfullyRemoved = Set[Int]()
   var ignoredLastRun = -1
+  var firstRun = true
 
   def getIdsToRemove(): Seq[Int] = {
     var inUnignorableBlock = false
-    originalTrace.flatMap {
+    originalTrace.events.flatMap {
       case BeginUnignorableEvents =>
         inUnignorableBlock = true
         None
@@ -38,6 +39,24 @@ class SingletonClusterizer(
         throw new IllegalArgumentException("TimerDelivery not supported. Replay first")
       case e => None
     }.toSeq.sorted // Should already be sorted?
+  }
+
+  def getUnignorableIds(): Set[Int] = {
+    var inUnignorableBlock = false
+    originalTrace.events.flatMap {
+      case BeginUnignorableEvents =>
+        inUnignorableBlock = true
+        None
+      case EndUnignorableEvents =>
+        inUnignorableBlock = false
+        None
+      case UniqueMsgEvent(m, id)
+        if (EventTypes.isExternal(m) || inUnignorableBlock) =>
+        Some(id)
+      case t @ UniqueTimerDelivery(_, _) =>
+        throw new IllegalArgumentException("TimerDelivery not supported. Replay first")
+      case e => None
+    }.toSet
   }
 
   // Iteration:
@@ -58,8 +77,13 @@ class SingletonClusterizer(
       successfullyRemoved = (successfullyRemoved | ignoredAbsentIds) + ignoredLastRun
     }
 
-    ignoredLastRun = sortedIds.head
-    sortedIds = sortedIds.tail
+    if (!firstRun) {
+      ignoredLastRun = sortedIds.head
+      log.info(s"Trying to ignore $ignoredLastRun")
+      sortedIds = sortedIds.tail
+    } else {
+      firstRun = false
+    }
 
     val currentCluster = allIds -- (successfullyRemoved - ignoredLastRun)
 
@@ -70,6 +94,7 @@ class SingletonClusterizer(
         Some(u)
       case UniqueMsgEvent(MsgEvent(snd,rcv,msg), id) =>
         if (currentCluster contains id) {
+          assert(!msg.isInstanceOf[MessageFingerprint])
           val classTag = ClassTag(msg.getClass)
           def messageFilter(pendingMsg: Any): Boolean = {
             ClassTag(pendingMsg.getClass) == classTag
