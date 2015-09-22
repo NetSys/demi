@@ -356,9 +356,7 @@ class Instrumenter {
   // block until Instrumenter.beginAtomicBlock is invoked.
   var messagesToBlockAfterToTaskId = new HashMap[Any, Long]
   def blockForAtomicAfterNextMessage(taskId: Long, message: Any) {
-    if ((!Instrumenter.threadNameIsAkkaInternal) ||
-        sendingKnownExternalMessages.get) {
-      // External thread (or ScheduleBlock), so we don't care if it blocks.
+    if (Instrumenter.threadNameIsAkkaInternal) {
       return
     }
     logger.trace(s"Instrumenter.blockForAtomicAfterNextMessage $taskId $message")
@@ -1059,10 +1057,13 @@ class Instrumenter {
     // If so, do a bit of bookkeeping.
     // TODO(cs): assume that temp actors aren't used for anything other than
     // ask. Which probably isn't a good assumption.
-    if (envelope.sender.path.parent.name == "temp" && currentActor != "") {
-      tempToParent(envelope.sender.path) = currentActor
+    messagesToBlockAfterToTaskId.synchronized {
+      if (envelope.sender.path.parent.name == "temp" && currentActor != "" &&
+          !sendingKnownExternalMessages.get() && Instrumenter.threadNameIsAkkaInternal &&
+          !(messagesToBlockAfterToTaskId contains envelope.message)) {
+        tempToParent(envelope.sender.path) = currentActor
+      }
     }
-
 
     // If this is not a system message then check if we have already recorded
     // this event. Recorded => we are injecting this event (as opposed to some
