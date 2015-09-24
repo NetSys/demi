@@ -84,22 +84,22 @@ class Instrumenter {
 
   var scheduler : Scheduler = new NullScheduler
   var tellEnqueue : TellEnqueue = new TellEnqueueSemaphore
-  
+
   val dispatchers = new HashMap[ActorRef, MessageDispatcher]
-  
-  val allowedEvents = new HashSet[(ActorCell, Envelope)]  
-  
+
+  val allowedEvents = new HashSet[(ActorCell, Envelope)]
+
   val seenActors = new HashSet[(ActorSystem, Any)]
   // Populated before preStart has been called
   val actorMappings = new HashMap[String, ActorRef]
   // Populated after preStart has been called
   val preStartCalled = new HashSet[ActorRef]
-  
+
   // Track the executing context (i.e., source of events)
   var currentActor = ""
   var previousActor = ""
   var inActor = new AtomicBoolean(false)
-  var counter = 0   
+  var counter = 0
   // Whether we're currently dispatching.
   var started = new AtomicBoolean(false)
   // Whether to ignore (pass-through) all events
@@ -223,8 +223,7 @@ class Instrumenter {
   def seededRandom() : Random = {
     return _random
   }
- 
-  
+
   def await_enqueue() {
     tellEnqueue.await()
   }
@@ -262,13 +261,17 @@ class Instrumenter {
    * as we replay. See this design doc for more details:
    *   https://docs.google.com/document/d/1rAM8EEy3WnLRhhPROvHmBhAREv0rmihz0Gw0GgF1xC4
    */
-  def assignTempPath(tempPath: ActorPath): ActorPath = synchronized {
+  def assignTempPath(tempPath: ActorPath): ActorPath = {
     val callStack = Thread.currentThread().getStackTrace().map(e => e.getMethodName).drop(14) // drop off common prefix
     val min3 = math.min(3, callStack.length)
     var truncated = callStack.take(min3).toList
-    if (idToPrependToCallStack != "") {
-      truncated = idToPrependToCallStack :: truncated
-      idToPrependToCallStack = ""
+    threadToIdToPrependToTempPath.synchronized {
+      threadToIdToPrependToTempPath.get(Thread.currentThread) match {
+        case Some(id) =>
+          truncated = id :: truncated
+          threadToIdToPrependToTempPath -= Thread.currentThread
+        case None =>
+      }
     }
     val bytes = truncated.mkString("-").getBytes(StandardCharsets.UTF_8)
     val b64 = java.util.Base64.getEncoder.encodeToString(bytes)
@@ -276,17 +279,29 @@ class Instrumenter {
     return path
   }
 
+  val threadToIdToPrependToTempPath = new HashMap[Thread, String]
+
   // In cases where there might be multiple threads with the same callstack
   // invoking `ask`, have them call this with an ID to avoid ambiguity in temp
-  // actor names. Serialized with a lock on the Instrumenter object.
-  var idToPrependToCallStack = ""
-
+  // actor names.
   // linearize == if there are concurrent asks, make sure only one happens at
   // a time.
-  def linearizeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = synchronized {
-    assert(idToPrependToCallStack == "")
-    idToPrependToCallStack = id
-    return ask()
+  def linearizeAskWithID[E](id: String, ask: () => Future[E]) : Future[E] = {
+    threadToIdToPrependToTempPath.synchronized {
+      assert(threadToIdToPrependToTempPath.get(Thread.currentThread).isEmpty,
+        s"threadToIdToPrependToTempPath ${threadToIdToPrependToTempPath.get(Thread.currentThread)} != ''")
+      threadToIdToPrependToTempPath(Thread.currentThread) = id
+    }
+    // N.B. assignTempPath should be called directly after this within this same thread, as part
+    // of ask()
+    val future = try {
+      ask()
+    } finally {
+      threadToIdToPrependToTempPath.synchronized {
+        threadToIdToPrependToTempPath -= Thread.currentThread
+      }
+    }
+    return future
   }
 
   def receiverIsAlive(receiver: ActorRef): Boolean = {
@@ -330,6 +345,24 @@ class Instrumenter {
     if (shouldDispatch) {
       assert(!started.get)
       scheduler.handleMailboxIdle
+    }
+  }
+
+  // In some corner cases, Spark isn't guarenteed that it will be able to
+  // invoke BeginAtomicBlock before Instrumenter.afterMessageReceive() is
+  // invoked (i.e. before Insturmenter moves on with its scheduling.
+  // To handle those cases, have Spark explicitly notify us that immediately
+  // after delivering the next message we should
+  // block until Instrumenter.beginAtomicBlock is invoked.
+  var messagesToBlockAfterToTaskId = new HashMap[Any, Long]
+  def blockForAtomicAfterNextMessage(taskId: Long, message: Any) {
+    if (Instrumenter.threadNameIsAkkaInternal) {
+      return
+    }
+    logger.trace(s"Instrumenter.blockForAtomicAfterNextMessage $taskId $message")
+    messagesToBlockAfterToTaskId.synchronized {
+      assert(!(messagesToBlockAfterToTaskId contains message))
+      messagesToBlockAfterToTaskId(message) = taskId
     }
   }
 
@@ -391,7 +424,7 @@ class Instrumenter {
     }
     return true
   }
-  
+
   def blockUntilPreStartCalled(ref: ActorRef) {
     if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
       return
@@ -413,9 +446,9 @@ class Instrumenter {
       preStartCalled.notifyAll
     }
   }
-  
+
   // Callbacks for new actors being created
-  def new_actor(system: ActorSystem, 
+  def new_actor(system: ActorSystem,
       props: Props, name: String, actor: ActorRef) : Unit = {
     
     if (_passThrough.get()) {
@@ -429,7 +462,7 @@ class Instrumenter {
     if (Instrumenter.threadDoesntBelongToSystem(_actorSystem)) {
       return
     }
-   
+
     val event = new SpawnEvent(currentActor, props, name, actor)
 
     if (Instrumenter.synchronizeOnScheduler) {
@@ -445,21 +478,21 @@ class Instrumenter {
     if (!started.get) {
       seenActors += ((system, (actor, props, name)))
     }
-    
+
     actorMappings.synchronized {
       actorMappings(name) = actor
       actorMappings.notifyAll
     }
-      
+
     logger.info("System has created a new actor: " + actor.path.name)
   }
-  
-  
-  def new_actor(system: ActorSystem, 
+
+
+  def new_actor(system: ActorSystem,
       props: Props, actor: ActorRef) : Unit = {
     new_actor(system, props, actor.path.name, actor)
   }
-  
+
   def reset_cancellables() {
     for (task <- registeredCancellableTasks.filterNot(c => c.isCancelled)) {
       task.cancel()
@@ -469,7 +502,7 @@ class Instrumenter {
     cancellableToTimer.clear
     timerToCancellable.clear
   }
-  
+
   def reset_per_system_state() {
     actorMappings.clear()
     preStartCalled.clear()
@@ -484,13 +517,15 @@ class Instrumenter {
     askAnswerNotYetScheduled = new HashSet[PromiseActorRef]
     sendingKnownExternalMessages = new AtomicBoolean(false)
     stopDispatch = new AtomicBoolean(false)
+    messagesToBlockAfterToTaskId.clear()
+    threadToIdToPrependToTempPath.clear()
     interruptAllScheduleBlocks
   }
 
   def interruptAllScheduleBlocks() {
     codeBlockThreads.synchronized {
       codeBlockThreads.foreach {
-        case t => t.interrupt
+        case t => t.stop // t.interrupt
       }
       codeBlockThreads.clear
     }
@@ -508,7 +543,7 @@ class Instrumenter {
 
     shutdownCallback()
 
-    // TODO(cs): Hack: manually stop [depecrated!] all threads from previous
+    // TODO(cs): Hack: manually stop() [depecrated!] all threads from previous
     // actor systems, until we figure out what really causing the memory
     // leak.
     if (_actorSystem != null) {
@@ -529,14 +564,14 @@ class Instrumenter {
     _actorSystem = ActorSystem("new-system-" + counter, defaultAkkaConfig)
     _random = new Random(0)
     counter += 1
-    
+
     reset_cancellables
     reset_per_system_state
-    
+
     logger.info("Started a new actor system.")
 
     // This is safe, we have just started a new actor system (after killing all
-    // the old ones we knew about), there should be no actors running and no 
+    // the old ones we knew about), there should be no actors running and no
     // dispatch calls outstanding. That said, it is really important that we not
     // have other sources of ActorSystems etc.
     started.set(false)
@@ -547,8 +582,8 @@ class Instrumenter {
     scheduler.start_trace()
     // Rely on scheduler to do the right thing from here on out
   }
-  
-  
+
+
   def shutdown_system(alsoRestart: Boolean) = {
     val allSystems = new HashMap[ActorSystem, Queue[Any]]
     for ((system, args) <- seenActors) {
@@ -568,6 +603,24 @@ class Instrumenter {
 
       logger.info("Shut down the actor system. " + argQueue.size)
     }
+
+    // TODO(cs): Hack: manually stop() [depecrated!] all threads from previous
+    // actor systems, until we figure out what really causing the memory
+    // leak.
+    if (_actorSystem != null) {
+      val itr = Thread.getAllStackTraces().keySet().iterator
+      val currentSystemNumber = Instrumenter.getSystemNumber(_actorSystem.name).get
+      while (itr.hasNext) {
+        val next = itr.next
+        Instrumenter.getSystemNumber(next.getName) match {
+          case Some(n) if next != Thread.currentThread && n < currentSystemNumber =>
+            //next.interrupt()
+            logger.debug(s"stop()ing ${next.getName}")
+            next.stop
+          case _ =>
+        }
+      }
+    }
   }
 
   // Signal to the instrumenter that the scheduler wants to restart the system
@@ -575,26 +628,26 @@ class Instrumenter {
     logger.info("Restarting system")
     shutdown_system(true)
   }
-  
-  
+
+
     // Called before a message is received
   def beforeMessageReceive(cell: ActorCell) {
     throw new Exception("not implemented")
   }
-  
+
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell) {
     throw new Exception("not implemented")
   }
-  
-  
+
+
   // Called before a message is received
   def beforeMessageReceive(cell: ActorCell, msg: Any) {
     if (_passThrough.get()) {
       return
     }
     if (scheduler.isSystemMessage(
-        cell.sender.path.name, 
+        cell.sender.path.name,
         cell.self.path.name,
         msg)) return
 
@@ -605,13 +658,13 @@ class Instrumenter {
       logger.warn("cell.system != _actorSystem")
       return
     }
-   
+
     scheduler.before_receive(cell, msg)
     currentActor = cell.self.path.name
     assert(!inActor.get)
     inActor.set(true)
   }
-  
+
   /**
    * Called when, within `receive`, an actor blocks by calling Await.result(),
    * usually on a future returned by `ask`.
@@ -667,7 +720,7 @@ class Instrumenter {
         scheduler.notify_quiescence()
     }
   }
-  
+
   // Called after the message receive is done.
   def afterMessageReceive(cell: ActorCell, msg: Any) {
     if (_passThrough.get()) {
@@ -686,6 +739,24 @@ class Instrumenter {
         cell.sender.path.name,
         cell.self.path.name,
         msg)) return
+
+    messagesToBlockAfterToTaskId.synchronized {
+      if (messagesToBlockAfterToTaskId contains msg) {
+        // Before we proceed, we need to block until the beginAtomicBlock is
+        // invoked. See: blockForAtomicAfterNextMessage().
+        val taskIdToBlockOn = messagesToBlockAfterToTaskId(msg)
+        logger.debug(s"Blocking until beginAtomicBlock($taskIdToBlockOn) $msg")
+        val beganExternalAtomicBlocks = scheduler.asInstanceOf[ExternalEventInjector[_]].beganExternalAtomicBlocks
+        beganExternalAtomicBlocks.synchronized {
+          while (!(beganExternalAtomicBlocks contains taskIdToBlockOn)) {
+            logger.trace(s"Waiting on beginAtomicBlock($taskIdToBlockOn)")
+            beganExternalAtomicBlocks.wait()
+          }
+        }
+        logger.trace(s"Done blocking on beginAtomicBlock($taskIdToBlockOn)")
+        messagesToBlockAfterToTaskId -= msg
+      }
+    }
 
     if (logger.isTraceEnabled()) {
       logger.trace("afterMessageReceive: just finished: " + cell.sender.path.name + " -> " +
@@ -911,14 +982,14 @@ class Instrumenter {
 
     // We now know that cell is a real ActorCell, not a FakeCell.
     val cell = _cell.asInstanceOf[ActorCell]
-    
-    allowedEvents += ((cell, envelope) : (ActorCell, Envelope))        
+
+    allowedEvents += ((cell, envelope) : (ActorCell, Envelope))
 
     val dispatcher = dispatchers.get(cell.self) match {
       case Some(value) => value
       case None => throw new Exception("internal error: " + cell.self + " " + msg)
     }
-    
+
     scheduler.event_consumed(cell, envelope)
     if (codeBlockSends contains ((rcv, msg))) {
       codeBlockSends -= ((rcv, msg))
@@ -950,7 +1021,7 @@ class Instrumenter {
   //    pending, but don't allow the message to actually be delivered.
   //  - right after the scheduler has decided to deliver the message. In this
   //    case we let the message through.
-  def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell, 
+  def aroundDispatch(dispatcher: MessageDispatcher, cell: ActorCell,
       envelope: Envelope): Boolean = {
     if (_passThrough.get()) {
       return true
@@ -986,13 +1057,16 @@ class Instrumenter {
     // If so, do a bit of bookkeeping.
     // TODO(cs): assume that temp actors aren't used for anything other than
     // ask. Which probably isn't a good assumption.
-    if (envelope.sender.path.parent.name == "temp" && currentActor != "") {
-      tempToParent(envelope.sender.path) = currentActor
+    messagesToBlockAfterToTaskId.synchronized {
+      if (envelope.sender.path.parent.name == "temp" && currentActor != "" &&
+          !sendingKnownExternalMessages.get() && Instrumenter.threadNameIsAkkaInternal &&
+          !(messagesToBlockAfterToTaskId contains envelope.message)) {
+        tempToParent(envelope.sender.path) = currentActor
+      }
     }
-    
-        
+
     // If this is not a system message then check if we have already recorded
-    // this event. Recorded => we are injecting this event (as opposed to some 
+    // this event. Recorded => we are injecting this event (as opposed to some
     // actor doing it in which case we need to report it)
     if (allowedEvents contains value) {
       allowedEvents.remove(value) match {
@@ -1004,7 +1078,7 @@ class Instrumenter {
     // Record the dispatcher for the current receiver.
     dispatchers(receiver) = dispatcher
 
-    // Record that this event was produced. The scheduler is responsible for 
+    // Record that this event was produced. The scheduler is responsible for
     // kick starting processing.
     if (Instrumenter.synchronizeOnScheduler) {
       scheduler.synchronized {
@@ -1016,9 +1090,9 @@ class Instrumenter {
     tellEnqueue.enqueue()
     return false
   }
-  
+
   // Start scheduling and dispatching messages. This makes the scheduler responsible for
-  // actually kickstarting things. 
+  // actually kickstarting things.
   def start_dispatch() {
     assert(!started.get)
     if (!EventTypes.externalMessageFilterHasBeenSet) {

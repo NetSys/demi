@@ -177,6 +177,7 @@ trait ExternalEventInjector[E] {
    * to show up.
    */
   def beginExternalAtomicBlock(taskId: Long) {
+    ExternalEventInjector.log.debug(s"beginExternalAtomicBlock($taskId)")
     if (Instrumenter()._passThrough.get()) {
       return
     }
@@ -185,18 +186,22 @@ trait ExternalEventInjector[E] {
     // already enqueued before this are not part of the
     // beginExternalAtomicBlock
     beganExternalAtomicBlocks.synchronized {
-      endedExternalAtomicBlocks.synchronized {
-        assert(!(beganExternalAtomicBlocks contains taskId) ||
-                (endedExternalAtomicBlocks contains taskId))
-        beganExternalAtomicBlocks += taskId
-      }
+      // TODO(cs): uncommenting this can lead to deadlocks.
+      //endedExternalAtomicBlocks.synchronized {
+      //assert(!(beganExternalAtomicBlocks contains taskId) ||
+      //        (endedExternalAtomicBlocks contains taskId))
+      //}
+      beganExternalAtomicBlocks += taskId
+      beganExternalAtomicBlocks.notifyAll
     }
     messagesToSend.synchronized {
       messagesToSend += ((None, null, BeginExternalAtomicBlock(taskId)))
     }
-    pendingExternalAtomicBlocks.incrementAndGet()
+    val pendingBlocks = pendingExternalAtomicBlocks.incrementAndGet()
     // We shouldn't be dispatching while the atomic block executes.
-    Instrumenter().stopDispatch.set(true)
+    if (pendingBlocks == 1) {
+      Instrumenter().stopDispatch.set(true)
+    }
   }
 
   /**
@@ -205,6 +210,7 @@ trait ExternalEventInjector[E] {
    * Called by external threads.
    */
   def endExternalAtomicBlock(taskId: Long) {
+    ExternalEventInjector.log.trace(s"endExternalAtomicBlock($taskId)")
     if (Instrumenter()._passThrough.get()) {
       return
     }
@@ -215,13 +221,15 @@ trait ExternalEventInjector[E] {
       messagesToSend += ((None, null, EndExternalAtomicBlock(taskId)))
     }
     // Signal that the main thread should invoke send_external_messages
-    beganExternalAtomicBlocks.synchronized {
-      endedExternalAtomicBlocks.synchronized {
-        assert(beganExternalAtomicBlocks contains taskId)
-        endedExternalAtomicBlocks.notifyAll()
-      }
+    endedExternalAtomicBlocks.synchronized {
+      // TODO(cs): uncommenting this can lead to deadlocks.
+      // beganExternalAtomicBlocks.synchronized {
+      //   assert(beganExternalAtomicBlocks contains taskId)
+      // }
+      endedExternalAtomicBlocks.notifyAll()
     }
-    if (pendingExternalAtomicBlocks.decrementAndGet() == 0) {
+    val pendingBlocks = pendingExternalAtomicBlocks.decrementAndGet()
+    if (pendingBlocks == 0) {
       var restartDispatch = false
       Instrumenter().stopDispatch.synchronized {
         if (Instrumenter().stopDispatch.get()) {

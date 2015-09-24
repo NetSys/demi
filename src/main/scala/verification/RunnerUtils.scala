@@ -129,6 +129,8 @@ object RunnerUtils {
                   timeBudgetSeconds:Long=(60*60*4:Long), // 4 hours per minimizer
                   shouldRerunDDMin:(Seq[ExternalEvent] => Boolean)=(_)=>true,
                   initializationRoutine: Option[() => Any]=None,
+                  clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockClusterizer,
+                  fungClocksScheduler:TestScheduler.TestScheduler=TestScheduler.DPORwHeuristics, // Hack: remove after we have Spark support for DPOR
                   preTest: Option[STSScheduler.PreTestCallback]=None,
                   postTest: Option[STSScheduler.PostTestCallback]=None) {
 
@@ -328,8 +330,9 @@ object RunnerUtils {
           new FungibleClockMinimizer(schedulerConfig,
             currentExternals,
             currentTrace, actors, violationFound,
-            //testScheduler=TestScheduler.DPORwHeuristics,
+            //testScheduler=fungClocksScheduler,
             stats=Some(currentStats),
+            clusteringStrategy=clusteringStrategy,
             initializationRoutine=initializationRoutine,
             preTest=preTest,
             postTest=postTest).minimize
@@ -344,6 +347,7 @@ object RunnerUtils {
             //testScheduler=TestScheduler.DPORwHeuristics,
             resolutionStrategy=new LastOnlyStrategy,
             stats=Some(currentStats),
+            clusteringStrategy=clusteringStrategy,
             initializationRoutine=initializationRoutine,
             preTest=preTest,
             postTest=postTest).minimize
@@ -353,8 +357,9 @@ object RunnerUtils {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           new FungibleClockMinimizer(schedulerConfig, currentExternals,
             currentTrace, actors, violationFound,
-            testScheduler=TestScheduler.DPORwHeuristics,
+            testScheduler=fungClocksScheduler,
             timeBudgetSeconds=timeBudgetSeconds,
+            clusteringStrategy=clusteringStrategy,
             stats=Some(currentStats),
             initializationRoutine=initializationRoutine,
             preTest=preTest,
@@ -376,7 +381,7 @@ object RunnerUtils {
               }.toSeq),
               violationFound,
               actors,
-              testScheduler=TestScheduler.DPORwHeuristics,
+              testScheduler=fungClocksScheduler,
               timeBudgetSeconds=timeBudgetSeconds,
               stats=Some(currentStats),
               initializationRoutine=initializationRoutine,
@@ -386,6 +391,8 @@ object RunnerUtils {
             ((currentExternals, currentStats, Some(currentTrace), violationFound))
       }),
       // One last internal minimization
+      // TODO(cs): optimization: if nothing has been removed, don't rerun
+      // this.
       Some(new InternalMinimizer("IntMin") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           RunnerUtils.minimizeInternals(schedulerConfig,
@@ -523,13 +530,15 @@ object RunnerUtils {
                     schedulerConfig: SchedulerConfig,
                     messageDeserializer: MessageDeserializer,
                     allowPeek: Boolean,
-                    stats: Option[MinimizationStats]) :
+                    stats: Option[MinimizationStats],
+                    checkUnmodified: Boolean) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = new STSScheduler(schedulerConfig, new EventTrace, allowPeek)
     val (trace, violation, _) = RunnerUtils.deserializeExperiment(experiment_dir, messageDeserializer, sched)
     sched.original_trace = trace
     stsSchedDDMin(allowPeek, schedulerConfig, trace,
-                  violation, _sched=Some(sched), stats=stats)
+                  violation, _sched=Some(sched), stats=stats,
+                  checkUnmodified=checkUnmodified)
   }
 
   // TODO(cs): force this to take an EventDag, so that we don't accidentally
@@ -544,7 +553,8 @@ object RunnerUtils {
                     preTest: Option[STSScheduler.PreTestCallback]=None,
                     postTest: Option[STSScheduler.PostTestCallback]=None,
                     dag: Option[EventDag]=None,
-                    stats: Option[MinimizationStats]=None) :
+                    stats: Option[MinimizationStats]=None,
+                    checkUnmodified:Boolean=false) :
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     val sched = if (_sched != None) _sched.get else
                 new STSScheduler(schedulerConfig, trace, allowPeek)
@@ -562,7 +572,7 @@ object RunnerUtils {
       sched.setActorNamePropPairs(actorNameProps.get)
     }
 
-    val ddmin = new DDMin(sched, stats=stats)
+    val ddmin = new DDMin(sched, stats=stats, checkUnmodifed=checkUnmodified)
     var externalsSize = 0
     val mcs = dag match {
       case Some(d) =>
@@ -595,6 +605,7 @@ object RunnerUtils {
       }
       return (mcs.events, ddmin._stats, validated_mcs, violation)
     } else {
+      // TODO(cs): return the smallest trace DDMin was able to trigger so far?
       return (mcs.events, ddmin._stats, Some(trace), violation)
     }
   }

@@ -361,7 +361,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
                 endedExternalAtomicBlocks.synchronized {
                   send_external_messages(false)
                   while (!(endedExternalAtomicBlocks contains id)) {
-                    logger.debug("Blocking until endExternalAtomicBlock("+id+")")
+                    logger.debug(s"Blocking until endExternalAtomicBlock($id)")
                     // (Releases lock)
                     endedExternalAtomicBlocks.wait()
                     send_external_messages(false)
