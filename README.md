@@ -1,4 +1,5 @@
-# sts2-interposition
-Interposition code for STS-2.
+# DEMi
 
-See also: https://github.com/NetSys/sts2-applications
+Interposition code for Distributed Execution Minimizer.
+
+See also: https://github.com/NetSys/demi-applications
