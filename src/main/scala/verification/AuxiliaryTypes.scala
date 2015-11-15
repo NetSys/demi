@@ -1,70 +1,96 @@
 package akka.dispatch.verification
 
-import akka.actor.{ ActorCell, ActorRef, Props }
+import akka.actor.{ActorCell, ActorRef, ActorSystem, Props}
 import akka.dispatch.{ Envelope }
 
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.Semaphore,
-       scala.collection.mutable.HashMap,
-       scala.collection.mutable.HashSet
+// ---------- External Events -----------
 
+// External events used to specify a trace
+abstract trait ExternalEvent {
+  def label: String
+}
 
-object IDGenerator {
-  var uniqueId = new AtomicInteger // DPOR root event is assumed to be ID 0, incrementAndGet ensures starting at 1
+// Attaches unique IDs to external events.
+trait UniqueExternalEvent {
+  var _id : Int = IDGenerator.get()
 
-  def get() : Integer = {
-    val id = uniqueId.incrementAndGet()
-    if (id == Int.MaxValue) {
-      throw new RuntimeException("Deal with overflow..")
+  def label: String = "e"+_id
+  def toStringWithId: String = label+":"+toString()
+
+  override def equals(other: Any): Boolean = {
+    if (other.isInstanceOf[UniqueExternalEvent]) {
+      return _id == other.asInstanceOf[UniqueExternalEvent]._id
+    } else {
+      return false
     }
-    return id
+  }
+
+  override def hashCode: Int = {
+    return _id
   }
 }
 
-       
-case class Unique(
-  val event : Event,
-  var id : Int = IDGenerator.get()
-) extends ExternalEvent {
-  def label: String = "e"+id
+/**
+ * ExternalMessageConstructors are instance variables of Send() events.
+ * They serve two purposes:
+ *  - They allow the client to late-bind the construction of their message.
+ *    apply() is invoked after the ActorSystem and all actors have been
+ *    created.
+ *  - Optionally: they provide an interface for `shrinking` the contents of
+ *    the messages. This is achieved through `getComponents` and
+ *    `maskComponents`.
+ */
+abstract class ExternalMessageConstructor extends Serializable {
+  // Construct the message
+  def apply() : Any
+  // Optional, for `shrinking`:
+  // Get the components that make up the content of the message we construct
+  // in apply(). For now, only relevant to cluster membership messages.
+  def getComponents() : Seq[ActorRef] = List.empty
+  // Given a sequence of indices (pointing to elements in `getComponents()`),
+  // create a new ExternalMessageConstructor that does not include those
+  // components upon apply().
+  // Default: no-op
+  def maskComponents(indices: Set[Int]): ExternalMessageConstructor = this
 }
 
-case class Uniq[E](
-  val element : E,
-  var id : Int = IDGenerator.get()
-)
+case class BasicMessageConstructor(msg: Any) extends ExternalMessageConstructor {
+  def apply(): Any = msg
+}
 
-// Message delivery -- (not the initial send)
-// N.B., if an event trace was serialized, it's possible that msg is of type
-// MessageFingerprint rather than a whole message!
-case class MsgEvent(
-    sender: String, receiver: String, msg: Any) extends Event
+// External Event types.
+final case class Start (propCtor: () => Props, name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Really: isolate the actor.
+final case class Kill (name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Actually kill the actor rather than just isolating it.
+// TODO(cs): support killing of actors that aren't direct children of /user/
+final case class HardKill (name: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class Send (name: String, messageCtor: ExternalMessageConstructor) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class WaitQuiescence() extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Stronger than WaitQuiescence: schedule indefinitely until cond returns true.
+// if quiescence has been reached but cond does
+// not return true, wait indefinitely until scheduler.enqueue_message is
+// invoked, schedule it, and again wait for quiescence. Repeat until cond
+// returns true. (Useful for systems that use external threads to send
+// messages indefinitely.
+final case class WaitCondition(cond: () => Boolean) extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Bidirectional partitions.
+final case class Partition (a: String, b: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+final case class UnPartition (a: String, b: String) extends
+    ExternalEvent with Event with UniqueExternalEvent
+// Executed synchronously, i.e. by the scheduler itself. The code block must
+// terminate (quickly)!
+final case class CodeBlock (block: () => Any) extends
+    ExternalEvent with Event with UniqueExternalEvent
 
-case class SpawnEvent(
-    parent: String, props: Props, name: String, actor: ActorRef) extends Event
-
-case class NetworkPartition(
-    first: Set[String],
-    second: Set[String]) extends
-  UniqueExternalEvent with ExternalEvent with Event
-
-case class NetworkUnpartition(
-    first: Set[String],
-    second: Set[String]) extends
-  UniqueExternalEvent with ExternalEvent with Event
-
-case object RootEvent extends Event
-
-case class WildCardMatch(
-  // Given:
-  //   - a list of pending messages, sorted from least recently to most recently sent
-  //   - a "backtrack setter" function: given an index of the pending
-  //     messages, sets a backtrack point for that pending message, to be
-  //     replayed in the future.
-  // return the index of the chosen one, or None
-  msgSelector: (Seq[Any], (Int) => Unit) => Option[Int],
-  name:String=""
-)
+// ---------- Failure Detector messages -----------
 
 // Base class for failure detector messages
 abstract class FDMessage
@@ -74,9 +100,7 @@ case class FailureDetectorOnline(fdNode: String) extends FDMessage
 
 // A node is unreachable, either due to node failure or partition.
 case class NodeUnreachable(actor: String) extends FDMessage with Event
-
 case class NodesUnreachable(actors: Set[String]) extends FDMessage with Event
-
 
 // A new node is now reachable, either because a partition healed or an actor spawned.
 case class NodeReachable(actor: String) extends FDMessage with Event
@@ -89,6 +113,9 @@ case object QueryReachableGroup extends FDMessage
 
 // Response to failure detector queries.
 case class ReachableGroup(actors: Set[String]) extends FDMessage
+
+
+// --------------- Utility functions ----------------
 
 object MessageTypes {
   // Messages that the failure detector sends to actors.
@@ -128,142 +155,48 @@ object ActorTypes {
   }
 }
 
-/**
- * TellEnqueue is a semaphore that ensures a linearizable execution, and protects
- * schedulers' data structures during akka's concurrent processing of `tell`
- * (the `!` operator).
- *
- * Instrumenter()'s control flow is as follows:
- *  - Invoke scheduler.schedule_new_message to find a new message to deliver
- *  - Call `dispatcher.dispatch` to deliver the message. Note that
- *    `dispatcher.dispatch` hands off work to a separate thread and returns
- *    immediately.
- *  - The actor `receive()`ing the message now becomes active
- *  - Every time that actor invokes `tell` to send a message to a known actor,
- *    a ticket is taken from TellEnqueue via TellEnqueue.tell()
- *  - Concurrently, akka will process the `tell`s by enqueuing the message in
- *    the receiver's mailbox.
- *  - Every time akka finishes enqueueing a message to the recevier's mailbox,
- *    we first call scheduler.event_produced, and then replaces a ticket to
- *    TellEnqueue via TellEnqueue.enqueue()
- *  - When the actor returns from `receive`, we wait for all tickets to be
- *    returned (via TellEnqueue.await()) before scheduling the next message.
- *
- * The `known actor` part is crucial. If the receiver is not an actor (e.g.
- * the main thread) or we do not interpose on the receiving actor, we will not
- * be able to return the ticket via TellEnqueue.enqueue(), and the system will
- * block forever on TellEnqueue.await().
- */
-trait TellEnqueue {
-  def tell()
-  def enqueue()
-  def reset()
-  def await ()
-}
-
-class TellEnqueueBusyWait extends TellEnqueue {
-  
-  var enqueue_count = new AtomicInteger
-  var tell_count = new AtomicInteger
-  
-  def tell() {
-    tell_count.incrementAndGet()
-  }
-  
-  def enqueue() {
-    enqueue_count.incrementAndGet()
-  }
-  
-  def reset() {
-    tell_count.set(0)
-    enqueue_count.set(0)
+object EventTypes {
+  // Should return true if the given message is an external message
+  var externalMessageFilterHasBeenSet = false
+  var externalMessageFilter: (Any) => Boolean = (_) => false
+  // Should be set by applications during initialization.
+  def setExternalMessageFilter(filter: (Any) => Boolean) {
+    externalMessageFilterHasBeenSet = true
+    externalMessageFilter = filter
   }
 
-  def await () {
-    while (tell_count.get != enqueue_count.get) {}
-  }
-  
-}
-    
-
-class TellEnqueueSemaphore extends Semaphore(1) with TellEnqueue {
-  
-  var enqueue_count = new AtomicInteger
-  var tell_count = new AtomicInteger
-  
-  def tell() {
-    tell_count.incrementAndGet()
-    reducePermits(1)
-    require(availablePermits() <= 0)
-  }
-
-  def enqueue() {
-    enqueue_count.incrementAndGet()
-    require(availablePermits() <= 0)
-    release()
-  }
-  
-  def reset() {
-    tell_count.set(0)
-    enqueue_count.set(0)
-    // Set available permits to 0
-    drainPermits() 
-    // Add a permit
-    release()
-  }
-  
-  def await() {
-    acquire
-    release
-  }
-}
-
-class ExploredTacker {
-  var exploredStack = new HashMap[Int, HashSet[(Unique, Unique)] ]
-  
-  def setExplored(index: Int, pair: (Unique, Unique)) =
-  exploredStack.get(index) match {
-    case Some(set) => set += pair
-    case None =>
-      val newElem = new HashSet[(Unique, Unique)] + pair
-      exploredStack(index) = newElem
-  }
-  
-  def isExplored(pair: (Unique, Unique)): Boolean = {
-
-    for ((index, set) <- exploredStack) set.contains(pair) match {
-      case true => return true
-      case false =>
-    }
-
-    return false
-  }
-  
-  def trimExplored(index: Int) = {
-    exploredStack = exploredStack.filter { other => other._1 <= index }
-  }
-
-  
-  def printExplored() = {
-    for ((index, set) <- exploredStack.toList.sortBy(t => (t._1))) {
-      println(index + ": " + set.size)
-      //val content = set.map(x => (x._1.id, x._2.id))
-      //println(index + ": " + set.size + ": " +  content))
+  def isMessageType(e: Event) : Boolean = {
+    e match {
+      case MsgEvent(_, _, m) =>
+        return true
+      case MsgSend(_, _, m) =>
+        return true
+      case UniqueMsgEvent(MsgEvent(_, _, m), _) =>
+        return true
+      case UniqueMsgSend(MsgSend(_, _, m), _) =>
+        return true
+      case _ =>
+        return false
     }
   }
 
-  def clear() = {
-    exploredStack.clear()
-  }
-}
-
-// Shared instance
-object ExploredTacker {
-  var obj:ExploredTacker = null
-  def apply() = {
-    if (obj == null) {
-      obj = new ExploredTacker
+  // Internal events that correspond to ExternalEvents.
+  def isExternal(e: Event) : Boolean = {
+    if (e.isInstanceOf[ExternalEvent]) {
+      return true
     }
-    obj
+    return e match {
+      case _: KillEvent | _: SpawnEvent | _: PartitionEvent | _: UnPartitionEvent =>
+        return true
+      case MsgEvent(_, _, m) =>
+        return externalMessageFilter(m)
+      case MsgSend(_, _, m) =>
+        return externalMessageFilter(m)
+      case UniqueMsgEvent(MsgEvent(_, _, m), _) =>
+        return externalMessageFilter(m)
+      case UniqueMsgSend(MsgSend(_, _, m), _) =>
+        return externalMessageFilter(m)
+      case _ => return false
+    }
   }
 }
