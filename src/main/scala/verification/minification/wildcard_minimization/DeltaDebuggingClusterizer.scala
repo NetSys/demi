@@ -3,10 +3,6 @@ package akka.dispatch.verification
 /*
 import scala.collection.mutable.Stack
 
-// TODO(cs): move me out of domain_specific/.
-// TODO(cs): refactor FungibleClockMinimizer. It's not actually domain
-// specific either.
-
 class DDMinClusterizer(
     originalTrace: EventTrace,
     fingerprinter: FingerprintFactory,

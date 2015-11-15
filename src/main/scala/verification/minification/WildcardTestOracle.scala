@@ -7,7 +7,7 @@ import scalax.collection.mutable.Graph,
 
 // Used in conjuction with DDMin for external events.
 // - timeBudgetSeconds: max time to give to *each* invocation of test
-class FungibleClockTestOracle(
+class WildcardTestOracle(
   schedulerConfig: SchedulerConfig,
   originalTrace: EventTrace,
   actorNameProps: Seq[Tuple2[Props, String]],
@@ -18,7 +18,7 @@ class FungibleClockTestOracle(
   timeBudgetSeconds:Long=Long.MaxValue,
   postTest: Option[STSScheduler.PostTestCallback]=None) extends TestOracle {
 
-  def getName = "FungibleClocks"
+  def getName = "WildcardTestOracle"
 
   // Should already be specific in schedulerConfig
   def setInvariant(invariant: Invariant) {}
@@ -34,7 +34,7 @@ class FungibleClockTestOracle(
            violation_fingerprint: ViolationFingerprint,
            stats: MinimizationStats,
            initializationRoutine:Option[()=>Any]=None) : Option[EventTrace] = {
-    val minimizer = new FungibleClockMinimizer(
+    val minimizer = new WildcardMinimizer(
       schedulerConfig,
       events,
       originalTrace,

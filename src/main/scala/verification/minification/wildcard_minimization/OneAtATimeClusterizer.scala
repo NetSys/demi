@@ -8,8 +8,6 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-// TODO(cs): move me out of domain_specific/.
-
 class SingletonClusterizer(
     originalTrace: EventTrace,
     fingerprinter: FingerprintFactory,
