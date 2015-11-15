@@ -274,6 +274,16 @@ object RunnerUtils {
             preTest=preTest,
             postTest=postTest)
       }),
+      Some(new InternalMinimizer("StateMachineMin") {
+        def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
+          RunnerUtils.minimizeInternals(schedulerConfig,
+            currentExternals, currentTrace, actors, violationFound,
+            removalStrategyCtor=() => new StateMachineRemoval(currentTrace, schedulerConfig.messageFingerprinter),
+            stats=Some(currentStats),
+            initializationRoutine=initializationRoutine,
+            preTest=preTest,
+            postTest=postTest)
+      }),
       // fungibleClocks DDMin without backtracks.
       if (!paranoid) None else
       Some(new ExternalMinimizer("WildCardDDMinNoBacktracks") {
