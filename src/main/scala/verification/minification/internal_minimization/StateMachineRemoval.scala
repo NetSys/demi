@@ -1,10 +1,9 @@
 package akka.dispatch.verification
 
-
-// A RemovalStrategy that maintains a model of the program under test's state
+// A RemovalStrategy that maintains a model of the program's state
 // machine, and uses the model to decide which schedules to explore next.
 // We currently use Synoptic (URL?) to build the model from console output
-// logs of each execution we've tried so far.
+// of each execution we've tried so far.
 class StateMachineRemoval(originalTrace: EventTrace, messageFingerprinter: FingerprintFactory) extends RemovalStrategy {
   // Return how many events we were unwilling to ignore, e.g. because they've
   // been marked by the application as unignorable.
