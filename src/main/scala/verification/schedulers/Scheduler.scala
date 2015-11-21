@@ -83,6 +83,11 @@ trait Scheduler {
   // Shut down the actor system.
   def shutdown()
 
+  // Invoked whenever the application logs to the console. Used mostly for
+  // Synoptic integration.
+  // [http://www.cs.ubc.ca/~bestchai/papers/esecfse2011-final.pdf]
+  def notify_log_message(msg: String) = {}
+
   // When an actor has been terminated, the ActorCell references associated
   // with it are no longer valid. Remove all of them, and return all
   // (sender, message) pairs that used to be pending for this actor. These

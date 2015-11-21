@@ -195,6 +195,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
 
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
+    if (schedulerConfig.storeEventTraces) {
+      HistoricalEventTraces.traces += new MetaEventTrace(
+        event_orchestrator.events)
+    }
 
     currentlyInjecting.set(true)
 
@@ -231,6 +235,9 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       case true =>
         event_orchestrator.events.
           setOriginalExternalEvents(original_trace.original_externals)
+        if (schedulerConfig.storeEventTraces) {
+          HistoricalEventTraces.current.setCausedViolation
+        }
         Some(event_orchestrator.events)
       case false => None
     }
@@ -801,6 +808,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   override def handleMailboxIdle() {
     firstMessage = true
     advanceReplay
+  }
+
+  override def notify_log_message(msg: String) = {
+    if (schedulerConfig.storeEventTraces) {
+      HistoricalEventTraces.current.appendLogOutput(msg)
+    }
   }
 
   override def reset_all_state() {

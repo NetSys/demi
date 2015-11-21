@@ -1182,6 +1182,15 @@ class Instrumenter {
     }
   }
 
+  // Invoked whenever the application logs to the console. Used mostly for
+  // Synoptic integration.
+  // [http://www.cs.ubc.ca/~bestchai/papers/esecfse2011-final.pdf]
+  def notify_log_message(msg: String) {
+    if (scheduler != null) {
+      scheduler.notify_log_message(msg)
+    }
+  }
+
   def actorKnown(ref: ActorRef) : Boolean = {
     return actorMappings contains ref.path.name
   }

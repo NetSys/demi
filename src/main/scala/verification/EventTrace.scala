@@ -510,3 +510,36 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     return result
   }
 }
+
+// Encapsulates an EventTrace (which is immutable, hence why we need
+// this class), along with:
+//  (i) whether the EventTrace resulted in a violation
+//  (ii) a mapping from Event to a list of console output messages that were
+//  emitted as a result of executing that Event. For use with Synoptic.
+class MetaEventTrace(val trace: EventTrace) {
+  var causedViolation: Boolean = false
+  // Invoked by schedulers to mark whether the violation was triggered.
+  def setCausedViolation { causedViolation = true }
+
+  // Invoked by schedulers to append log messages.
+  val eventToLogOutput = new HashMap[Event,Queue[String]]
+  def appendLogOutput(msg: String) {
+    if (!(eventToLogOutput contains trace.events.last)) {
+      eventToLogOutput(trace.events.last) = new Queue[String]
+    }
+    eventToLogOutput(trace.events.last) += msg
+  }
+
+  // Return an ordered sequence of log output messages emitted by the
+  // application.
+  def getOrderedLogOutput: Queue[String] = {
+    val result = new Queue[String]
+    trace.events.foreach {
+      case e =>
+        if (eventToLogOutput contains e) {
+          result ++= eventToLogOutput(e)
+        }
+    }
+    return result
+  }
+}
