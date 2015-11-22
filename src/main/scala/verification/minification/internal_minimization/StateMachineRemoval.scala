@@ -33,6 +33,7 @@ class StateMachineRemoval(originalTrace: EventTrace, messageFingerprinter: Finge
 // Stores all (Meta)EventTraces that have been executed in the past
 object HistoricalEventTraces {
   def current: MetaEventTrace = traces.last
+  def isEmpty = traces.isEmpty
 
   // In order of least recent to most recent
   val traces = new ListBuffer[MetaEventTrace]

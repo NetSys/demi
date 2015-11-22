@@ -811,7 +811,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   }
 
   override def notify_log_message(msg: String) = {
-    if (schedulerConfig.storeEventTraces) {
+    if (schedulerConfig.storeEventTraces && !HistoricalEventTraces.isEmpty) {
       HistoricalEventTraces.current.appendLogOutput(msg)
     }
   }
