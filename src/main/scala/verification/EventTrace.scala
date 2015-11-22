@@ -10,6 +10,7 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Queue
+import scala.transient
 
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
@@ -19,6 +20,9 @@ case class UniqueTimerDelivery(t: TimerDelivery, id: Int) extends Event
 case class EventTrace(val events: SynchronizedQueue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new SynchronizedQueue[Event], null)
   def this(original_externals: Seq[ExternalEvent]) = this(new SynchronizedQueue[Event], original_externals)
+
+  @transient
+  var lastNonMetaEvent: Event = null
 
   override def hashCode = this.events.hashCode
   override def equals(other: Any) : Boolean = other match {
@@ -83,6 +87,9 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
   // This method should not be used to append MsgSends or MsgEvents
   override def +=(event: Event) : EventTrace.this.type = {
     events += event
+    if (!(MetaEvents.isMetaEvent(event))) {
+      lastNonMetaEvent = event
+    }
     return this
   }
 
@@ -98,6 +105,7 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     val rcv = cell.self.path.name
     val msg = envelope.message
     val event = UniqueMsgEvent(MsgEvent(snd, rcv, msg), id)
+    lastNonMetaEvent = event
     this.+=(event)
   }
 
@@ -539,10 +547,10 @@ class MetaEventTrace(val trace: EventTrace) {
   // Invoked by schedulers to append log messages.
   val eventToLogOutput = new HashMap[Event,Queue[String]]
   def appendLogOutput(msg: String) {
-    if (!(eventToLogOutput contains trace.events.last)) {
-      eventToLogOutput(trace.events.last) = new Queue[String]
+    if (!(eventToLogOutput contains trace.lastNonMetaEvent)) {
+      eventToLogOutput(trace.lastNonMetaEvent) = new Queue[String]
     }
-    eventToLogOutput(trace.events.last) += msg
+    eventToLogOutput(trace.lastNonMetaEvent) += msg
   }
 
   // Return an ordered sequence of log output messages emitted by the

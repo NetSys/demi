@@ -14,14 +14,14 @@ abstract trait Event
 // Metadata events, not actually events.
 // MsgEvents appearing between `BeginUnignorableEvents' and `EndUnigorableEvents'
 // will never be skipped over during replay.
-final case object BeginUnignorableEvents extends Event
-final case object EndUnignorableEvents extends Event
+final case object BeginUnignorableEvents extends Event 
+final case object EndUnignorableEvents extends Event 
 // An external thread has just started an `atomic block`, where it will now
 // send some number of messages. Upon replay, wait until the end of the
 // atomic block before deciding whether those messages are or are not going
 // to show up.
-final case class BeginExternalAtomicBlock(taskId: Long) extends Event
-final case class EndExternalAtomicBlock(taskId: Long) extends Event
+final case class BeginExternalAtomicBlock(taskId: Long) extends Event 
+final case class EndExternalAtomicBlock(taskId: Long) extends Event 
 
 // Internal events.
 // MsgSend is the initial send, not the delivery
@@ -50,15 +50,15 @@ case class NetworkUnpartition(
 
 // (More general than DPOR)
 final case class MsgSend (sender: String,
-                receiver: String, msg: Any) extends Event
-final case class KillEvent (actor: String) extends Event 
+                receiver: String, msg: Any) extends Event 
+final case class KillEvent (actor: String) extends Event
 final case class PartitionEvent (endpoints: (String, String)) extends Event
 final case class UnPartitionEvent (endpoints: (String, String)) extends Event
 // Marks when WaitQuiescence was first processed.
-final case object BeginWaitQuiescence extends Event
+final case object BeginWaitQuiescence extends Event 
 // Marks when Quiescence was actually reached.
-final case object Quiescence extends Event
-final case class ChangeContext (actor: String) extends Event
+final case object Quiescence extends Event 
+final case class ChangeContext (actor: String) extends Event 
 
 // Recording/Replaying Akka.FSM.Timer's (which aren't serializable! hence this madness)
 // N.B. these aren't explicitly recorded. We use them only when we want to serialize event
@@ -67,6 +67,18 @@ final case class TimerFingerprint(name: String,
   msgFingerprint: MessageFingerprint, repeat: Boolean, generation: Int) extends MessageFingerprint
 // Corresponds to MsgEvent.
 final case class TimerDelivery(sender: String, receiver: String, fingerprint: TimerFingerprint) extends Event
+
+// Keep this as a static class rather than a trait for backwards-compatibility
+object MetaEvents {
+  def isMetaEvent(e: Event): Boolean = {
+    e match {
+      case BeginUnignorableEvents | EndUnignorableEvents | _: BeginExternalAtomicBlock |
+           _: EndExternalAtomicBlock | _: MsgSend | BeginWaitQuiescence |
+           Quiescence | _: ChangeContext => return true
+      case _ => return false
+    }
+  }
+}
 
 object IDGenerator {
   var uniqueId = new AtomicInteger // DPOR root event is assumed to be ID 0, incrementAndGet ensures starting at 1
