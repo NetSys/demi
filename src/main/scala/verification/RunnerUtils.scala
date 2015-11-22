@@ -117,6 +117,7 @@ object RunnerUtils {
   //   prune as much as possible before trying backtracks.
   // - timeBudgetSeconds: how many seconds to allow any one of the minimizers to
   //   run for.
+  // N.B., invokes System.exit(0) before returning.
   def runTheGamut(original_dir: String,
                   output_dir: String,
                   schedulerConfig: SchedulerConfig,
