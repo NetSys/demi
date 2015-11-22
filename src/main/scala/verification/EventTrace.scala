@@ -52,6 +52,21 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     return getEvents(events)
   }
 
+  // Return any MsgSend events that were never delivered, i.e. they were
+  // sitting in the buffer at the end of the execution.
+  def getPendingMsgSends(): Set[MsgSend] = {
+    val deliveredIds = events.flatMap {
+      case UniqueMsgEvent(m, id) => Some(id)
+      case _ => None
+    }.toSet
+
+    return events.flatMap {
+      case UniqueMsgSend(m, id) if !(deliveredIds contains id) =>
+        Some(m)
+      case _ => None
+    }.toSet
+  }
+
   def length = events.length
 
   private[this] def getEvents(_events: Seq[Event]): Seq[Event] = {
