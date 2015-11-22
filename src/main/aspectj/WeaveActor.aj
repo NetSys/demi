@@ -43,28 +43,28 @@ privileged public aspect WeaveActor {
   Instrumenter inst = Instrumenter.apply();
 
   // -------- Logging Interposition for Synoptic --------------
-  before(String msg):
+  before(String msg, BusLogging bus):
   execution(* akka.event.BusLogging.notifyError(java.lang.String)) &&
-  args(msg) {
-    inst.notify_log_message(msg);
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
   }
 
-  before(String msg):
+  before(String msg, BusLogging bus):
   execution(* akka.event.BusLogging.notifyWarning(java.lang.String)) &&
-  args(msg) {
-    inst.notify_log_message(msg);
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
   }
 
-  before(String msg):
+  before(String msg, BusLogging bus):
   execution(* akka.event.BusLogging.notifyInfo(java.lang.String)) &&
-  args(msg) {
-    inst.notify_log_message(msg);
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
   }
 
-  before(String msg):
+  before(String msg, BusLogging bus):
   execution(* akka.event.BusLogging.notifyDebug(java.lang.String)) &&
-  args(msg) {
-    inst.notify_log_message(msg);
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
   }
   // ----------------------
 
