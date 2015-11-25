@@ -166,8 +166,8 @@ class WildcardMinimizer(
 
     var minTrace = doMinimize(clusterizer, dporBudgetSeconds, trace, _stats)
 
-    val timeElapsed = System.currentTimeMillis - tStartSeconds
-    val remainingTimeSeconds = timeBudgetSeconds - timeElapsed
+    val timeElapsedSeconds = (System.currentTimeMillis / 1000) - tStartSeconds
+    val remainingTimeSeconds = timeBudgetSeconds - timeElapsedSeconds
 
     if (clusteringStrategy == ClusteringStrategy.ClockThenSingleton &&
         remainingTimeSeconds > 0) {
