@@ -32,6 +32,7 @@ object ClusteringStrategy extends Enumeration {
   type ClusteringStrategy = Value
   val ClockClusterizer = Value
   val SingletonClusterizer = Value
+  val ClockThenSingleton = Value
 }
 
 // Minimizes internal events, by iteratively (i) invoking a Clusterizer to get
@@ -57,7 +58,7 @@ class WildcardMinimizer(
   preTest: Option[STSScheduler.PreTestCallback]=None,
   postTest: Option[STSScheduler.PostTestCallback]=None,
   stats: Option[MinimizationStats]=None,
-  clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockClusterizer,
+  clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockThenSingleton,
   timeBudgetSeconds:Long=Long.MaxValue)
   extends InternalEventMinimizer {
 
@@ -147,21 +148,48 @@ class WildcardMinimizer(
         resolutionStrategy
         else new BackTrackStrategy(schedulerConfig.messageFingerprinter)
 
-    val clusterizer = if (clusteringStrategy == ClusteringStrategy.ClockClusterizer)
+    val clusterizer = clusteringStrategy match {
+      case ClusteringStrategy.ClockClusterizer | ClusteringStrategy.ClockThenSingleton =>
         new ClockClusterizer(trace,
           schedulerConfig.messageFingerprinter,
           _resolutionStrategy,
           skipClockClusters=skipClockClusters,
           aggressiveness=aggressiveness)
-      else
+      case ClusteringStrategy.SingletonClusterizer =>
         new SingletonClusterizer(trace,
           schedulerConfig.messageFingerprinter, _resolutionStrategy)
+    }
 
     // Each cluster gets timeBudgetSeconds / numberOfClusters seconds
     val dporBudgetSeconds = timeBudgetSeconds / (List(clusterizer.approximateIterations,1).max)
+    val tStartSeconds = System.currentTimeMillis / 1000
 
-    var minTrace = trace
+    var minTrace = doMinimize(clusterizer, dporBudgetSeconds, trace, _stats)
 
+    val timeElapsed = System.currentTimeMillis - tStartSeconds
+    val remainingTimeSeconds = timeBudgetSeconds - timeElapsed
+
+    if (clusteringStrategy == ClusteringStrategy.ClockThenSingleton &&
+        remainingTimeSeconds > 0) {
+      log.info("Switching to SingletonClusterizer")
+      val singletonClusterizer = new SingletonClusterizer(minTrace,
+          schedulerConfig.messageFingerprinter, _resolutionStrategy)
+      minTrace = doMinimize(singletonClusterizer, remainingTimeSeconds, minTrace, _stats)
+    }
+
+    // don't overwrite prune end if we're being used as a TestOracle
+    if (!skipClockClusters) {
+      _stats.record_prune_end
+      // Fencepost
+      _stats.record_internal_size(RunnerUtils.countMsgEvents(minTrace))
+    }
+
+    return (_stats, minTrace)
+  }
+
+  def doMinimize(clusterizer: Clusterizer, budgetSeconds: Long,
+                 startTrace: EventTrace, _stats: MinimizationStats): EventTrace = {
+    var minTrace = startTrace
     var nextTrace = clusterizer.getNextTrace(false, Set[Int]())
     // don't overwrite prune start if we're being used as a TestOracle
     if (!skipClockClusters) _stats.record_prune_start
@@ -175,7 +203,7 @@ class WildcardMinimizer(
       }
       val ret = if (testScheduler == TestScheduler.DPORwHeuristics)
         testWithDpor(nextTrace.get, _stats, ignoreAbsentCallback,
-          resetCallback, dporBudgetSeconds)
+          resetCallback, budgetSeconds)
         else testWithSTSSched(nextTrace.get, _stats, ignoreAbsentCallback)
 
       // Record interation size if we're being used for internal minimization
@@ -209,13 +237,6 @@ class WildcardMinimizer(
       nextTrace = clusterizer.getNextTrace(!ret.isEmpty, ignoredAbsentIds)
     }
 
-    // don't overwrite prune end if we're being used as a TestOracle
-    if (!skipClockClusters) {
-      _stats.record_prune_end
-      // Fencepost
-      _stats.record_internal_size(RunnerUtils.countMsgEvents(minTrace))
-    }
-
-    return (_stats, minTrace)
+    return minTrace
   }
 }
