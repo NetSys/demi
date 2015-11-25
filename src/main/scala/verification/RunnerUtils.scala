@@ -158,7 +158,7 @@ object RunnerUtils {
           Tuple2[MinimizationStats, EventTrace]
     }
 
-    def run(gamut: Seq[Minimizer]) {
+    def run(gamut: Seq[Minimizer]): EventTrace = {
       var currentTrace = traceFound
       var currentExternals : Seq[ExternalEvent] = Seq.empty
       var namedTraces : Seq[(String,EventTrace)] = Seq.empty
@@ -224,6 +224,7 @@ object RunnerUtils {
           RunnerUtils.printMinimizationStats(schedulerConfig.messageFingerprinter,
             traceFound, filteredTrace, namedTraces)
       }
+      return currentTrace
     }
 
     val deserializer = new ExperimentDeserializer(output_dir, loader=loader)
@@ -251,7 +252,7 @@ object RunnerUtils {
       case _ => None
     }
 
-    run(Seq(
+    val minTrace = run(Seq(
       Some(new ExternalMinimizer("DDMin") {
         def minimize(currentExternals: Seq[ExternalEvent], currentTrace: EventTrace, currentStats: MinimizationStats) =
           RunnerUtils.stsSchedDDMin(false,
@@ -415,6 +416,8 @@ object RunnerUtils {
             postTest=postTest)
       })
     ).flatten)
+
+    RunnerUtils.visualizeDeliveries(minTrace, output_dir + "/shiviz.txt")
 
     // Play nicely with ./interposition/tools/rerun_experiments.sh
     System.exit(0)
@@ -1201,7 +1204,7 @@ object RunnerUtils {
   }
 
   /**
-   * Make it easier to construct specifically delivery orders manually.
+   * Make it easier to construct specific delivery orders manually.
    *
    * Given:
    *  - An event trace to be twiddled with
