@@ -58,7 +58,7 @@ class WildcardMinimizer(
   preTest: Option[STSScheduler.PreTestCallback]=None,
   postTest: Option[STSScheduler.PostTestCallback]=None,
   stats: Option[MinimizationStats]=None,
-  clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockThenSingleton,
+  clusteringStrategy:ClusteringStrategy.ClusteringStrategy=ClusteringStrategy.ClockClusterizer,
   timeBudgetSeconds:Long=Long.MaxValue)
   extends InternalEventMinimizer {
 
