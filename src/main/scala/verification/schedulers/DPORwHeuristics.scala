@@ -37,8 +37,10 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
-// TODO(cs): remove FailureDetector support. Not used.
-// TODO(cs): remove Partition/Unpartition support? Not strictly needed.
+// TODO(cs): mix in AbstractScheduler?
+// TODO(cs): implement more straightforward (less efficient) version of
+// exploredTracker.
+// TODO(cs): remove Quiescence support? Not strictly needed.
 // TODO(cs): don't assume enqueue_message is just for timers.
 
 object DPORwHeuristics {
@@ -174,11 +176,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   // When we took the last checkpoint.
   var lastCheckpoint = messagesScheduledSoFar
 
-  // sender -> receivers the sender is currently partitioned from.
-  // (Unidirectional)
-  val partitionMap = new HashMap[String, HashSet[String]]
-  // similar to partitionMap, but only applies to actors that have been
-  // created but not yet Start()ed
+  // actors that have been created but not yet Start()ed
   val isolatedActors = new HashSet[String]
 
   var post: (Trace) => Unit = nullFunPost
@@ -229,7 +227,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     currentTrace.clear
     nextTrace.clear
     origNextTraceSize = 0
-    partitionMap.clear
     awaitingQuiescence = false
     nextQuiescentPeriod = 0
     quiescentMarker = null
@@ -281,7 +278,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     quiescentPeriod(event) = currentQuiescentPeriod
   }
 
-  // Before adding a new WaitQuiescence/NetworkPartition/NetworkUnpartition to depGraph,
+  // Before adding a new WaitQuiescence to depGraph,
   // first try to see if it already exists in depGraph.
   def maybeAddGraphNode(unique: Unique): Unique = {
     depGraph.get(currentRoot).inNeighbors.find {
@@ -299,20 +296,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         depGraph.addEdge(unique, currentRoot)(DiEdge)
         return unique
     }
-  }
-
-  def decomposePartitionEvent(event: NetworkPartition) : Queue[(String, NodesUnreachable)] = {
-    val queue = new Queue[(String, NodesUnreachable)]
-    queue ++= event.first.map { x => (x, NodesUnreachable(event.second)) }
-    queue ++= event.second.map { x => (x, NodesUnreachable(event.first)) }
-    return queue
-  }
-
-  def decomposeUnPartitionEvent(event: NetworkUnpartition) : Queue[(String, NodesReachable)] = {
-    val queue = new Queue[(String, NodesReachable)]
-    queue ++= event.first.map { x => (x, NodesReachable(event.second)) }
-    queue ++= event.second.map { x => (x, NodesReachable(event.first)) }
-    return queue
   }
 
   def isSystemCommunication(sender: ActorRef, receiver: ActorRef) : Boolean =
@@ -431,7 +414,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     // Find equivalent messages to the one we are currently looking for.
     def equivalentTo(u1: Unique, other: (Unique, Cell, Envelope)) :
     Boolean = (u1, other._1) match {
-      // Accomodate FungibleClockCluster, which may pass in externals as
+      // Accomodate WildcardMinimizer, which may pass in externals as
       // initialTrace without knowing what the depGraph looks like.
       // TODO(cs): bad separation of concerns.
       case (Unique(m1 @ MsgEvent(_, rcv1, msg1), -1),
@@ -463,18 +446,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
               + "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
           pendingEvents((snd,rcv)).dequeueFirst(e => e == next)
           Some(next)
-
-        case Some(par @ (Unique(NetworkPartition(part1, part2), id), _, _)) =>
-          log.trace( Console.GREEN + "Now playing the high level partition event " +
-              id + Console.RESET)
-          pendingEvents((SCHEDULER,SCHEDULER)).dequeueFirst(e => e == par)
-          Some(par)
-
-        case Some(par @ (Unique(NetworkUnpartition(part1, part2), id), _, _)) =>
-          log.trace( Console.GREEN + "Now playing the high level partition event " +
-              id + Console.RESET)
-          pendingEvents((SCHEDULER,SCHEDULER)).dequeueFirst(e => e == par)
-          Some(par)
 
         case Some(qui @ (Unique(WaitQuiescence(), id), _, _)) =>
           log.trace( Console.GREEN + "Now playing the high level quiescence event " +
@@ -537,20 +508,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
               case None =>  None
             }
 
-        case Some(u @ Unique(NetworkPartition(_, _), id)) =>
-          // Look at the pending events to see if such message event exists.
-          pendingEvents.get((SCHEDULER,SCHEDULER)) match {
-            case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
-            case None =>  None
-          }
-
-        case Some(u @ Unique(NetworkUnpartition(_, _), id)) =>
-          // Look at the pending events to see if such message event exists.
-          pendingEvents.get((SCHEDULER,SCHEDULER)) match {
-            case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
-            case None =>  None
-          }
-
         case Some(u @ Unique(WaitQuiescence(), _)) => // Look at the pending events to see if such message event exists.
           pendingEvents.get((SCHEDULER,SCHEDULER)) match {
             case Some(queue) => queue.dequeueFirst(equivalentTo(u, _))
@@ -563,7 +520,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         case _ => throw new Exception("internal error")
       }
     }
- 
+
     // Keep looping until we find a pending message that matches.
     // Note that this mutates nextTrace; it pops from the head of the queue
     // until it finds a match or until the queue is empty.
@@ -630,16 +587,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
                 "(" + snd + " -> " + rcv + ") " +  + id + Console.RESET )
             Some((u, cell, env))
 
-          case Some((u @ Unique(NetworkPartition(part1, part2), id), _, _)) =>
-            log.trace( Console.GREEN + "Replaying the exact message: Partition: ("
-                + part1 + " <-> " + part2 + ")" + Console.RESET )
-            Some((u, null, null))
-
-          case Some((u @ Unique(NetworkUnpartition(part1, part2), id), _, _)) =>
-            log.trace( Console.GREEN + "Replaying the exact message: Unpartition: ("
-                + part1 + " <-> " + part2 + ")" + Console.RESET )
-            Some((u, null, null))
-
           case Some((u @ Unique(WaitQuiescence(), id), _, _)) =>
             log.trace( Console.GREEN + "Replaying the exact message: Quiescence: ("
                 + id +  ")" + Console.RESET )
@@ -671,68 +618,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           }
           return schedule_new_message(blockedActors)
         }
-        partitionMap.get(snd) match {
-          case Some(set) =>
-            if (set.contains(rcv)) {
-              log.trace(Console.RED + "Discarding event " + nextEvent +
-                " due to partition" + Console.RESET)
-              return schedule_new_message(blockedActors)
-            }
-          case _ =>
-        }
         currentTrace += nextEvent
         setParentEvent(nextEvent)
 
         return Some((cell, env))
-
-      case Some((nextEvent @ Unique(par@ NetworkPartition(first, second), nID), _, _)) =>
-        // FIXME: We cannot send NodesUnreachable messages to FSM: in response to an unexpected message,
-        // an FSM cancels and then restart a timer. This means that we cannot actually make this assumption
-        // below
-        //
-        // A NetworkPartition event is translated into multiple
-        // NodesUnreachable messages which are atomically and
-        // and invisibly consumed by all relevant parties.
-        // Important: no messages are allowed to be dispatched
-        // as the result of NodesUnreachable being received.
-        //decomposePartitionEvent(par) map tupled(
-          //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
-        for (node  <- first) {
-          partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  second
-        }
-        for (node  <- second) {
-          partitionMap(node) = partitionMap.getOrElse(node, new HashSet[String]) ++  first
-        }
-
-        instrumenter().tellEnqueue.await()
-
-        currentTrace += nextEvent
-        return schedule_new_message(blockedActors)
-
-      case Some((nextEvent @ Unique(par@ NetworkUnpartition(first, second), nID), _, _)) =>
-        // FIXME: We cannot send NodesUnreachable messages to FSM: in response to an unexpected message,
-        // an FSM cancels and then restart a timer. This means that we cannot actually make this assumption
-        // below
-        //decomposeUnPartitionEvent(par) map tupled(
-          //(rcv, msg) => instrumenter().actorMappings(rcv) ! msg)
-
-        for (node  <- first) {
-          partitionMap.get(node) match {
-            case Some(set) => set --= second
-            case _ =>
-          }
-        }
-        for (node  <- second) {
-          partitionMap.get(node) match {
-            case Some(set) => set --= first
-            case _ =>
-          }
-        }
-
-        instrumenter().tellEnqueue.await()
-
-        currentTrace += nextEvent
-        return schedule_new_message(blockedActors)
 
       case Some((nextEvent @ Unique(WaitQuiescence(), nID), _, _)) =>
         awaitQuiescenceUpdate(nextEvent)
@@ -797,25 +686,12 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
             log.trace(Console.BLUE + " sending " + rcv + " messge " + msgCtor() + Console.RESET)
             instrumenter().actorMappings(rcv) ! msgCtor()
 
-          case uniq @ Unique(par : NetworkPartition, id) =>
-            val msgs = pendingEvents.getOrElse((SCHEDULER,SCHEDULER), new Queue[(Unique, Cell, Envelope)])
-            pendingEvents((SCHEDULER,SCHEDULER)) = msgs += ((uniq, null, null))
-            maybeAddGraphNode(uniq)
-
-          case uniq @ Unique(par : NetworkUnpartition, id) =>
-            val msgs = pendingEvents.getOrElse((SCHEDULER,SCHEDULER), new Queue[(Unique, Cell, Envelope)])
-            pendingEvents((SCHEDULER,SCHEDULER)) = msgs += ((uniq, null, null))
-            maybeAddGraphNode(uniq)
-
           case event @ Unique(WaitQuiescence(), _) =>
             val msgs = pendingEvents.getOrElse((SCHEDULER,SCHEDULER), new Queue[(Unique, Cell, Envelope)])
             pendingEvents((SCHEDULER,SCHEDULER)) = msgs += ((event, null, null))
             maybeAddGraphNode(event)
             await = true
 
-          // A unique ID needs to be associated with all network events.
-          case par : NetworkPartition => throw new Exception("internal error")
-          case par : NetworkUnpartition => throw new Exception("internal error")
           case _ => throw new Exception("unsuported external event " + event)
         }
         externalEventIdx += 1
@@ -840,12 +716,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     // This is necessary since network events are not
     // part of the dependency graph.
     externalEventList = externalEvents.map { e => e match {
-      case par: NetworkPartition =>
-        val unique = Unique(par)
-        unique
-      case par: NetworkUnpartition =>
-        val unique = Unique(par)
-        unique
       case w: WaitQuiescence =>
         Unique(w, id=w._id)
       case Unique(start : Start, _) =>
@@ -930,11 +800,15 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
 
     envelope.message match {
-      // CheckpointRequests and failure detector messeages are simply enqueued to the priority queued
+      // CheckpointRequests messeages are simply enqueued to the priority queued
       // and dispatched at the earliest convenience.
-      case NodesReachable | NodesUnreachable | CheckpointRequest =>
+      case CheckpointRequest =>
         val msgs = pendingEvents.getOrElse((PRIORITY,PRIORITY), new Queue[(Unique, Cell, Envelope)])
         pendingEvents((PRIORITY,PRIORITY)) = msgs += ((null, cell, envelope))
+
+      // Failure detector not supported
+      case NodesReachable | NodesUnreachable =>
+        throw new IllegalStateException("Turn off Failure Detector: not supported..")
 
       case _ =>
         val unique @ Unique(msg : MsgEvent, id) = getMessage(cell, envelope)
@@ -1148,7 +1022,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
      ** @param laterI: Index of the later event.
      ** @param trace: The trace to which the events belong to.
      *
-     ** @return none
+     ** @return (branch where , prefix of events needed to co-enable the two events)
      */
     def analyze_dep(earlierI: Int, laterI: Int, trace: Trace):
     Option[(Int, List[Unique])] = {
@@ -1157,54 +1031,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       val later = getEvent(laterI, trace)
 
       (earlier.event, later.event) match {
-        // Since the later event is completely independent, we
-        // can simply move it in front of the earlier event.
-        // This might cause the earlier event to become disabled,
-        // but we have no way of knowing.
-        case (_: MsgEvent, _: NetworkPartition) =>
-          val branchI = earlierI - 1
-          val needToReplay = List(later, earlier)
-
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
-
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        case (_: NetworkPartition, _: MsgEvent) =>
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
-
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
-
-        // Since the later event is completely independent, we
-        // can simply move it in front of the earlier event.
-        // This might cause the earlier event to become disabled,
-        // but we have no way of knowing.
-        case (_: MsgEvent, _: NetworkUnpartition) =>
-          val branchI = earlierI - 1
-          val needToReplay = List(later, earlier)
-
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
-
-        // Similarly, we move an earlier independent event
-        // just after the later event. None of the two event
-        // will become disabled in this case.
-        case (_: NetworkUnpartition, _: MsgEvent) =>
-          val branchI = earlierI - 1
-          val needToReplay = currentTrace.clone()
-            .drop(earlierI + 1)
-            .take(laterI - earlierI)
-            .toList :+ earlier
-
-          exploredTracker.setExplored(branchI, (earlier, later))
-          return Some((branchI, needToReplay))
-
         case (_: MsgEvent, _: MsgEvent) =>
           val commonPrefix = getCommonPrefix(earlier, later)
 
@@ -1248,18 +1074,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       // Quiescence is never co-enabled
       case (Unique(WaitQuiescence(), _), _) => false
       case (_, Unique(WaitQuiescence(), _)) => false
-      // Network partitions and unpartitions with interesection are not coenabled (cheap hack to
-      // prevent us from trying reordering these directly). We need to do something smarter maybe
-      case (Unique(p1: NetworkPartition, _), Unique(p2: NetworkPartition, _)) => false
-      case (Unique(u1: NetworkUnpartition, _), Unique(u2: NetworkUnpartition, _)) => false
-      case (Unique(p1: NetworkPartition, _), Unique(u2: NetworkUnpartition, _)) => false
-      case (Unique(u1: NetworkUnpartition, _), Unique(p2: NetworkPartition, _)) => false
-      // NetworkPartition is always co-enabled with any other event.
-      case (Unique(p : NetworkPartition, _), _) => true
-      case (_, Unique(p : NetworkPartition, _)) => true
-      // NetworkUnpartition is always co-enabled with any other event.
-      case (Unique(p : NetworkUnpartition, _), _) => true
-      case (_, Unique(p : NetworkUnpartition, _)) => true
       case (Unique(m1 : MsgEvent, _), Unique(m2 : MsgEvent, _)) =>
         if (m1.receiver != m2.receiver)
           return false
@@ -1425,7 +1239,7 @@ object DPORwHeuristicsUtil {
           toReplay += UniqueMsgEvent(m, id)
         }
       case _ =>
-        // Probably no need to consider Kills or Partitions
+        // Probably no need to consider Kills
         None
     }
     return toReplay
@@ -1461,12 +1275,6 @@ object DPORwHeuristicsUtil {
         } else {
           Some(Unique(w, id=w._id))
         }
-      case k @ Kill(name) =>
-        Some(Unique(NetworkPartition(Set(name), allActorsSet), id=k._id))
-      case p @ Partition(a,b) =>
-        Some(Unique(NetworkPartition(Set(a), Set(b)), id=p._id))
-      case u @ UnPartition(a,b) =>
-        Some(Unique(NetworkUnpartition(Set(a), Set(b)), id=u._id))
       case _ => None
     }
     return filtered_externals
