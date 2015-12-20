@@ -102,6 +102,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     _root
   }
 
+  // Bound the depth of the DepGraph, i.e. only explore schedules containing
+  // messages with small enough path to the root event.
   var should_bound = false
   var stop_at_depth = 0
   depth_bound match {
@@ -112,12 +114,15 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     should_bound = true
     stop_at_depth = _stop_at_depth
   }
+  // Bound the total length of schedules explored (stricter than depth of DepGraph)
   var should_cap_messages = false
   var max_messages = 0
   def setMaxMessagesToSchedule(_max_messages: Int) {
     should_cap_messages = true
     max_messages = _max_messages
   }
+  // Bound the maximum edit distance of backtrack points, i.e. dont consider
+  // backtrack points with greater edit distance.
   var should_cap_distance = false
   var stop_at_distance = 0
   def setMaxDistance(_stop_at_distance: Int) {
