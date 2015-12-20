@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
 
+// TODO(cs): double check that degGraph.get() is constant time.
 // TODO(cs): mix in AbstractScheduler?
 // TODO(cs): implement more straightforward (less efficient) version of
 // exploredTracker.
@@ -969,11 +970,11 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     }
   }
 
-  def getEvent(index: Integer, trace: Trace) : Unique = {
-    trace(index) match {
-      case u: Unique => u
-      case _ => throw new Exception("internal error not a message")
+  def getEvent(index: Integer, trace: Array[Unique]) : Unique = {
+    if (index > trace.size) {
+      throw new Exception("internal error not a message")
     }
+    return trace(index)
   }
 
   private[dispatch] def getCommonPrefix(earlier: Unique,
@@ -1009,7 +1010,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       return None
     }
     interleavingCounter += 1
-    val root = getEvent(0, currentTrace)
+    val traceArray = trace.toArray
+    val root = currentTrace(0)
     val rootN = ( depGraph get getRootEvent )
 
     val racingIndices = new HashSet[Integer]
@@ -1024,7 +1026,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
      *
      ** @return (branch where , prefix of events needed to co-enable the two events)
      */
-    def analyze_dep(earlierI: Int, laterI: Int, trace: Trace):
+    def analyze_dep(earlierI: Int, laterI: Int, trace: Array[Unique]):
     Option[(Int, List[Unique])] = {
       // Retrieve the actual events.
       val earlier = getEvent(earlierI, trace)
@@ -1041,7 +1043,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           val lastElement = commonPrefix.last
           val branchI = trace.indexWhere { e => (e == lastElement.value) }
 
-          val needToReplay = currentTrace.clone()
+          val needToReplay = currentTrace
             .drop(branchI + 1)
             .dropRight(currentTrace.size - laterI - 1)
             .filter { x => x.id != earlier.id }
@@ -1101,14 +1103,14 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
      */
     if (!skipBacktrackComputation) {
       log.trace(Console.GREEN+ "Computing backtrack points. This may take awhile..." + Console.RESET)
-      for(laterI <- 0 to trace.size - 1) {
-        val later @ Unique(laterEvent, laterID) = getEvent(laterI, trace)
+      for(laterI <- 0 to traceArray.size - 1) {
+        val later @ Unique(laterEvent, laterID) = getEvent(laterI, traceArray)
 
         for(earlierI <- 0 to laterI - 1) {
-          val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, trace)
+          val earlier @ Unique(earlierEvent, earlierID) = getEvent(earlierI, traceArray)
 
           if (isCoEnabeled(earlier, later)) {
-            analyze_dep(earlierI, laterI, trace) match {
+            analyze_dep(earlierI, laterI, traceArray) match {
               case Some((branchI, needToReplayV)) =>
                 // Since we're exploring an already executed trace, we can
                 // safely mark the interleaving of (earlier, later) as
