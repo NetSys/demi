@@ -82,6 +82,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   startFromBackTrackPoints:Boolean=true,
   skipBacktrackComputation:Boolean=false,
   stopAfterNextTrace:Boolean=false,
+  trackHistory:Boolean=true,
   budgetSeconds:Long=Long.MaxValue) extends Scheduler with TestOracle {
 
   val log = LoggerFactory.getLogger("DPOR")
@@ -496,7 +497,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
                     // not necessary
                     val priorEvent = currentTrace.last
                     val branchI = currentTrace.length - 1
-                    exploredTracker.setExplored(branchI, (priorEvent, found._1))
+                    if (trackHistory) {
+                      exploredTracker.setExplored(branchI, (priorEvent, found._1))
+                    }
                     val msgEvent = found._1.event
                     queue.dequeueFirst(e => e == found)
                   case None => None
@@ -1059,7 +1062,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
           // events, we need to extract the values.
           val needToReplayV = needToReplay.toList
 
-          exploredTracker.setExplored(branchI, (earlier, later))
+          if (trackHistory) {
+            exploredTracker.setExplored(branchI, (earlier, later))
+          }
           return Some((branchI, needToReplayV))
       }
       return None
@@ -1131,7 +1136,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     def getNext() : Option[(Int, (Unique, Unique), Seq[Unique])] = {
       // If the backtrack set is empty, this means we're done.
       if (backTrack.isEmpty ||
-          (should_cap_distance && backtrackHeuristic.getDistance(backTrack.head) >= stop_at_distance)) {
+          (should_cap_distance &&
+            backtrackHeuristic.getDistance(backTrack.head) >= stop_at_distance) ||
+          (stopIfViolationFound && shortestTraceSoFar != null)) {
         log.info("Tutto finito!")
         done(depGraph)
         return None
@@ -1140,7 +1147,7 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
       backtrackHeuristic.clearKey(backTrack.head)
       val (maxIndex, (e1, e2), replayThis) = backTrack.dequeue
 
-      exploredTracker.isExplored((e1, e2)) match {
+      (trackHistory && exploredTracker.isExplored((e1, e2))) match {
         case true =>
           log.debug("Skipping backTrack point: " + e1 + " " + e2)
           return getNext()
@@ -1153,7 +1160,9 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
         log.info(Console.RED + "Exploring a new message interleaving " +
            e1 + " and " + e2  + " at index " + maxIndex + Console.RESET)
 
-        exploredTracker.setExplored(maxIndex, (e1, e2))
+        if (trackHistory) {
+          exploredTracker.setExplored(maxIndex, (e1, e2))
+        }
         // TODO(cs): the following optimization is not correct if we don't
         // explore in depth-first order. Figure out how to make it correct.
         //exploredTracker.trimExplored(maxIndex)
