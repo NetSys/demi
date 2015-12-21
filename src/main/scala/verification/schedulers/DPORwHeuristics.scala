@@ -72,6 +72,7 @@ object DPORwHeuristics {
  *     invariant_check_interval message deliveries.
  *   - depth_bound: determines the maximum depGraph path from the root to the messages
  *     played. Note that this differs from maxMessagesToSchedule.
+ *   - saveInterval: how many schedules should pass before printing intermediate runtime statistics.
  */
 class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   prioritizePendingUponDivergence:Boolean=false,
@@ -83,7 +84,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
   skipBacktrackComputation:Boolean=false,
   stopAfterNextTrace:Boolean=false,
   trackHistory:Boolean=true,
-  budgetSeconds:Long=Long.MaxValue) extends Scheduler with TestOracle {
+  budgetSeconds:Long=Long.MaxValue,
+  saveInterval:Int=Int.MaxValue) extends Scheduler with TestOracle {
 
   val log = LoggerFactory.getLogger("DPOR")
 
@@ -341,6 +343,10 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
     currentTrace += getRootEvent
     if (stats != null) {
       stats.increment_replays()
+      if ((stats.inner().total_replays % saveInterval) == 0) {
+        stats.record_prune_end()
+        println(stats.toJson())
+      }
     }
     maybeStartActors()
     runExternal()

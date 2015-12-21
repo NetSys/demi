@@ -805,7 +805,7 @@ object RunnerUtils {
         Tuple4[Seq[ExternalEvent], MinimizationStats, Option[EventTrace], ViolationFingerprint] = {
     // since depth first, set trackHistory=false
     val dpor = new DPORwHeuristics(schedulerConfig,
-      invariant_check_interval=5, trackHistory=false)
+      invariant_check_interval=5, trackHistory=false, saveInterval=250)
     dpor.setMaxMessagesToSchedule(maxScheduleLength)
     dpor.setActorNameProps(actorNameProps)
     val _stats = stats match {
@@ -814,7 +814,10 @@ object RunnerUtils {
     }
     _stats.updateStrategy("BoundedDPOR", "")
 
+    _stats.record_prune_start()
     val traceOpt = dpor.test(externals, violation_fingerprint, _stats)
+    _stats.record_prune_end()
+
     traceOpt match {
       case None =>
         return (Seq.empty, _stats, None, violation_fingerprint)
