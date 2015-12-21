@@ -1188,7 +1188,6 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
            violation_fingerprint: ViolationFingerprint,
            _stats: MinimizationStats,
            init:Option[()=>Any]=None) : Option[EventTrace] = {
-    assert(_initialTrace != null)
     if (stopIfViolationFound && shortestTraceSoFar != null) {
       log.warn("Already have shortestTrace!")
       return Some(DPORwHeuristicsUtil.convertToEventTrace(shortestTraceSoFar,
@@ -1212,7 +1211,8 @@ class DPORwHeuristics(schedulerConfig: SchedulerConfig,
 
     var traceSem = new Semaphore(0)
     var initialTrace = if (startFromBackTrackPoints && !backTrack.isEmpty)
-      dpor(currentTrace) else Some(_initialTrace)
+      dpor(currentTrace) else if (_initialTrace != null)
+      Some(_initialTrace) else None
     // N.B. reset() and Instrumenter().reinitialize_system
     // are invoked at the beginning of run(), hence we don't need to clean up
     // after ourselves at the end of test(), *unless* some other scheduler
