@@ -298,7 +298,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
     return ret
   }
 
-  // TODO(cs): factor me into ExternalEventInjector
+  // TODO(cs): redundant with RandomScheduer. Factor me into ExternalEventInjector
   def checkInvariant() {
     if (!schedulerConfig.enableCheckpointing) {
       // If no checkpointing, go ahead and check the invariant now
@@ -433,5 +433,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
   override def reset_all_state () = {
     super.reset_all_state
     pendingEvents.clear
+    pendingSystemMessages.clear
+    shuttingDown.set(false)
   }
 }
