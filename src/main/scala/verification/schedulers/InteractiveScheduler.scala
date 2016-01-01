@@ -55,10 +55,11 @@ class DemiConsole {
   val quit = BoundDemiCommand(cmd("quit", alias="q", help_msg="Exit the program"))
 
   def printHeader() {
-    // TODO(cs): make this colored.
+    println(Console.WHITE)
     println("DEMi Interactive console.")
     println("Python expressions and DEMi commands supported.")
     println("Type 'help' for an overview of available commands.")
+    println(Console.RESET)
   }
 
   def show_help(command:String="") {
@@ -128,7 +129,7 @@ class DemiConsole {
     val consoleReader = new jline.console.ConsoleReader()
     var finished = false
     while (!finished) {
-      val line = consoleReader.readLine("> ")
+      val line = consoleReader.readLine(Console.WHITE + " > " + Console.RESET)
       if (line == null) {
         finished = handler( EOF )
       } else {
@@ -172,7 +173,7 @@ class DemiConsole {
     //  }
     //}
 
-    def input(prompt: String): BoundDemiCommand = {
+    def input(): BoundDemiCommand = {
       var ret : BoundDemiCommand = help
       readline {
         case EOF =>
@@ -195,9 +196,7 @@ class DemiConsole {
       return ret
     }
 
-    // TODO(cs): set ps1 color scheme.
-    // sys.ps1 = color.GREEN + "STS " + color.WHITE
-    val command = input("  >")
+    val command = input()
     return command
   }
 }
@@ -268,9 +267,9 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
       if (checkpointer.done && !blockedOnCheckpoint.get) {
         test_invariant(externals, checkpointer.checkpoints) match {
           case None =>
-            println("No Violation")
+            println(Console.YELLOW + "No Violation" + Console.RESET)
           case Some(fingerprint) =>
-            println(s"Violation found: $fingerprint")
+            println(Console.RED + s"Violation found: $fingerprint" + Console.RESET)
         }
       }
     } else {
@@ -306,9 +305,9 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
       var checkpoint = new HashMap[String, Option[CheckpointReply]]
       test_invariant(externals, checkpoint) match {
         case None =>
-          println("No Violation")
+          println(Console.YELLOW + "No Violation" + Console.RESET)
         case Some(fingerprint) =>
-          println(s"Violation found: $fingerprint")
+          println(Console.RED + s"Violation found: $fingerprint" + Console.RESET)
       }
     } else {
       prepareCheckpoint()
@@ -355,7 +354,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
         val rcv = cell.self.path.name
         val msg = envelope.message
         val alias = idToAlias(uniq.id)
-        println(f"[$alias]:    $snd -> $rcv: $msg")
+        println(Console.GREEN + f"[$alias]:    $snd -> $rcv: $msg" + Console.RESET)
       }
     }
 
