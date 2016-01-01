@@ -12,6 +12,11 @@ trait ViolationFingerprint {
   def affectedNodes(): Seq[String]
 }
 
+case object NoViolation extends ViolationFingerprint {
+  def affectedNodes(): Seq[String] = Seq.empty
+  def matches(other: ViolationFingerprint): Boolean = false
+}
+
 object TestOracle {
   // An predicate that returns None if the safety condition is not violated,
   // i.e. the execution is correct. Otherwise, returns a
