@@ -226,14 +226,14 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
     case None => null
   }
 
+  var violation : Option[ViolationFingerprint] = None
+
   var externals : Seq[ExternalEvent] = null
 
   def run(_externals:Seq[ExternalEvent]): Tuple2[EventTrace,Option[ViolationFingerprint]] = {
     externals = _externals
-    // TODO(cs): track violation.
     Instrumenter().scheduler = this
-    // TODO(cs): ? reset_all_state
-    return (execute_trace(_externals), None)
+    return (execute_trace(_externals), violation)
   }
 
   // Record a mapping from actor names to actor refs
@@ -269,6 +269,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
           case None =>
             println(Console.YELLOW + "No Violation" + Console.RESET)
           case Some(fingerprint) =>
+            violation = Some(fingerprint)
             println(Console.RED + s"Violation found: $fingerprint" + Console.RESET)
         }
       }
@@ -309,6 +310,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
         case None =>
           println(Console.YELLOW + "No Violation" + Console.RESET)
         case Some(fingerprint) =>
+          violation = Some(fingerprint)
           println(Console.RED + s"Violation found: $fingerprint" + Console.RESET)
       }
     } else {
@@ -437,5 +439,6 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
     pendingEvents.clear
     pendingSystemMessages.clear
     shuttingDown.set(false)
+    violation = None
   }
 }
