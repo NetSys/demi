@@ -273,6 +273,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
         }
       }
     } else {
+      event_orchestrator.events.appendMsgSend(snd, rcv, msg, uniq.id)
       pendingEvents += uniq
     }
   }
@@ -291,6 +292,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
         case Some(e) =>
           ret = Some(e.element)
           pendingEvents -= e
+          event_orchestrator.events.appendMsgEvent(e.element, e.id)
         case None =>
           println(s"No such event $alias")
       }
