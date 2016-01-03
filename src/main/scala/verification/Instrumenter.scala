@@ -139,6 +139,9 @@ class Instrumenter {
   var cancellableToTimer = new HashMap[Cancellable, Tuple2[String, Any]]
   // And vice versa
   var timerToCancellable = new HashMap[Tuple2[String,Any], Cancellable]
+  // Sometimes cancelTimer is called before tellEnqueue.enqueue(), so save
+  // cancelled timers here for at most one round before clear()ing.
+  var timersCancelledThisStep = new HashSet[Tuple2[String,Any]]
   // Fake actor, used to designate a code block (as opposed to a message) scheduled through
   // akka.scheduler. Should never receive messages; only used for its ActorRef.
   var scheduleFunctionRef : ActorRef = null
@@ -154,6 +157,7 @@ class Instrumenter {
   val logger = LoggerFactory.getLogger("Instrumenter")
 
   private[dispatch] def cancelTimer (c: Cancellable, rcv: String, msg: Any, success: Boolean) = {
+    timersCancelledThisStep += ((rcv, msg))
     // Need this here since by the time DPORwHeuristics gets here the thing is already canceled
     if (cancellableToTimer contains c) {
       removeCancellable(c)
@@ -450,7 +454,7 @@ class Instrumenter {
   // Callbacks for new actors being created
   def new_actor(system: ActorSystem,
       props: Props, name: String, actor: ActorRef) : Unit = {
-    
+
     if (_passThrough.get()) {
       return
     }
@@ -501,6 +505,7 @@ class Instrumenter {
     ongoingCancellableTasks.clear
     cancellableToTimer.clear
     timerToCancellable.clear
+    timersCancelledThisStep.clear()
   }
 
   def reset_per_system_state() {
@@ -953,6 +958,10 @@ class Instrumenter {
       // schedule_new_message, since afterMessageReceive will not be invoked.
       logger.trace("Dispatching after kicking off schedule block!")
 
+      // It's a new step, so clear any timers that were cancelled within the
+      // last step
+      timersCancelledThisStep.clear()
+
       val new_message = if (Instrumenter.synchronizeOnScheduler) {
         scheduler.synchronized {
           scheduler.schedule_new_message(blockedActors.keySet)
@@ -1077,6 +1086,14 @@ class Instrumenter {
 
     // Record the dispatcher for the current receiver.
     dispatchers(receiver) = dispatcher
+
+    // If this is an already-cancelled timer, don't tell the scheduler about
+    // it.
+    if (timersCancelledThisStep contains (rcv, envelope.message)) {
+      timersCancelledThisStep -= ((rcv, envelope.message))
+      tellEnqueue.enqueue()
+      return false
+    }
 
     // Record that this event was produced. The scheduler is responsible for
     // kick starting processing.
