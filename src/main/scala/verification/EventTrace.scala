@@ -10,6 +10,7 @@ import scala.collection.mutable.HashMap
 import scala.collection.mutable.HashSet
 import scala.collection.mutable.SynchronizedQueue
 import scala.collection.mutable.Queue
+import scala.transient
 
 // Internal api
 case class UniqueMsgSend(m: MsgSend, id: Int) extends Event
@@ -19,6 +20,9 @@ case class UniqueTimerDelivery(t: TimerDelivery, id: Int) extends Event
 case class EventTrace(val events: SynchronizedQueue[Event], var original_externals: Seq[ExternalEvent]) extends Growable[Event] with Iterable[Event] {
   def this() = this(new SynchronizedQueue[Event], null)
   def this(original_externals: Seq[ExternalEvent]) = this(new SynchronizedQueue[Event], original_externals)
+
+  @transient
+  var lastNonMetaEvent: Event = null
 
   override def hashCode = this.events.hashCode
   override def equals(other: Any) : Boolean = other match {
@@ -52,6 +56,21 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     return getEvents(events)
   }
 
+  // Return any MsgSend events that were never delivered, i.e. they were
+  // sitting in the buffer at the end of the execution.
+  def getPendingMsgSends(): Set[MsgSend] = {
+    val deliveredIds = events.flatMap {
+      case UniqueMsgEvent(m, id) => Some(id)
+      case _ => None
+    }.toSet
+
+    return events.flatMap {
+      case UniqueMsgSend(m, id) if !(deliveredIds contains id) =>
+        Some(m)
+      case _ => None
+    }.toSet
+  }
+
   def length = events.length
 
   private[this] def getEvents(_events: Seq[Event]): Seq[Event] = {
@@ -68,6 +87,9 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
   // This method should not be used to append MsgSends or MsgEvents
   override def +=(event: Event) : EventTrace.this.type = {
     events += event
+    if (!(MetaEvents.isMetaEvent(event))) {
+      lastNonMetaEvent = event
+    }
     return this
   }
 
@@ -83,6 +105,7 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
     val rcv = cell.self.path.name
     val msg = envelope.message
     val event = UniqueMsgEvent(MsgEvent(snd, rcv, msg), id)
+    lastNonMetaEvent = event
     this.+=(event)
   }
 
@@ -506,6 +529,39 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
         case _ =>
           result += event
       }
+    }
+    return result
+  }
+}
+
+// Encapsulates an EventTrace (which is immutable, hence why we need
+// this class), along with:
+//  (i) whether the EventTrace resulted in a violation
+//  (ii) a mapping from Event to a list of console output messages that were
+//  emitted as a result of executing that Event. For use with Synoptic.
+class MetaEventTrace(val trace: EventTrace) {
+  var causedViolation: Boolean = false
+  // Invoked by schedulers to mark whether the violation was triggered.
+  def setCausedViolation { causedViolation = true }
+
+  // Invoked by schedulers to append log messages.
+  val eventToLogOutput = new HashMap[Event,Queue[String]]
+  def appendLogOutput(msg: String) {
+    if (!(eventToLogOutput contains trace.lastNonMetaEvent)) {
+      eventToLogOutput(trace.lastNonMetaEvent) = new Queue[String]
+    }
+    eventToLogOutput(trace.lastNonMetaEvent) += msg
+  }
+
+  // Return an ordered sequence of log output messages emitted by the
+  // application.
+  def getOrderedLogOutput: Queue[String] = {
+    val result = new Queue[String]
+    trace.events.foreach {
+      case e =>
+        if (eventToLogOutput contains e) {
+          result ++= eventToLogOutput(e)
+        }
     }
     return result
   }

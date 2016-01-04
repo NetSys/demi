@@ -375,6 +375,7 @@ class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
   }
 }
 
+/*
 object AdditionDistance {
   // Unlike traditional edit distance:
   //  - do not consider any changes to word1, i.e. keep word1 fixed.
@@ -437,6 +438,7 @@ object AdditionDistance {
     return minCosts(0)(0)
   }
 }
+*/
 
 object Util {
 

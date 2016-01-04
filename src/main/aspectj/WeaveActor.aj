@@ -30,6 +30,7 @@ import akka.dispatch.MessageQueue;
 import akka.dispatch.MessageDispatcher;
 import akka.dispatch.Mailbox;
 import akka.dispatch.MonitorableThreadFactory;
+import akka.event.BusLogging;
 
 import scala.concurrent.impl.CallbackRunnable;
 import scala.concurrent.duration.FiniteDuration;
@@ -40,6 +41,32 @@ import java.lang.Runnable;
 
 privileged public aspect WeaveActor {
   Instrumenter inst = Instrumenter.apply();
+
+  // -------- Logging Interposition for Synoptic --------------
+  before(String msg, BusLogging bus):
+  execution(* akka.event.BusLogging.notifyError(java.lang.String)) &&
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
+  }
+
+  before(String msg, BusLogging bus):
+  execution(* akka.event.BusLogging.notifyWarning(java.lang.String)) &&
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
+  }
+
+  before(String msg, BusLogging bus):
+  execution(* akka.event.BusLogging.notifyInfo(java.lang.String)) &&
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
+  }
+
+  before(String msg, BusLogging bus):
+  execution(* akka.event.BusLogging.notifyDebug(java.lang.String)) &&
+  args(msg) && this(bus) {
+    inst.notify_log_message(bus.logSource() + " " + msg);
+  }
+  // ----------------------
 
   // Don't allow LightArrayRevolverScheduler to restart its timer thread.
   // TODO(cs): much cleaner would be to not use Thread.stop(), and figure out

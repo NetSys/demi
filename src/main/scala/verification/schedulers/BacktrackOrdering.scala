@@ -1,5 +1,7 @@
 package akka.dispatch.verification
 
+// A subcomponent of DPOR schedulers.
+
 import akka.actor.Cell,
        akka.actor.ActorSystem,
        akka.actor.ActorRef,
@@ -37,7 +39,6 @@ import scalax.collection.mutable.Graph,
 import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
-
 
 trait BacktrackOrdering {
   // The priority function we feed into the priority queue.

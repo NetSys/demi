@@ -114,7 +114,7 @@ def write_data_file(dat_filename, stats):
   ''' Write out the datapoints. Return the maximum x-value '''
   xmax = 0
   datapoints = interpolate_datapoints(stats)
-  for t in ["iteration_size", "internal_iteration_size"]:
+  for t in ["internal_iteration_size", "iteration_size"]:
     sorted_keys = datapoints[t].keys()
     sorted_keys.sort(lambda a,b: -1 if int(a) < int(b) else 1 if int(a) > int(b) else 0)
     if int(sorted_keys[-1]) > xmax:
@@ -143,8 +143,8 @@ def write_gpi_template(gpi_filename, output_filename, data_info_list, xmax=None,
     line_type_counter = 1
     for i, data_info in enumerate(data_info_list):
       first_t = True
-      for t,title in [("iteration_size", "Externals"),
-                      ("internal_iteration_size", "Deliveries")]:
+      for t,title in [("internal_iteration_size", "Deliveries"),
+                      ("iteration_size", "Externals")]:
         expanded_title = title if data_info.title == "" else data_info.title + "_" + title
         gpi.write('''"%s" index 0:1 title "%s" with steps ls %d''' %
                   (data_info.filename + "_" + t, expanded_title,

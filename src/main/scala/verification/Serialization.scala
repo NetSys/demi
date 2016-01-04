@@ -155,7 +155,7 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
   }
 
   def record_experiment(experiment_name: String, trace: EventTrace,
-                        violation: ViolationFingerprint,
+                        violation:ViolationFingerprint=NoViolation,
                         depGraph: Option[Graph[Unique, DiEdge]]=None,
                         initialTrace: Option[Queue[Unique]]=None,
                         filteredTrace: Option[Queue[Unique]]=None) : String = {
@@ -205,10 +205,12 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
                                   violationBuf)
 
     // Serialize the external events.
-    val externalsAsArray : Array[ExternalEvent] = trace.original_externals.toArray
-    val externalBuf = JavaSerialization.serialize(externalsAsArray)
-    JavaSerialization.writeToFile(output_dir + ExperimentSerializer.original_externals,
-                                  externalBuf)
+    if (trace.original_externals != null) {
+      val externalsAsArray : Array[ExternalEvent] = trace.original_externals.toArray
+      val externalBuf = JavaSerialization.serialize(externalsAsArray)
+      JavaSerialization.writeToFile(output_dir + ExperimentSerializer.original_externals,
+                                    externalBuf)
+    }
 
     depGraph match {
       case Some(graph) =>
