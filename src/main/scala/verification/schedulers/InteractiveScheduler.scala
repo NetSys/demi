@@ -10,6 +10,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import akka.dispatch.Envelope
 
+import org.slf4j.LoggerFactory,
+       ch.qos.logback.classic.Level,
+       ch.qos.logback.classic.Logger
+
+// TODO(cs): add an optional SrcDstFIFO constraint.
+
 sealed trait JLineEvent
 case class Line(value: String) extends JLineEvent
 case object EmptyLine extends JLineEvent
@@ -208,6 +214,8 @@ class DemiConsole {
 class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
   extends AbstractScheduler with ExternalEventInjector[ExternalEvent] {
 
+  override val logger = LoggerFactory.getLogger("InteractiveScheduler")
+
   val shuttingDown = new AtomicBoolean(false)
 
   // Current set of enabled events.
@@ -218,7 +226,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
   val console = new DemiConsole
   console.printHeader
   val deliverEventCmd = console.cmd("deliver", "d", "Deliver the pending event with the given id")
-                            .arg("id", "id of pending event [integer].")
+                               .arg("id", "id of pending event [integer].")
   val checkInvariantCmd = console.cmd("inv", "i", "Check the given invariant")
 
   var test_invariant : TestOracle.Invariant = schedulerConfig.invariant_check match {
@@ -232,6 +240,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
 
   def run(_externals:Seq[ExternalEvent]): Tuple2[EventTrace,Option[ViolationFingerprint]] = {
     externals = _externals
+    event_orchestrator.events.setOriginalExternalEvents(_externals)
     Instrumenter().scheduler = this
     return (execute_trace(_externals), violation)
   }
@@ -339,10 +348,11 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
     // Assign mappings from unique id <-> char
     val idToAlias = new HashMap[Int,Char]
     val aliasToId = new HashMap[Char,Int]
+    val sortedPending = pendingEvents.toSeq.sortBy(u => u.id)
 
     {
     var currentAlias = 'a'
-    pendingEvents.foreach { case uniq =>
+    sortedPending.foreach { case uniq =>
       idToAlias(uniq.id) = currentAlias
       aliasToId(currentAlias) = uniq.id
       currentAlias = (currentAlias + 1).toChar
@@ -351,7 +361,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
 
     def printEventsWithIds() {
       println("Pending events:")
-      pendingEvents.foreach { case uniq =>
+      sortedPending.foreach { case uniq =>
         val cell = uniq.element._1
         val envelope = uniq.element._2
         val snd = envelope.sender.path.name
@@ -394,6 +404,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
             }
           }
         // TODO(cs): inject external?
+        // TODO(cs): drop message [to clean up delivery options]
         case _ =>
           println(s"Unknown command: $command")
       }
@@ -408,8 +419,9 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
   }
 
   def notify_timer_cancel(rcv: String, msg: Any) {
+    logger.trace(s"notify_timer_cancel: $rcv $msg")
     pendingEvents.retain(uniq =>
-      uniq.element._2.message != msg &&
+      uniq.element._2.message != msg ||
       uniq.element._1.self.path.name != rcv)
   }
 
