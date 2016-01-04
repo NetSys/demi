@@ -1149,6 +1149,18 @@ object RunnerUtils {
     printer.print
   }
 
+  def countOptimalEvents(dir: String, messageDeserializer: MessageDeserializer,
+                         messageFingerprinter: FingerprintFactory) {
+    var deserializer = new ExperimentDeserializer(dir)
+    val dummy_sched = new ReplayScheduler(SchedulerConfig())
+    Instrumenter().scheduler = dummy_sched
+    dummy_sched.populateActorSystem(deserializer.get_actors)
+    val origTrace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val (deliveries, externals, timers) = RunnerUtils.extractDeliveryStats(origTrace, messageFingerprinter)
+    println(s"Optimal: ${deliveries.size} ($externals externals, $timers timers)")
+    dummy_sched.shutdown
+  }
+
   def getDeliveries(trace: EventTrace): Seq[Event] = {
     trace flatMap {
       case m: MsgEvent => Some(m)
