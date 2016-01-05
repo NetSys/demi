@@ -288,12 +288,12 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
     }
   }
 
-  def deliverEvent(args: Seq[String], aliasToId: HashMap[Char,Int]): Option[(Cell, Envelope)] = {
+  def deliverEvent(args: Seq[String], aliasToId: HashMap[String,Int]): Option[(Cell, Envelope)] = {
     var ret: Option[(Cell, Envelope)] = None
     if (args.length != 1) {
       println(s"Should only have one argument. Was: $args")
     } else {
-      val alias = args(0).head
+      val alias = args(0).trim
       if (!(aliasToId contains alias)) {
         println(s"No such event $alias")
       }
@@ -346,16 +346,24 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
     }
 
     // Assign mappings from unique id <-> char
-    val idToAlias = new HashMap[Int,Char]
-    val aliasToId = new HashMap[Char,Int]
+    val idToAlias = new HashMap[Int,String]
+    val aliasToId = new HashMap[String,Int]
     val sortedPending = pendingEvents.toSeq.sortBy(u => u.id)
 
     {
+    var prefix : Option[Char] = None
     var currentAlias = 'a'
     sortedPending.foreach { case uniq =>
-      idToAlias(uniq.id) = currentAlias
-      aliasToId(currentAlias) = uniq.id
-      currentAlias = (currentAlias + 1).toChar
+      val aliasStr = if (prefix.isEmpty) currentAlias.toString
+                     else prefix.get.toString + currentAlias.toString
+      idToAlias(uniq.id) = aliasStr
+      aliasToId(aliasStr) = uniq.id
+      if (currentAlias == 'z') {
+        prefix = if (prefix.isEmpty) Some('a') else Some((prefix.get + 1).toChar)
+        currentAlias = 'a'
+      } else {
+        currentAlias = (currentAlias + 1).toChar
+      }
     }
     }
 
