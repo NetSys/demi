@@ -266,9 +266,7 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
         stats.minimization_strategy + "_" + stats.test_oracle + shrunk_str
     ExperimentSerializer.create_experiment_dir(new_experiment_dir, add_timestamp=false)
 
-    val mcsBuf = JavaSerialization.serialize(mcs.toArray)
-    JavaSerialization.writeToFile(new_experiment_dir + ExperimentSerializer.mcs,
-                                  mcsBuf)
+    recordMinimizedExternals(new_experiment_dir, mcs)
 
     recordMinimizationStats(new_experiment_dir, stats)
 
@@ -294,6 +292,12 @@ class ExperimentSerializer(message_fingerprinter: FingerprintFactory, message_se
     val sanitizedBuf = JavaSerialization.serialize(asArray)
     JavaSerialization.writeToFile(output_dir + ExperimentSerializer.minimizedInternalTrace,
                                   sanitizedBuf)
+  }
+
+  def recordMinimizedExternals(output_dir: String, mcs: Seq[ExternalEvent]) {
+    val mcsBuf = JavaSerialization.serialize(mcs.toArray)
+    JavaSerialization.writeToFile(output_dir + ExperimentSerializer.mcs,
+                                  mcsBuf)
   }
 
   def recordMinimizationStats(output_dir: String, internalStats: MinimizationStats) {

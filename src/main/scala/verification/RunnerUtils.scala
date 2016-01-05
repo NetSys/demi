@@ -220,6 +220,7 @@ object RunnerUtils {
           // N.B. may be overwritten.
           serializer.recordMinimizedInternals(output_dir,
             currentStats, currentTrace)
+          serializer.recordMinimizedExternals(output_dir, currentExternals)
 
           RunnerUtils.printMinimizationStats(schedulerConfig.messageFingerprinter,
             traceFound, filteredTrace, namedTraces)
