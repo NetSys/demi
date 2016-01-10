@@ -36,7 +36,8 @@ object RunnerUtils {
            invariant_check_interval:Int=30,
            maxMessages:Option[Int]=None,
            randomizationStrategyCtor:() => RandomizationStrategy=() => new FullyRandom,
-           computeProvenance:Boolean=true) :
+           computeProvenance:Boolean=true,
+           violationWereLookingFor:(ViolationFingerprint)=>Boolean=(f:ViolationFingerprint)=>true):
         Tuple5[EventTrace, ViolationFingerprint, Graph[Unique, DiEdge], Queue[Unique], Queue[Unique]] = {
     var violationFound : ViolationFingerprint = null
     var traceFound : EventTrace = null
@@ -63,35 +64,37 @@ object RunnerUtils {
           sched.shutdown()
           logger.info("shutdown successfully")
         case Some((trace, violation)) => {
-          logger.info("Found a safety violation!")
-          depGraph = sched.depTracker.getGraph
-          initialTrace = sched.depTracker.getInitialTrace
-          sched.shutdown()
-          validate_replay match {
-            case Some(replayerCtor) =>
-              logger.info("Validating replay")
-              val replayer = replayerCtor()
-              Instrumenter().scheduler = replayer
-              var deterministic = true
-              try {
-                replayer.replay(trace.filterCheckpointMessages)
-                if (replayer.violationAtEnd.isEmpty) {
-                  deterministic = false
+          if (violationWereLookingFor(violation)) {
+            logger.info("Found a safety violation!")
+            depGraph = sched.depTracker.getGraph
+            initialTrace = sched.depTracker.getInitialTrace
+            sched.shutdown()
+            validate_replay match {
+              case Some(replayerCtor) =>
+                logger.info("Validating replay")
+                val replayer = replayerCtor()
+                Instrumenter().scheduler = replayer
+                var deterministic = true
+                try {
+                  replayer.replay(trace.filterCheckpointMessages)
+                  if (replayer.violationAtEnd.isEmpty) {
+                    deterministic = false
+                  }
+                } catch {
+                  case r: ReplayException =>
+                    logger.info("doesn't replay deterministically..." + r)
+                    deterministic = false
+                } finally {
+                  replayer.shutdown()
                 }
-              } catch {
-                case r: ReplayException =>
-                  logger.info("doesn't replay deterministically..." + r)
-                  deterministic = false
-              } finally {
-                replayer.shutdown()
-              }
-              if (deterministic) {
+                if (deterministic) {
+                  violationFound = violation
+                  traceFound = trace
+                }
+              case None =>
                 violationFound = violation
                 traceFound = trace
-              }
-            case None =>
-              violationFound = violation
-              traceFound = trace
+            }
           }
         }
       }
