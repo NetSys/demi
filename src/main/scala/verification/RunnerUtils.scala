@@ -95,6 +95,8 @@ object RunnerUtils {
                 violationFound = violation
                 traceFound = trace
             }
+          } else {
+            sched.shutdown()
           }
         }
       }
