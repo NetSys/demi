@@ -390,7 +390,8 @@ class ExperimentDeserializer(results_dir: String, loader:ClassLoader=ClassLoader
 
   def get_events(message_deserializer: MessageDeserializer,
                  actorSystem: ActorSystem,
-                 traceFile:String=ExperimentSerializer.event_trace) : EventTrace = {
+                 traceFile:String=ExperimentSerializer.event_trace,
+                 externalsFile:String=ExperimentSerializer.original_externals) : EventTrace = {
     val buf = JavaSerialization.readFromFile(results_dir + traceFile)
     val events = JavaSerialization.deserialize[Array[Event]](buf, loader=loader).map(e =>
       e match {
@@ -408,7 +409,7 @@ class ExperimentDeserializer(results_dir: String, loader:ClassLoader=ClassLoader
     )
 
     val originalExternalBuf = JavaSerialization.readFromFile(results_dir +
-      ExperimentSerializer.original_externals)
+      externalsFile)
     // N.B. sbt does some strange things with the class path, and sometimes
     // fails on this line. One way of fixing this: rather than running
     // `sbt run`, invoke `sbt assembly; java -cp /path/to/assembledjar Main`

@@ -95,21 +95,28 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
       }
     }
 
-    for (t <- _trace.getEvents) {
-      t match {
-        case MsgSend (snd, rcv, msg) =>
-          // Track all messages we expect.
-          val fingerprint = messageFingerprinter.fingerprint(msg)
-          val correctedSnd = if (snd == "Timer") "deadLetters" else snd
-          allSends((correctedSnd, rcv, fingerprint)) = allSends.getOrElse((correctedSnd, rcv, fingerprint), 0) + 1
-        case _ =>
-          None
-      }
-    }
     val updatedEvents = _trace.recomputeExternalMsgSends(_trace.original_externals)
     event_orchestrator.set_trace(updatedEvents)
     // Bad method name. "reset recorded events"
     event_orchestrator.reset_events
+
+    for (t <- _trace.getEvents) {
+      t match {
+        case m @ MsgSend (snd, rcv, msg) =>
+          // Track all messages we expect.
+          val fingerprint = messageFingerprinter.fingerprint(msg)
+          val correctedSnd = if (snd == "Timer") "deadLetters" else snd
+          allSends((correctedSnd, rcv, fingerprint)) = allSends.getOrElse((correctedSnd, rcv, fingerprint), 0) + 1
+
+          // Also preemptively send out external messages, to avoid reordering
+          // issues with MsgSend events.
+          if (EventTypes.isExternal(m)) {
+            enqueue_message(None, rcv, msg)
+          }
+        case _ =>
+          None
+      }
+    }
 
     currentlyInjecting.set(true)
     // Start playing back trace
@@ -149,16 +156,13 @@ class ReplayScheduler(val schedulerConfig: SchedulerConfig,
             event_orchestrator.trigger_partition(a,b)
           case UnPartitionEvent((a,b)) =>
             event_orchestrator.trigger_unpartition(a,b)
-          case m @ MsgSend (sender, receiver, message) =>
-            if (EventTypes.isExternal(m)) {
-              enqueue_message(None, receiver, message)
-            }
           case t: TimerDelivery =>
             // Check that the Timer wasn't destined for a dead actor.
             send_external_messages(false)
             if (pendingEvents contains (t.sender, t.receiver, t.fingerprint)) {
               break
             }
+          case _: MsgSend =>
           case MsgEvent(snd, rcv, msg) =>
             break
           case BeginWaitQuiescence =>

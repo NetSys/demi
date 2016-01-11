@@ -433,6 +433,7 @@ object RunnerUtils {
       messageDeserializer: MessageDeserializer,
       scheduler: ExternalEventInjector[_] with Scheduler=null, // if null, use dummy
       traceFile:String=ExperimentSerializer.event_trace,
+      externalsFile:String=ExperimentSerializer.mcs,
       loader:ClassLoader=ClassLoader.getSystemClassLoader()) :
                   Tuple3[EventTrace, ViolationFingerprint, Option[Graph[Unique, DiEdge]]] = {
     val deserializer = new ExperimentDeserializer(experiment_dir, loader=loader)
@@ -444,7 +445,8 @@ object RunnerUtils {
     _scheduler.setActorNamePropPairs(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
     val trace = deserializer.get_events(messageDeserializer,
-                  Instrumenter().actorSystem, traceFile=traceFile)
+                  Instrumenter().actorSystem, traceFile=traceFile,
+                  externalsFile=externalsFile)
     val dep_graph = deserializer.get_dep_graph()
     if (scheduler == null) {
       _scheduler.shutdown
@@ -480,11 +482,13 @@ object RunnerUtils {
   def replayExperiment(experiment_dir: String,
                        schedulerConfig: SchedulerConfig,
                        messageDeserializer: MessageDeserializer,
-                       traceFile:String=ExperimentSerializer.event_trace): EventTrace = {
+                       traceFile:String=ExperimentSerializer.event_trace,
+                       externalsFile:String=ExperimentSerializer.mcs): EventTrace = {
     val replayer = new ReplayScheduler(schedulerConfig, false)
     val (trace, _, _) = RunnerUtils.deserializeExperiment(experiment_dir,
                                         messageDeserializer, replayer,
-                                        traceFile=traceFile)
+                                        traceFile=traceFile,
+                                        externalsFile=externalsFile)
 
     return RunnerUtils.replayExperiment(trace, schedulerConfig,
       Seq.empty, _replayer=Some(replayer))
