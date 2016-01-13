@@ -5,7 +5,7 @@ File.foreach(ARGV.shift) do |line|
     puts "  " + line
   elsif line =~ /AFTER/
     puts "  " + line
-  elsif line =~ /schedule_new_message/
+  elsif line =~ /schedule_new_message/ or line =~ /RAFT/
     puts
     puts line
     puts
