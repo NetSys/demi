@@ -296,6 +296,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
       val alias = args(0).trim
       if (!(aliasToId contains alias)) {
         println(s"No such event $alias")
+        return ret
       }
       val id = aliasToId(alias)
       pendingEvents.find(e => e.id == id) match {
