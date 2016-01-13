@@ -84,6 +84,12 @@ object RunnerUtils {
                   case r: ReplayException =>
                     logger.info("doesn't replay deterministically..." + r)
                     deterministic = false
+                  case s: IllegalStateException =>
+                    // Usually:
+                    // java.lang.IllegalStateException: sendsQueue is empty, (EventTrace.scala:273
+                    // which we still haven't figured out...
+                    logger.error("non-deterministic bug in DEMi:" + s)
+                    deterministic = false
                 } finally {
                   replayer.shutdown()
                 }
