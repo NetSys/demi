@@ -265,7 +265,7 @@ class FakeCell(receiver: ActorRef) extends Cell {
 }
 
 class ProvenanceTracker(trace: Queue[Unique], depGraph: Graph[Unique, DiEdge]) {
-  val log = LoggerFactory.getLogger("DPOR")
+  val log = LoggerFactory.getLogger("provTracker")
 
   val happensBefore = new HashSet[(Unique, Unique)]
 
