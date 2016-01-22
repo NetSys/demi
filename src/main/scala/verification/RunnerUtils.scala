@@ -111,16 +111,26 @@ object RunnerUtils {
     // Before returning, try to prune events that are concurrent with the violation.
     var filtered = new Queue[Unique]
     if (computeProvenance) {
-      logger.info("Pruning events not in provenance of violation. This may take awhile...")
-      val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
-      val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
-      filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
-      val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
-      // TODO(cs): track this number somewhere. Or reconstruct it from
-      // initialTrace/filtered.
-      logger.info("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
+      filtered = RunnerUtils.pruneConcurrentEvents(initialTrace, traceFound,
+        violationFound, depGraph)
     }
     return (traceFound, violationFound, depGraph, initialTrace, filtered)
+  }
+
+  def pruneConcurrentEvents(initialTrace: Queue[Unique],
+    traceFound: EventTrace, violationFound: ViolationFingerprint,
+    depGraph: Graph[Unique, DiEdge]): Queue[Unique] = {
+
+    var filtered = new Queue[Unique]
+    logger.info("Pruning events not in provenance of violation. This may take awhile...")
+    val provenenceTracker = new ProvenanceTracker(initialTrace, depGraph)
+    val origDeliveries = countMsgEvents(traceFound.filterCheckpointMessages.filterFailureDetectorMessages)
+    filtered = provenenceTracker.pruneConcurrentEvents(violationFound)
+    val numberFiltered = origDeliveries - countMsgEvents(filtered.map(u => u.event))
+    // TODO(cs): track this number somewhere. Or reconstruct it from
+    // initialTrace/filtered.
+    logger.info("Pruned " + numberFiltered + "/" + origDeliveries + " concurrent deliveries")
+    return filtered
   }
 
   // Run all the minimizations!
@@ -439,7 +449,7 @@ object RunnerUtils {
       messageDeserializer: MessageDeserializer,
       scheduler: ExternalEventInjector[_] with Scheduler=null, // if null, use dummy
       traceFile:String=ExperimentSerializer.event_trace,
-      externalsFile:String=ExperimentSerializer.mcs,
+      externalsFile:String=ExperimentSerializer.original_externals,
       loader:ClassLoader=ClassLoader.getSystemClassLoader()) :
                   Tuple3[EventTrace, ViolationFingerprint, Option[Graph[Unique, DiEdge]]] = {
     val deserializer = new ExperimentDeserializer(experiment_dir, loader=loader)
@@ -462,6 +472,7 @@ object RunnerUtils {
 
   def deserializeMCS(experiment_dir: String,
       messageDeserializer: MessageDeserializer,
+      traceFile:String=ExperimentSerializer.minimizedInternalTrace,
       scheduler: ExternalEventInjector[_] with Scheduler=null,
       skipStats: Boolean=false, // if null, use dummy
       loader:ClassLoader=ClassLoader.getSystemClassLoader()) :
@@ -475,7 +486,8 @@ object RunnerUtils {
     Instrumenter().scheduler = _scheduler
     _scheduler.populateActorSystem(deserializer.get_actors)
     val violation = deserializer.get_violation(messageDeserializer)
-    val trace = deserializer.get_events(messageDeserializer, Instrumenter().actorSystem)
+    val trace = deserializer.get_events(messageDeserializer,
+      Instrumenter().actorSystem, traceFile=traceFile)
     val mcs = deserializer.get_mcs
     val actorNameProps = deserializer.get_actors
     val stats = if (!skipStats) deserializer.get_stats else null
