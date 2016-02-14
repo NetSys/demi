@@ -555,7 +555,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
         } else {
           val unique = depTracker.getMessage(snd,rcv,msg, external=true)
           if (schedulerConfig.abortUponDivergence && depTracker.isUnknown(unique)) {
-            logger.trace("setting abortingDueToDivergence due to external")
+            logger.debug("setting abortingDueToDivergence due to external")
             abortingDueToDivergence = true
             return
           }
@@ -574,7 +574,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
         }
         val unique = depTracker.getMessage(snd,rcv,msg)
         if (schedulerConfig.abortUponDivergence && depTracker.isUnknown(unique)) {
-          logger.trace("setting abortingDueToDivergence due to internal")
+          logger.debug("setting abortingDueToDivergence due to internal")
           abortingDueToDivergence = true
           return
         }
