@@ -20,6 +20,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.Breaks._
 
+import scalax.collection.mutable.Graph,
+       scalax.collection.GraphEdge.DiEdge,
+       scalax.collection.edge.LDiEdge
+
 import org.slf4j.LoggerFactory,
        ch.qos.logback.classic.Level,
        ch.qos.logback.classic.Logger
@@ -75,6 +79,7 @@ object STSScheduler {
  *
  * Follows essentially the same heuristics as STS1:
  *   http://www.eecs.berkeley.edu/~rcs/research/sts.pdf
+ *
  */
 class STSScheduler(val schedulerConfig: SchedulerConfig,
                    var original_trace: EventTrace,
@@ -100,9 +105,13 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // Current set of enabled events. Includes external messages, but not
   // failure detector messages, which are always sent in FIFO order.
   // { (snd, rcv) -> { msg fingerprint => Queue(rcv's cell, envelope of message) } }
+  //
+  // Our use of Uniq and Unique is somewhat confusing. Uniq is used to
+  // associate MsgSends with their subsequent MsgEvents.
+  // Unique is used by DepTracker.
   val pendingEvents = new HashMap[(String, String),
                                   HashMap[MessageFingerprint,
-                                          Queue[Uniq[(Cell, Envelope)]]]]
+                                          Queue[Tuple2[Uniq[(Cell,Envelope)],Unique]]]]
 
   // Current set of failure detector or CheckpointRequest messages destined for
   // actors, to be delivered in the order they arrive.
@@ -140,6 +149,25 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   def setIgnoreAbsentCallback(c: STSScheduler.IgnoreAbsentCallback) {
     ignoreAbsentCallback = c
   }
+
+  // For every message we deliver, track which messages become enabled as a
+  // result of our delivering that message. This can be used later to recreate
+  // the DepGraph (used by DPOR).
+  var depTracker = new DepTracker(schedulerConfig)
+
+  var abortingDueToDivergence = false
+
+  // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
+  // caused us to arrive at Quiescence.
+  setQuiescenceCallback(() => {
+    if (event_orchestrator.previous_event.getClass == classOf[WaitQuiescence]) {
+      depTracker.reportQuiescence(event_orchestrator.previous_event.asInstanceOf[WaitQuiescence])
+    }
+  })
+  // Tell EventOrchestrator to tell us about Kills, Parititions, UnPartitions
+  event_orchestrator.setKillCallback(depTracker.reportKill)
+  event_orchestrator.setPartitionCallback(depTracker.reportPartition)
+  event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
 
   // Pre: there is a SpawnEvent for every sender and recipient of every SendEvent
   // Pre: subseq is not empty.
@@ -222,24 +250,28 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
-    val checkpoint = if (schedulerConfig.enableCheckpointing) takeCheckpoint() else
-                        new HashMap[String, Option[CheckpointReply]]
-    val violation = test_invariant(subseq, checkpoint)
-    var violationFound = false
-    violation match {
-      case Some(fingerprint) =>
-        violationFound = fingerprint.matches(violationFingerprint)
-      case _ => None
-    }
-    val ret = violationFound match {
-      case true =>
-        event_orchestrator.events.
-          setOriginalExternalEvents(original_trace.original_externals)
-        if (schedulerConfig.storeEventTraces) {
-          HistoricalEventTraces.current.setCausedViolation
+    val ret = abortingDueToDivergence match {
+      case true => None
+      case false =>
+        val checkpoint = if (schedulerConfig.enableCheckpointing) takeCheckpoint() else
+                            new HashMap[String, Option[CheckpointReply]]
+        val violation = test_invariant(subseq, checkpoint)
+        var violationFound = false
+        violation match {
+          case Some(fingerprint) =>
+            violationFound = fingerprint.matches(violationFingerprint)
+          case _ => None
         }
-        Some(event_orchestrator.events)
-      case false => None
+        violationFound match {
+          case true =>
+            event_orchestrator.events.
+              setOriginalExternalEvents(original_trace.original_externals)
+            if (schedulerConfig.storeEventTraces) {
+              HistoricalEventTraces.current.setCausedViolation
+            }
+            Some(event_orchestrator.events)
+          case false => None
+        }
     }
     postTestCallback()
     // Wait until the initialization thread is done. Assumes that it
@@ -270,6 +302,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       case _ => None
     }
 
+    /*
     // Optimization: if no unexpected events to schedule, give up early.
     val unexpected = IntervalPeekScheduler.unexpected(
         IntervalPeekScheduler.flattenedEnabledNested(pendingEvents), expected,
@@ -280,6 +313,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       event_orchestrator.trace_advanced
       return
     }
+    */
 
     val peeker = new IntervalPeekScheduler(schedulerConfig,
       expected, fingerprintedMsgEvent, 10)
@@ -326,8 +360,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       case Some(hash) =>
         msg match {
           case WildCardMatch(msgSelector,_) =>
-            msgSelector(hash.values.flatten.toSeq.sortBy(uniq => uniq.id).
-              map(uniq => uniq.element._2.message), (i: Int) => None)
+            msgSelector(hash.values.flatten.toSeq.sortBy(tuple => tuple._1.id).
+              map(tuple => tuple._1.element._2.message), (i: Int) => None)
           case _ =>
             hash.get(messageFingerprinter.fingerprint(msg))
         }
@@ -499,7 +533,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     }
   }
 
-  def event_produced(cell: Cell, envelope: Envelope) = {
+  def event_produced(cell: Cell, envelope: Envelope) : Unit = {
     var snd = envelope.sender.path.name
     val rcv = cell.self.path.name
     val msg = envelope.message
@@ -519,11 +553,18 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
             MessageTypes.fromCheckpointCollector(msg)) {
           pendingSystemMessages += uniq
         } else {
+          val unique = depTracker.getMessage(snd,rcv,msg, external=true)
+          if (schedulerConfig.abortUponDivergence && depTracker.isUnknown(unique)) {
+            logger.trace("setting abortingDueToDivergence due to external")
+            abortingDueToDivergence = true
+            return
+          }
+          depTracker.addNodeAndEdge(unique)
           val innerHash = pendingEvents.getOrElse((snd, rcv),
-              new HashMap[MessageFingerprint, Queue[Uniq[(Cell, Envelope)]]])
+              new HashMap[MessageFingerprint, Queue[Tuple2[Uniq[(Cell, Envelope)],Unique]]])
           val msgs = innerHash.getOrElse(fingerprint,
-              new Queue[Uniq[(Cell, Envelope)]])
-          innerHash(fingerprint) = msgs += uniq
+              new Queue[Tuple2[Uniq[(Cell, Envelope)],Unique]])
+          innerHash(fingerprint) = msgs += ((uniq, unique))
           pendingEvents((snd, rcv)) = innerHash
         }
       }
@@ -531,13 +572,20 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
         if (snd == "deadLetters") {
           isTimer = true
         }
+        val unique = depTracker.getMessage(snd,rcv,msg)
+        if (schedulerConfig.abortUponDivergence && depTracker.isUnknown(unique)) {
+          logger.trace("setting abortingDueToDivergence due to internal")
+          abortingDueToDivergence = true
+          return
+        }
+        depTracker.addNodeAndEdge(unique)
         // Drop any messages that crosses a partition.
         if (!event_orchestrator.crosses_partition(snd, rcv)) {
           val innerHash = pendingEvents.getOrElse((snd, rcv),
-              new HashMap[MessageFingerprint, Queue[Uniq[(Cell, Envelope)]]])
+              new HashMap[MessageFingerprint, Queue[Tuple2[Uniq[(Cell, Envelope)],Unique]]])
           val msgs = innerHash.getOrElse(fingerprint,
-              new Queue[Uniq[(Cell, Envelope)]])
-          innerHash(fingerprint) = msgs += uniq
+              new Queue[Tuple2[Uniq[(Cell, Envelope)],Unique]])
+          innerHash(fingerprint) = msgs += ((uniq, unique))
           pendingEvents((snd, rcv)) = innerHash
         }
       }
@@ -568,7 +616,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // TODO: The first message send ever is not queued, and hence leads to a bug.
   // Solve this someway nice.
   def schedule_new_message(blockedActors: Set[String]) : Option[(Cell, Envelope)] = {
-    if (stopDispatch.get()) {
+    if (stopDispatch.get() || abortingDueToDivergence) {
       // Return None to stop dispatching.
       return None
     }
@@ -623,8 +671,10 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     val (outerKey, innerKey) = event_orchestrator.current_event match {
       case MsgEvent(snd, rcv, WildCardMatch(messageSelector,_)) =>
         val outerKey = ((snd, rcv))
-        val pendingKeyValues = pendingEvents(outerKey).
-          toIndexedSeq.sortBy(keyValue => keyValue._2.head.id)
+        // Filter out the Uniques while we're at it, leaving just Uniqs.
+        val pendingKeyValues = pendingEvents(outerKey)
+          .map(pair => ((pair._1, pair._2.map(tuple => tuple._1))))
+          .toIndexedSeq.sortBy(keyValue => keyValue._2.head.id)
         // Assume that all messages within the same Queue are
         // indistinguishable from the perspect of messageSelector.
         val pendingValues = pendingKeyValues.map(pair => pair._2.head.element._2.message)
@@ -669,7 +719,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // It is a fatal error if expectedMessage is None; advanceReplay should
     // have inferred that the next expected message is going to be enabled.
     expectedMessage match {
-      case Some(uniq) =>
+      case Some((uniq,unique)) =>
         // We have found the message we expect!
         event_orchestrator.events.appendMsgEvent(uniq.element, uniq.id)
         event_orchestrator.trace_advanced
@@ -691,6 +741,8 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
           return None
         }
 
+        depTracker.reportNewlyDelivered(unique)
+
         schedSemaphore.release
         return Some(uniq.element)
       case None =>
@@ -701,6 +753,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   override def notify_quiescence () {
     if (stopDispatch.get()) {
       stopDispatch.set(false)
+      return
+    }
+
+    if (abortingDueToDivergence) {
+      started.set(false)
+      traceSem.release
       return
     }
 
@@ -770,7 +828,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       case Some(hash) =>
         hash.get(innerKey) match {
           case Some(queue) =>
-            queue.dequeueFirst(t => t.element._2.message == msg)
+            queue.dequeueFirst(t => t._1.element._2.message == msg)
             if (queue.isEmpty) {
               hash.remove(innerKey)
               if (hash.isEmpty) {
@@ -796,7 +854,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
       if (rcv == name) {
         for ((fingerprint,queue) <- pendingEvents((snd,rcv))) {
           for (e <- queue) {
-            result += ((snd, e.element._2.message))
+            result += ((snd, e._1.element._2.message))
           }
         }
         pendingEvents -= ((snd,rcv))
@@ -826,5 +884,12 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     expectedExternalAtomicBlocks = new HashSet[Long]
     pausing = new AtomicBoolean(false)
     stopDispatch.set(false)
+    if (schedulerConfig.abortUponDivergence) {
+      depTracker = new DepTracker(schedulerConfig)
+    }
+    event_orchestrator.setKillCallback(depTracker.reportKill)
+    event_orchestrator.setPartitionCallback(depTracker.reportPartition)
+    event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
+    abortingDueToDivergence = false
   }
 }

@@ -95,7 +95,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
   // For every message we deliver, track which messages become enabled as a
   // result of our delivering that message. This can be used later to recreate
   // the DepGraph (used by DPOR).
-  var depTracker = new DepTracker(messageFingerprinter)
+  var depTracker = new DepTracker(schedulerConfig)
 
   // Avoid infinite loops with timers: if we just scheduled one,
   // don't schedule the exact same one immediately again until we've scheduled
@@ -588,7 +588,7 @@ class RandomScheduler(val schedulerConfig: SchedulerConfig,
     trace = null
     messagesScheduledSoFar = 0
     lastCheckpoint = 0
-    depTracker = new DepTracker(messageFingerprinter)
+    depTracker = new DepTracker(schedulerConfig)
     event_orchestrator.setKillCallback(depTracker.reportKill)
     event_orchestrator.setPartitionCallback(depTracker.reportPartition)
     event_orchestrator.setUnPartitionCallback(depTracker.reportUnPartition)
