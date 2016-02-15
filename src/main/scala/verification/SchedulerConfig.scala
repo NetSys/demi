@@ -22,6 +22,11 @@ case class SchedulerConfig(
    * just to compare against prior work.
    */
   abortUponDivergence       : Boolean=false,
+  // Spark exhibits non-determinism, so instead of detecting specific
+  // previously unobserved transitions, just count up all the pending messages at the
+  // end of the execution, and see if any were not sent at some point in the
+  // original execution.
+  abortUponDivergenceLax    : Boolean=false,
 
   /**
    * - originalDepGraph: DepGraph from the original execution, to detect if we
