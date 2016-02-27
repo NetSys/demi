@@ -33,7 +33,7 @@ case class EventTrace(val events: SynchronizedQueue[Event], var original_externa
   // Optional: if you have the original external events, that helps us with
   // filtering.
   def setOriginalExternalEvents(_original_externals: Seq[ExternalEvent]) = {
-    println("Setting originalExternalEvents: " + _original_externals.size)
+    //println("Setting originalExternalEvents: " + _original_externals.size)
     original_externals = _original_externals
   }
 
