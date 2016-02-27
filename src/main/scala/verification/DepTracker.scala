@@ -53,6 +53,10 @@ class DepTracker(schedulerConfig: SchedulerConfig,
         throw new IllegalArgumentException("No root in initialDepGraph"))
   }
 
+  def getAllNodes(): List[Unique] = {
+    return depGraph.nodes.toList.map(_.value)
+  }
+
   initialTrace += currentRoot
   // Most recent message we delivered.
   var parentEvent : Unique = currentRoot

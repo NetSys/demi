@@ -34,7 +34,7 @@ set style line 4 lt rgb "#F25900" lw 2 pt 9
 set key top right
 
 set ylabel "Number of Remaining Events"
-set xlabel "Number of Replays Executed"
+set xlabel "Number of Schedules Executed"
 
 set yrange [0:]
 
