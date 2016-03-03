@@ -8,8 +8,7 @@ call into DEMi shouldn't be too difficult.
 ## Useful resources:
 
 - [Blog post](http://colin-scott.github.io/blog/2015/10/07/fuzzing-raft-for-fun-and-profit) covering how DEMi does fuzz testing, and the bugs we found in a Raft implementation using DEMi.
-- [Draft](http://eecs.berkeley.edu/~rcs/research/nsdi_draft.pdf) of our
-  research paper.
+- Our NSDI 2016 [paper](http://eecs.berkeley.edu/~rcs/research/nsdi16.pdf) describing the system in detail.
 - Example applications tested with DEMi can be found [here](https://github.com/NetSys/demi-applications).
 
 ## Current status of this project
