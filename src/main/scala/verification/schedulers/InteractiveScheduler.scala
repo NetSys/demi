@@ -193,7 +193,7 @@ class DemiConsole {
             ret = BoundDemiCommand(commands(cmd_name), args)
             true
           } else {
-            println(s"Command $s not yet supported! Not all of this is a ruse though, I promise ;-)")
+            println(s"Unknown command: $s")
             false
           }
         case _ =>
@@ -420,7 +420,9 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
         // TODO(cs): inject external?
         // TODO(cs): drop message [to clean up delivery options]
         case _ =>
-          println(s"Unknown command: $command")
+          println(Console.YELLOW +
+            s"Command `${command.cmdType.name}' not yet supported! Not all of this is a ruse though, I promise ;-)" +
+            Console.RESET)
       }
     }
     return ret
