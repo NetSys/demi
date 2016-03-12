@@ -44,8 +44,8 @@ class DemiCommand(val name: String, val alias:String="", help_msg:String="") {
     var name_with_args = s"$name $argsStr"
     var aliasStr = if (alias != "") s"[$alias]" else ""
     var args_help = if (!arg_help.isEmpty) arg_help.mkString("\n") else ""
-    var formatStr = f"$name_with_args%34s $aliasStr%8s $help_msg%20s"
-    if (args_help != "") formatStr = formatStr + f"%n $args_help%20s"
+    var formatStr = f"$name_with_args%34s $aliasStr%8s $help_msg%50s"
+    if (args_help != "") formatStr = formatStr + f"%n $args_help%30s"
     return formatStr
   }
 }
@@ -193,7 +193,7 @@ class DemiConsole {
             ret = BoundDemiCommand(commands(cmd_name), args)
             true
           } else {
-            println(s"Invalid command: $s")
+            println(s"Unknown command: $s")
             false
           }
         case _ =>
@@ -228,6 +228,10 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
   val deliverEventCmd = console.cmd("deliver", "d", "Deliver the pending event with the given id")
                                .arg("id", "id of pending event [integer].")
   val checkInvariantCmd = console.cmd("inv", "i", "Check the given invariant")
+  val failCmd = console.cmd("fail", "f", "Crash a process")
+  val startCmd = console.cmd("start", "s", "Start a new process")
+  val externalMessageCmd = console.cmd("ext", "e", "Inject an external message")
+  val codeCmd = console.cmd("code", "c", "Run a code block")
 
   var test_invariant : TestOracle.Invariant = schedulerConfig.invariant_check match {
     case Some(i) => i
@@ -369,6 +373,7 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
     }
 
     def printEventsWithIds() {
+      println("---------------")
       println("Pending events:")
       sortedPending.foreach { case uniq =>
         val cell = uniq.element._1
@@ -415,7 +420,9 @@ class InteractiveScheduler(val schedulerConfig: SchedulerConfig)
         // TODO(cs): inject external?
         // TODO(cs): drop message [to clean up delivery options]
         case _ =>
-          println(s"Unknown command: $command")
+          println(Console.YELLOW +
+            s"Command `${command.cmdType.name}' not yet supported! Not all of this is a ruse though, I promise ;-)" +
+            Console.RESET)
       }
     }
     return ret

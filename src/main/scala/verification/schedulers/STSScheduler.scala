@@ -154,8 +154,33 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
   // result of our delivering that message. This can be used later to recreate
   // the DepGraph (used by DPOR).
   var depTracker = new DepTracker(schedulerConfig)
+  val flattenedOriginalMsgEvents = if (schedulerConfig.abortUponDivergenceLax)
+    depTracker.getAllNodes.flatMap({
+      case Unique(m @ MsgEvent(snd,rcv,null),_) => None
+      case Unique(m @ MsgEvent(snd,rcv,msg),_) =>
+        Some(MsgEvent(snd,rcv,messageFingerprinter.fingerprint(msg)))
+      case _ => None
+    }).toSet else Set[MsgEvent]()
 
+  // if schedulerConfig.abortUponDivergence and we detect a previously
+  // unobserved transition, use this flag to exit from this execution as soon as possible.
   var abortingDueToDivergence = false
+
+  def unexpectedTransitions : Boolean = {
+    if (!schedulerConfig.abortUponDivergenceLax) return false
+    val unexpected = pendingEvents.values.map(hash => hash.values)
+      .flatten.map(queue => queue.map(_._2)).flatten.find({
+        case Unique(MsgEvent(snd,rcv,msg),_) => {
+          val fingerprinted = MsgEvent(snd, rcv,
+            messageFingerprinter.fingerprint(msg))
+          !(flattenedOriginalMsgEvents contains fingerprinted)
+        }
+        case _ => false
+      })
+    println("Unexpected: ")
+    unexpected.foreach { case e => println(e) }
+    return unexpected.size > 1
+  }
 
   // Tell ExternalEventInjector to notify us whenever a WaitQuiescence has just
   // caused us to arrive at Quiescence.
@@ -250,7 +275,7 @@ class STSScheduler(val schedulerConfig: SchedulerConfig,
     // the caller.
     traceSem.acquire
     currentlyInjecting.set(false)
-    val ret = abortingDueToDivergence match {
+    val ret = (abortingDueToDivergence || unexpectedTransitions) match {
       case true => None
       case false =>
         val checkpoint = if (schedulerConfig.enableCheckpointing) takeCheckpoint() else

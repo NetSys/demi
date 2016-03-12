@@ -70,7 +70,7 @@ class EventOrchestrator[E] {
   var fd : FDMessageOrchestrator = null
 
   def set_trace(_trace: Seq[E]) {
-    println("Setting trace: " + _trace.size)
+    //println("Setting trace: " + _trace.size)
     trace = new ArrayBuffer() ++ _trace
     traceIdx = 0
   }
