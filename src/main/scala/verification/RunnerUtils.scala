@@ -26,9 +26,38 @@ import org.slf4j.LoggerFactory,
 //  -> minimizeInternals
 //  -> replayExperiment <- loop
 
+object ExecutionMode extends Enumeration {
+  type Mode = Value
+  val FUZZ = Value
+  val MINIMIZE = Value
+  val INTERACTIVE = Value
+}
+
 // Utilities for writing Runner.scala files.
 object RunnerUtils {
   val logger = LoggerFactory.getLogger("RunnerUtils")
+
+  def getExecutionMode(args: Array[String]): ExecutionMode.Mode = {
+    args.isEmpty match {
+      case true => ExecutionMode.MINIMIZE
+      case false =>
+        args(0) match {
+          case "--fuzz" => ExecutionMode.FUZZ
+          case "-fuzz" => ExecutionMode.FUZZ
+          case "--fuzz=true" => ExecutionMode.FUZZ
+          case "-fuzz=true" => ExecutionMode.FUZZ
+          case "--fuzz=false" => ExecutionMode.INTERACTIVE
+          case "-fuzz=false" => ExecutionMode.INTERACTIVE
+          case "--interactive" => ExecutionMode.INTERACTIVE
+          case "-interactive" => ExecutionMode.INTERACTIVE
+          case "--minimize" => ExecutionMode.MINIMIZE
+          case "-minimize" => ExecutionMode.MINIMIZE
+          case "--minimize=true" => ExecutionMode.MINIMIZE
+          case "-minimize=true" => ExecutionMode.MINIMIZE
+          case _ => ExecutionMode.MINIMIZE
+        }
+    }
+  }
 
   def fuzz(fuzzer: Fuzzer, invariant: TestOracle.Invariant,
            schedulerConfig: SchedulerConfig,
