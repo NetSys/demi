@@ -193,7 +193,7 @@ class DemiConsole {
             ret = BoundDemiCommand(commands(cmd_name), args)
             true
           } else {
-            println(s"Invalid command: $s")
+            println(s"Command $s not yet supported! Not all of this is a ruse though, I promise ;-)")
             false
           }
         case _ =>
